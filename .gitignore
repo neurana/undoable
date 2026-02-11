@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.local
+.undoable/
+coverage/
+.DS_Store
+*.log
+tmp/
+openclaw-main/

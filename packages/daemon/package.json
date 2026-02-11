@@ -1,0 +1,17 @@
+{
+  "name": "@undoable/daemon",
+  "version": "0.1.0",
+  "description": "Undoable daemon: HTTP/SSE server for run orchestration",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@undoable/core": "workspace:*",
+    "@undoable/shared": "workspace:*",
+    "fastify": "^5.7.4",
+    "jose": "^6.1.3"
+  }
+}
