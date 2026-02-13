@@ -1,42 +1,124 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #0a0a0f;
-  --bg-card: #12121a;
-  --bg-hover: #1a1a26;
-  --border: #2a2a3a;
-  --text: #e4e4ef;
-  --text-muted: #8888a0;
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --success: #22c55e;
-  --warning: #f59e0b;
-  --danger: #ef4444;
-  --info: #3b82f6;
-  --radius: 8px;
-  --font: "Inter", system-ui, -apple-system, sans-serif;
-  --mono: "JetBrains Mono", "Fira Code", monospace;
+  /* ── Backgrounds ── */
+  --bg-base: #FDFEFD;
+  --bg-deep: #F6FAF8;
+  --bg-haze: #E6F0EC;
+
+  /* ── Surfaces ── */
+  --surface-1: #FDFEFD;
+  --surface-2: #F6FAF8;
+  --surface-3: #ECF8F2;
+
+  /* ── Wash ── */
+  --wash: #E6F0EC;
+  --wash-strong: #D9F3E6;
+
+  /* ── Borders ── */
+  --border-hairline: #E5EBE9;
+  --border-strong: #DCE6E3;
+  --border-divider: #E5EBE9;
+
+  /* ── Hatch pattern ── */
+  --hatch-line: rgba(17,26,23,0.06);
+  --hatch-bg: #E6F0EC;
+
+  /* ── Text ── */
+  --text-primary: #111A17;
+  --text-secondary: #626E69;
+  --text-tertiary: #9AA29F;
+  --text-disabled: rgba(17,26,23,0.40);
+
+  /* ── Accent (mint) ── */
+  --accent: #2E4539;
+  --accent-hover: #385445;
+  --accent-glow: rgba(174,231,199,0.30);
+  --accent-subtle: rgba(174,231,199,0.22);
+  --mint: #AEE7C7;
+  --mint-strong: #ABCCBA;
+
+  /* ── Semantic ── */
+  --success: #2E7D56;
+  --warning: #B8860B;
+  --danger: #C0392B;
+  --danger-subtle: rgba(192,57,43,0.08);
+  --warning-subtle: rgba(184,134,11,0.08);
+
+  /* ── Dark surface (contrast blocks) ── */
+  --dark: #2E4539;
+  --deep: #131B19;
+
+  /* ── Radius ── */
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 28px;
+  --radius-pill: 999px;
+
+  /* ── Typography ── */
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-serif: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+  --mono: 'JetBrains Mono', 'SF Mono', monospace;
+
+  /* ── Elevation ── */
+  --shadow-card: 0 8px 24px rgba(17,26,23,0.06);
+  --shadow-raised: 0 18px 50px rgba(17,26,23,0.08);
+  --shadow-soft: 0 2px 8px rgba(17,26,23,0.04);
+  --shadow-sm: 0 1px 3px rgba(17,26,23,0.06);
+
+  /* ── Spacing ── */
+  --space-1: 8px;
+  --space-2: 16px;
+  --space-3: 24px;
+  --space-4: 32px;
+
+  /* ── Legacy aliases (compat) ── */
+  --bg: var(--bg-base);
+  --bg-card: var(--surface-1);
+  --bg-hover: var(--surface-2);
+  --border: var(--border-hairline);
+  --text: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --radius: var(--radius-sm);
 }
 
 body {
   font-family: var(--font);
-  background: var(--bg);
-  color: var(--text);
+  background: var(--bg-base);
+  color: var(--text-primary);
   line-height: 1.6;
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  position: relative;
+  font-size: 15px;
 }
 
-a { color: var(--accent); text-decoration: none; }
+body > * { position: relative; z-index: 1; }
+
+a { color: var(--dark); text-decoration: none; transition: color 180ms cubic-bezier(0.2,0.8,0.2,1); }
 a:hover { color: var(--accent-hover); }
 
 button {
   font-family: var(--font);
   cursor: pointer;
   border: none;
-  border-radius: var(--radius);
-  padding: 8px 16px;
-  font-size: 14px;
-  transition: background 0.15s;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  font-size: 13px;
+  transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
 }
 
 code, pre { font-family: var(--mono); }
+
+::selection {
+  background: rgba(174,231,199,0.35);
+  color: var(--text-primary);
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(17,26,23,0.08); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(17,26,23,0.14); }

@@ -6,20 +6,23 @@ import { api, type AgentItem } from "../api/client.js";
 export class AgentList extends LitElement {
   static styles = css`
     :host { display: block; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-2); }
     .card {
-      background: var(--bg-card); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 20px;
+      background: var(--surface-1); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md); padding: var(--space-3);
+      box-shadow: var(--shadow-sm);
+      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
     }
-    .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-    .agent-name { font-size: 16px; font-weight: 600; }
+    .card:hover { border-color: var(--mint-strong); background: var(--bg-deep); box-shadow: var(--shadow-card); }
+    .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .agent-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
     .badge {
-      font-size: 11px; padding: 2px 8px; border-radius: 10px;
-      background: var(--accent); color: white;
+      font-size: 10px; padding: 2px 8px; border-radius: var(--radius-pill);
+      background: var(--accent-subtle); color: var(--success); font-weight: 600;
     }
-    .detail { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-    .mono { font-family: var(--mono); }
-    .empty { text-align: center; padding: 48px; color: var(--text-muted); }
+    .detail { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
+    .mono { font-family: var(--mono); color: var(--text-secondary); }
+    .empty { text-align: center; padding: 48px; color: var(--text-tertiary); font-size: 13px; }
   `;
 
   @state() private agents: AgentItem[] = [];

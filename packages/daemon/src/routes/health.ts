@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { checkPermissions } from "../services/permissions.js";
 
 export async function healthRoutes(app: FastifyInstance) {
   app.get("/health", async () => ({
@@ -10,4 +11,6 @@ export async function healthRoutes(app: FastifyInstance) {
   app.get("/ready", async () => ({
     ready: true,
   }));
+
+  app.get("/permissions", async () => checkPermissions());
 }

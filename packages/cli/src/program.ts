@@ -1,4 +1,7 @@
 import { Command } from "commander";
+import { setupCommand } from "./commands/setup.js";
+import { startCommand } from "./commands/start.js";
+import { statusCommand } from "./commands/status.js";
 import { daemonCommand } from "./commands/daemon.js";
 import { planCommand } from "./commands/plan.js";
 import { shadowCommand } from "./commands/shadow.js";
@@ -20,6 +23,9 @@ export function buildProgram(): Command {
     .description("Undoable — safe, verifiable, reversible AI agent runtime")
     .version("0.1.0");
 
+  program.addCommand(setupCommand());
+  program.addCommand(startCommand());
+  program.addCommand(statusCommand());
   program.addCommand(daemonCommand());
   program.addCommand(planCommand());
   program.addCommand(shadowCommand());

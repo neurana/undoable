@@ -6,41 +6,56 @@ import { api, type UserItem } from "../api/client.js";
 export class UserList extends LitElement {
   static styles = css`
     :host { display: block; }
-    .toolbar { display: flex; gap: 12px; margin-bottom: 20px; }
+    .toolbar { display: flex; gap: 12px; margin-bottom: var(--space-3); }
     input {
-      padding: 10px 14px; border-radius: var(--radius);
-      border: 1px solid var(--border); background: var(--bg-card);
-      color: var(--text); font-size: 14px; outline: none;
+      padding: 10px 14px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong); background: var(--surface-1);
+      color: var(--text-primary); font-size: 13px; outline: none;
+      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
+      box-shadow: var(--shadow-sm);
     }
-    input:focus { border-color: var(--accent); }
+    input::placeholder { color: var(--text-tertiary); }
+    input:focus { border-color: var(--mint-strong); box-shadow: 0 0 0 3px var(--accent-glow); }
     select {
-      padding: 10px 14px; border-radius: var(--radius);
-      border: 1px solid var(--border); background: var(--bg-card);
-      color: var(--text); font-size: 14px;
+      padding: 10px 14px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong); background: var(--surface-1);
+      color: var(--text-primary); font-size: 13px;
     }
-    .btn-primary { background: var(--accent); color: white; font-weight: 500; }
-    .btn-primary:hover { background: var(--accent-hover); }
-    .btn-danger { background: var(--danger); color: white; font-size: 12px; padding: 4px 10px; }
-    .btn-danger:hover { opacity: 0.9; }
+    .btn-primary {
+      background: var(--dark); color: #FDFEFD; font-weight: 600;
+      border-radius: var(--radius-pill); padding: 8px 18px;
+    }
+    .btn-primary:hover { background: var(--accent-hover); box-shadow: 0 4px 12px rgba(46,69,57,0.2); }
+    .btn-danger {
+      background: var(--danger-subtle); color: var(--danger);
+      font-size: 11px; padding: 4px 12px; border-radius: var(--radius-pill);
+      border: 1px solid rgba(192,57,43,0.15);
+    }
+    .btn-danger:hover { background: rgba(192,57,43,0.12); }
     table { width: 100%; border-collapse: collapse; }
     th {
-      text-align: left; padding: 10px 12px; font-size: 12px;
-      text-transform: uppercase; color: var(--text-muted);
-      border-bottom: 1px solid var(--border);
+      text-align: left; padding: 10px 12px; font-size: 11px;
+      text-transform: uppercase; color: var(--text-tertiary);
+      border-bottom: 1px solid var(--border-divider);
+      letter-spacing: 0.4px; font-weight: 500;
     }
-    td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 14px; }
+    td {
+      padding: 12px; border-bottom: 1px solid var(--border-divider);
+      font-size: 13px; color: var(--text-secondary);
+    }
     .role {
-      display: inline-block; padding: 2px 8px; border-radius: 12px;
-      font-size: 12px; font-weight: 500;
+      display: inline-block; padding: 2px 10px; border-radius: var(--radius-pill);
+      font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
     }
-    .role-admin { background: #4c1d95; color: #c4b5fd; }
-    .role-operator { background: #1e3a5f; color: #7dd3fc; }
-    .role-viewer { background: #1c1917; color: #a8a29e; }
-    .mono { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
-    .empty { text-align: center; padding: 48px; color: var(--text-muted); }
+    .role-admin { background: rgba(109,40,217,0.08); color: #7c3aed; }
+    .role-operator { background: var(--accent-subtle); color: var(--success); }
+    .role-viewer { background: var(--wash); color: var(--text-tertiary); }
+    .mono { font-family: var(--mono); font-size: 11px; color: var(--text-tertiary); }
+    .empty { text-align: center; padding: 48px; color: var(--text-tertiary); font-size: 13px; }
     .api-key {
-      font-family: var(--mono); font-size: 12px; background: var(--bg-hover);
-      padding: 4px 8px; border-radius: 4px; word-break: break-all;
+      font-family: var(--mono); font-size: 11px; background: var(--bg-deep);
+      padding: 6px 10px; border-radius: 8px; word-break: break-all;
+      color: var(--text-secondary); border: 1px solid var(--border-strong);
     }
   `;
 
@@ -89,8 +104,8 @@ export class UserList extends LitElement {
       </div>
 
       ${this.newApiKey ? html`
-        <div style="background: var(--bg-card); border: 1px solid var(--success); border-radius: var(--radius); padding: 16px; margin-bottom: 20px;">
-          <strong style="color: var(--success);">API Key (save it now, shown only once):</strong>
+        <div style="background: var(--wash-strong); border: 1px solid var(--mint-strong); border-radius: var(--radius-md); padding: 16px; margin-bottom: 20px;">
+          <strong style="color: var(--dark);">API Key (save it now, shown only once):</strong>
           <div class="api-key" style="margin-top: 8px;">${this.newApiKey}</div>
         </div>
       ` : ""}

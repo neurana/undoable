@@ -6,40 +6,49 @@ import { api, streamEvents, type RunItem } from "../api/client.js";
 export class RunDetail extends LitElement {
   static styles = css`
     :host { display: block; }
-    .header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
+    .header { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); }
     .back {
-      background: var(--bg-card); color: var(--text-muted); border: 1px solid var(--border);
+      background: var(--surface-1); color: var(--text-secondary);
+      border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+      padding: 6px 14px; font-size: 12px;
+      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
     }
-    .back:hover { background: var(--bg-hover); color: var(--text); }
-    h2 { font-size: 20px; font-weight: 600; flex: 1; }
+    .back:hover { background: var(--wash); color: var(--text-primary); border-color: var(--mint-strong); }
+    h2 { font-size: 18px; font-weight: 400; flex: 1; color: var(--text-primary); font-family: var(--font-serif); letter-spacing: -0.02em; }
     .status {
-      display: inline-block; padding: 4px 12px; border-radius: 12px;
-      font-size: 13px; font-weight: 500;
+      display: inline-block; padding: 3px 12px; border-radius: var(--radius-pill);
+      font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
+      background: var(--accent-subtle); color: var(--success);
     }
-    .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+    .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); margin-bottom: var(--space-3); }
     .meta-card {
-      background: var(--bg-card); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 16px;
+      background: var(--surface-1); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md); padding: var(--space-2);
+      box-shadow: var(--shadow-sm);
     }
-    .meta-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
-    .meta-value { font-size: 16px; font-weight: 500; }
-    .actions { display: flex; gap: 8px; margin-bottom: 24px; }
-    .btn { padding: 8px 16px; border-radius: var(--radius); font-size: 13px; font-weight: 500; }
-    .btn-approve { background: var(--success); color: white; }
-    .btn-approve:hover { opacity: 0.9; }
-    .btn-reject { background: var(--danger); color: white; }
-    .btn-reject:hover { opacity: 0.9; }
-    .btn-action { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); }
-    .btn-action:hover { background: var(--bg-hover); }
+    .meta-label {
+      font-size: 11px; color: var(--text-tertiary); text-transform: uppercase;
+      margin-bottom: 4px; letter-spacing: 0.4px; font-weight: 500;
+    }
+    .meta-value { font-size: 14px; font-weight: 500; color: var(--text-primary); }
+    .actions { display: flex; gap: 8px; margin-bottom: var(--space-3); }
+    .btn { padding: 7px 16px; border-radius: var(--radius-pill); font-size: 12px; font-weight: 600; transition: all 180ms cubic-bezier(0.2,0.8,0.2,1); }
+    .btn-approve { background: var(--dark); color: #FDFEFD; }
+    .btn-approve:hover { background: var(--accent-hover); box-shadow: 0 4px 12px rgba(46,69,57,0.15); }
+    .btn-reject { background: var(--danger-subtle); color: var(--danger); border: 1px solid rgba(192,57,43,0.15); }
+    .btn-reject:hover { background: rgba(192,57,43,0.12); }
+    .btn-action { background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--border-strong); }
+    .btn-action:hover { background: var(--wash); border-color: var(--mint-strong); color: var(--text-primary); }
     .events {
-      background: var(--bg-card); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 16px; max-height: 400px;
-      overflow-y: auto; font-family: var(--mono); font-size: 13px;
+      background: var(--surface-1); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md); padding: var(--space-2); max-height: 400px;
+      overflow-y: auto; font-family: var(--mono); font-size: 12px;
+      box-shadow: var(--shadow-sm);
     }
-    .event-line { padding: 4px 0; border-bottom: 1px solid var(--border); }
-    .event-type { color: var(--accent); font-weight: 500; }
-    .mono { font-family: var(--mono); font-size: 13px; }
-    .empty-events { color: var(--text-muted); text-align: center; padding: 24px; }
+    .event-line { padding: 5px 0; border-bottom: 1px solid var(--border-divider); }
+    .event-type { color: var(--dark); font-weight: 500; }
+    .mono { font-family: var(--mono); font-size: 12px; color: var(--text-tertiary); }
+    .empty-events { color: var(--text-tertiary); text-align: center; padding: var(--space-3); font-size: 13px; }
   `;
 
   @property() runId = "";

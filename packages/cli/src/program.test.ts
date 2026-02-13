@@ -16,6 +16,9 @@ describe("buildProgram", () => {
     const program = buildProgram();
     const commandNames = program.commands.map((c) => c.name());
 
+    expect(commandNames).toContain("setup");
+    expect(commandNames).toContain("start");
+    expect(commandNames).toContain("status");
     expect(commandNames).toContain("daemon");
     expect(commandNames).toContain("plan");
     expect(commandNames).toContain("shadow");
@@ -30,9 +33,9 @@ describe("buildProgram", () => {
     expect(commandNames).toContain("doctor");
   });
 
-  it("has exactly 12 commands", () => {
+  it("has exactly 15 commands", () => {
     const program = buildProgram();
-    expect(program.commands).toHaveLength(12);
+    expect(program.commands).toHaveLength(15);
   });
 
   it("daemon command has start/stop/status subcommands", () => {
