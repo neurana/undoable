@@ -1,8 +1,30 @@
+export type ToolPolicy = {
+  allow?: string[];
+  deny?: string[];
+};
+
+export type AgentIdentity = {
+  emoji?: string;
+  avatar?: string;
+};
+
+export type AgentHeartbeatConfig = {
+  intervalMs?: number;
+  wakeSchedule?: string;
+  autoRestart?: boolean;
+};
+
 export type AgentConfig = {
   id: string;
   name?: string;
   model: string;
+  fallbacks?: string[];
+  instructions?: string;
+  workspace?: string;
+  identity?: AgentIdentity;
+  heartbeat?: AgentHeartbeatConfig;
   skills: string[];
+  tools?: ToolPolicy;
   sandbox: SandboxConfig;
   concurrency?: number;
   default?: boolean;

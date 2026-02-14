@@ -20,7 +20,7 @@ type SkillFilter = "all" | "ready" | "needs-setup" | "disabled";
 export class SkillList extends LitElement {
   static styles = css`
     :host {
-      display: block;
+      display: block; width: 100%; box-sizing: border-box;
       color: var(--text-primary);
     }
 
@@ -203,6 +203,14 @@ export class SkillList extends LitElement {
       padding: 40px 20px;
       color: var(--text-tertiary);
       font-size: 13px;
+    }
+
+    @media (max-width: 640px) {
+      .skills-header { flex-wrap: wrap; }
+      .skills-header h2 { font-size: 18px; }
+      .filter-bar { flex-wrap: wrap; }
+      .skill-top { flex-direction: column; gap: 8px; }
+      .skill-actions { align-self: flex-end; }
     }
   `;
 

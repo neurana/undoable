@@ -11,7 +11,6 @@ import { streamCommand } from "./commands/stream.js";
 import { receiptCommand } from "./commands/receipt.js";
 import { verifyCommand } from "./commands/verify.js";
 import { agentCommand } from "./commands/agent.js";
-import { userCommand } from "./commands/user.js";
 import { configCommand } from "./commands/config.js";
 import { doctorCommand } from "./commands/doctor.js";
 
@@ -35,7 +34,6 @@ export function buildProgram(): Command {
   program.addCommand(receiptCommand());
   program.addCommand(verifyCommand());
   program.addCommand(agentCommand());
-  program.addCommand(userCommand());
   program.addCommand(configCommand());
   program.addCommand(doctorCommand());
 

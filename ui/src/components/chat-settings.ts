@@ -1,0 +1,347 @@
+import { LitElement, html, css, nothing } from "lit";
+import { customElement, property, state } from "lit/decorators.js";
+
+type ModelInfo = {
+  id: string;
+  name: string;
+  provider: string;
+  capabilities: { thinking: boolean; tagReasoning: boolean; vision: boolean; tools: boolean };
+  contextWindow?: number;
+};
+
+type ProviderInfo = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  hasKey: boolean;
+  modelCount: number;
+  local?: boolean;
+  available?: boolean;
+};
+
+type LocalServerInfo = {
+  provider: string;
+  available: boolean;
+  modelCount: number;
+  lastChecked?: number;
+};
+
+@customElement("chat-settings")
+export class ChatSettings extends LitElement {
+  static styles = css`
+    :host { display: block; }
+    .overlay {
+      position: fixed; inset: 0; z-index: 100;
+      background: rgba(0,0,0,0.4); backdrop-filter: blur(2px);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .panel {
+      background: var(--bg-base, #fff); border: 1px solid var(--border-divider, #e0e0e0);
+      border-radius: 16px; width: 480px; max-width: 92vw; max-height: 80vh;
+      overflow: hidden; display: flex; flex-direction: column;
+      box-shadow: 0 24px 48px rgba(0,0,0,0.15);
+    }
+    .panel-header {
+      padding: 14px 16px; display: flex; align-items: center; gap: 10px;
+      border-bottom: 1px solid var(--border-divider, #e0e0e0);
+    }
+    .panel-title { font-size: 14px; font-weight: 600; color: var(--text-primary, #1a1a1a); flex: 1; }
+    .btn-close {
+      width: 28px; height: 28px; border-radius: 8px; border: none;
+      background: transparent; color: var(--text-tertiary, #999);
+      cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center;
+    }
+    .btn-close:hover { background: var(--wash, #f0f0f0); }
+    .tabs {
+      display: flex; border-bottom: 1px solid var(--border-divider, #e0e0e0);
+      padding: 0 16px;
+    }
+    .tab {
+      padding: 8px 12px; font-size: 12px; font-weight: 500;
+      color: var(--text-tertiary, #999); cursor: pointer;
+      border-bottom: 2px solid transparent; background: none; border-top: none; border-left: none; border-right: none;
+      font-family: inherit;
+    }
+    .tab:hover { color: var(--text-secondary, #666); }
+    .tab[data-active] { color: var(--text-primary, #1a1a1a); border-bottom-color: var(--accent, #00D090); }
+    .panel-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
+
+    /* Models */
+    .provider-group { margin-bottom: 12px; }
+    .provider-name {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      color: var(--text-tertiary, #999); letter-spacing: 0.8px;
+      padding: 4px 0; margin-bottom: 4px;
+    }
+    .model-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px; border-radius: 8px; cursor: pointer;
+      transition: background 120ms ease;
+    }
+    .model-row:hover { background: var(--wash, #f0f0f0); }
+    .model-row[data-active] { background: var(--accent-subtle, #e6f9f1); }
+    .model-name { font-size: 12px; font-weight: 500; color: var(--text-primary, #1a1a1a); flex: 1; }
+    .model-caps { display: flex; gap: 4px; }
+    .cap-badge {
+      font-size: 9px; padding: 1px 5px; border-radius: 4px;
+      background: var(--wash, #f0f0f0); color: var(--text-tertiary, #999);
+      font-weight: 600;
+    }
+    .cap-badge.active { background: var(--accent-subtle, #e6f9f1); color: var(--accent, #00D090); }
+    .model-row[data-disabled] { opacity: 0.4; cursor: not-allowed; }
+    .no-key-hint { font-size: 10px; color: var(--text-tertiary, #999); font-style: italic; }
+    .status-dot {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      margin-right: 4px; vertical-align: middle;
+    }
+    .status-dot.online { background: var(--accent, #00D090); }
+    .status-dot.offline { background: var(--text-tertiary, #999); }
+    .local-header {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .btn-refresh {
+      padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border-strong, #ccc);
+      background: transparent; color: var(--text-tertiary, #999);
+      font-size: 9px; font-weight: 600; cursor: pointer; font-family: inherit;
+      transition: all 120ms ease;
+    }
+    .btn-refresh:hover { background: var(--wash, #f0f0f0); color: var(--text-secondary, #666); }
+    .btn-refresh:disabled { opacity: 0.5; cursor: not-allowed; }
+    .server-status {
+      font-size: 10px; color: var(--text-tertiary, #999); padding: 2px 0;
+    }
+    .no-models-hint {
+      font-size: 11px; color: var(--text-tertiary, #999); font-style: italic; padding: 4px 8px;
+    }
+
+    /* Providers */
+    .provider-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 0; border-bottom: 1px solid var(--border-divider, #e0e0e0);
+    }
+    .provider-row:last-child { border-bottom: none; }
+    .provider-info { flex: 1; }
+    .provider-label { font-size: 12px; font-weight: 600; color: var(--text-primary, #1a1a1a); }
+    .provider-url { font-size: 10px; color: var(--text-tertiary, #999); }
+    .key-status {
+      font-size: 10px; padding: 2px 6px; border-radius: 4px;
+      font-weight: 600;
+    }
+    .key-set { background: var(--accent-subtle, #e6f9f1); color: var(--accent, #00D090); }
+    .key-missing { background: var(--wash, #f0f0f0); color: var(--text-tertiary, #999); }
+    .btn-key {
+      padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border-strong, #ccc);
+      background: transparent; color: var(--text-secondary, #666);
+      font-size: 10px; font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+    .btn-key:hover { background: var(--wash, #f0f0f0); }
+    .btn-key.danger { color: var(--danger, #c0392b); border-color: var(--danger, #c0392b); }
+    .btn-key.danger:hover { background: rgba(192,57,43,0.05); }
+  `;
+
+  @property({ type: Boolean }) open = false;
+  @property({ type: String }) currentModel = "";
+  @property({ type: String }) currentProvider = "";
+
+  @state() private tab: "models" | "providers" = "models";
+  @state() private models: ModelInfo[] = [];
+  @state() private providers: ProviderInfo[] = [];
+  @state() private localServers: LocalServerInfo[] = [];
+  @state() private refreshingLocal = false;
+
+  private emit(name: string, detail?: unknown) {
+    this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true }));
+  }
+
+  async connectedCallback() {
+    super.connectedCallback();
+    await this.loadData();
+  }
+
+  updated(changed: Map<string, unknown>) {
+    if (changed.has("open") && this.open) {
+      void this.loadData();
+    }
+  }
+
+  private async loadData() {
+    try {
+      const [modelsRes, providersRes, serversRes] = await Promise.all([
+        fetch("/api/chat/models"),
+        fetch("/api/chat/providers"),
+        fetch("/api/chat/local-servers").catch(() => null),
+      ]);
+      if (modelsRes.ok) {
+        const data = await modelsRes.json() as { models: ModelInfo[] };
+        this.models = data.models;
+      }
+      if (providersRes.ok) {
+        const data = await providersRes.json() as { providers: ProviderInfo[] };
+        this.providers = data.providers;
+      }
+      if (serversRes?.ok) {
+        const data = await serversRes.json() as { servers: LocalServerInfo[] };
+        this.localServers = data.servers;
+      }
+    } catch { /* ignore */ }
+  }
+
+  private async refreshLocalModels() {
+    this.refreshingLocal = true;
+    try {
+      const res = await fetch("/api/chat/local-models/refresh", { method: "POST" });
+      if (res.ok) {
+        const data = await res.json() as { models: ModelInfo[]; servers: LocalServerInfo[] };
+        this.localServers = data.servers;
+        await this.loadData();
+      }
+    } catch { /* ignore */ } finally {
+      this.refreshingLocal = false;
+    }
+  }
+
+  private isLocalProvider(providerId: string): boolean {
+    const p = this.providers.find((prov) => prov.id === providerId);
+    if (p?.local) return true;
+    return providerId === "ollama" || providerId === "lmstudio";
+  }
+
+  private isServerAvailable(providerId: string): boolean {
+    const server = this.localServers.find((s) => s.provider === providerId);
+    if (server) return server.available;
+    const p = this.providers.find((prov) => prov.id === providerId);
+    return p?.available ?? false;
+  }
+
+  private async selectModel(provider: string, model: string) {
+    const provInfo = this.providers.find((p) => p.id === provider);
+    if (!provInfo?.hasKey && !this.isLocalProvider(provider)) return;
+    try {
+      const res = await fetch("/api/chat/model", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, model }),
+      });
+      if (res.ok) {
+        const data = await res.json() as { model: string; provider: string; name: string; capabilities: ModelInfo["capabilities"] };
+        this.emit("model-changed", { model: data.model, provider: data.provider, name: data.name, capabilities: data.capabilities });
+        this.currentModel = data.model;
+        this.currentProvider = data.provider;
+      }
+    } catch { /* ignore */ }
+  }
+
+  private async setApiKey(providerId: string) {
+    const current = this.providers.find((p) => p.id === providerId);
+    const key = prompt(`API key for ${current?.name ?? providerId}:`, "");
+    if (key === null) return;
+    try {
+      const res = await fetch("/api/chat/providers", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: providerId, apiKey: key }),
+      });
+      if (res.ok) await this.loadData();
+    } catch { /* ignore */ }
+  }
+
+  private async removeApiKey(providerId: string) {
+    if (!confirm(`Remove API key for ${providerId}?`)) return;
+    try {
+      const res = await fetch("/api/chat/providers", {
+        method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: providerId }),
+      });
+      if (res.ok) await this.loadData();
+    } catch { /* ignore */ }
+  }
+
+  private renderModels() {
+    const grouped = new Map<string, ModelInfo[]>();
+    for (const m of this.models) {
+      const list = grouped.get(m.provider) ?? [];
+      list.push(m);
+      grouped.set(m.provider, list);
+    }
+
+    const hasLocalProviders = Array.from(grouped.keys()).some((p) => this.isLocalProvider(p));
+
+    return html`
+      ${hasLocalProviders ? html`
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+          <span style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-tertiary,#999); letter-spacing:0.8px;">Local Models</span>
+          <button class="btn-refresh" ?disabled=${this.refreshingLocal} @click=${() => this.refreshLocalModels()}>
+            ${this.refreshingLocal ? "Scanning..." : "Refresh"}
+          </button>
+        </div>
+      ` : nothing}
+      ${Array.from(grouped.entries()).map(([provider, models]) => {
+        const provInfo = this.providers.find((p) => p.id === provider);
+        const hasKey = provInfo?.hasKey ?? false;
+        const isLocal = this.isLocalProvider(provider);
+        const available = isLocal ? this.isServerAvailable(provider) : hasKey;
+        return html`
+          <div class="provider-group">
+            <div class="provider-name">
+              ${isLocal ? html`<span class="status-dot ${available ? "online" : "offline"}"></span>` : nothing}
+              ${provInfo?.name ?? provider}
+              ${isLocal && !available ? html`<span class="no-key-hint"> - offline</span>` : nothing}
+              ${!hasKey && !isLocal ? html`<span class="no-key-hint"> - no API key</span>` : nothing}
+            </div>
+            ${models.length === 0 && isLocal ? html`
+              <div class="no-models-hint">${available ? "No models loaded. Pull a model first." : "Server not running."}</div>
+            ` : nothing}
+            ${models.map((m) => html`
+              <div class="model-row"
+                ?data-active=${m.id === this.currentModel && m.provider === this.currentProvider}
+                ?data-disabled=${!available}
+                @click=${() => available ? this.selectModel(m.provider, m.id) : undefined}>
+                <span class="model-name">${m.name}</span>
+                <div class="model-caps">
+                  ${m.capabilities.thinking ? html`<span class="cap-badge active">think</span>` : nothing}
+                  ${m.capabilities.vision ? html`<span class="cap-badge">vision</span>` : nothing}
+                  ${m.capabilities.tools ? html`<span class="cap-badge">tools</span>` : nothing}
+                </div>
+              </div>
+            `)}
+          </div>
+        `;
+      })}
+    `;
+  }
+
+  private renderProviders() {
+    return html`
+      ${this.providers.map((p) => html`
+        <div class="provider-row">
+          <div class="provider-info">
+            <div class="provider-label">${p.name}</div>
+            <div class="provider-url">${p.baseUrl}</div>
+          </div>
+          <span class="key-status ${p.hasKey ? "key-set" : "key-missing"}">${p.hasKey ? "Key set" : "No key"}</span>
+          <button class="btn-key" @click=${() => this.setApiKey(p.id)}>${p.hasKey ? "Update" : "Add key"}</button>
+          ${p.hasKey ? html`<button class="btn-key danger" @click=${() => this.removeApiKey(p.id)}>Remove</button>` : nothing}
+        </div>
+      `)}
+    `;
+  }
+
+  render() {
+    if (!this.open) return nothing;
+    return html`
+      <div class="overlay" @click=${(e: Event) => { if (e.target === e.currentTarget) this.emit("close-settings"); }}>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Settings</span>
+            <button class="btn-close" @click=${() => this.emit("close-settings")}>&times;</button>
+          </div>
+          <div class="tabs">
+            <button class="tab" ?data-active=${this.tab === "models"} @click=${() => this.tab = "models"}>Models</button>
+            <button class="tab" ?data-active=${this.tab === "providers"} @click=${() => this.tab = "providers"}>API Keys</button>
+          </div>
+          <div class="panel-body">
+            ${this.tab === "models" ? this.renderModels() : this.renderProviders()}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+}

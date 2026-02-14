@@ -1,16 +1,46 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state, query } from "lit/decorators.js";
-import { messageStyles } from "./chat-styles.js";
+import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import { messageStyles, markdownStyles } from "./chat-styles.js";
+import { renderMarkdown } from "../utils/markdown.js";
+import { api } from "../api/client.js";
 import type { ChatEntry } from "./chat-types.js";
 
 @customElement("chat-messages")
 export class ChatMessages extends LitElement {
-  static styles = [messageStyles, css`
-    :host { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+  static styles = [messageStyles, markdownStyles, css`
+    :host { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; position: relative; }
     .messages { flex: 1; overflow-y: auto; padding: var(--gutter, 24px) 0; display: flex; flex-direction: column; gap: 20px; }
     @media (max-width: 768px) {
       .bubble { font-size: 13px; }
       .indent { margin-left: 0; }
+    }
+    .btn-open-file {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 2px 8px; border-radius: 4px;
+      background: none; border: 1px solid var(--border-divider);
+      color: var(--text-tertiary); font-size: 10px; font-weight: 500;
+      font-family: inherit; cursor: pointer; flex-shrink: 0;
+      transition: all 150ms ease;
+    }
+    .btn-open-file:hover {
+      background: var(--wash); color: var(--text-primary);
+      border-color: var(--border-strong);
+    }
+    .btn-open-file svg { stroke: currentColor; stroke-width: 2; fill: none; }
+    .file-toast {
+      position: absolute; bottom: 16px; left: 50%;
+      transform: translateX(-50%);
+      background: var(--dark); color: #FDFEFD;
+      font-size: 12px; font-weight: 500;
+      padding: 6px 16px; border-radius: 999px;
+      box-shadow: var(--shadow-raised);
+      animation: toast-in 200ms ease;
+      z-index: 20; pointer-events: none;
+    }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+      to { opacity: 1; transform: translateX(-50%) translateY(0); }
     }
   `];
 
@@ -19,8 +49,33 @@ export class ChatMessages extends LitElement {
   @property({ type: Number }) currentIter = 0;
   @property({ type: Number }) maxIter = 0;
   @state() private playingMsgIndex = -1;
+  @state() private collapsedTools = new Set<number>();
+  @state() private approvalCountdowns = new Map<string, number>();
+  private countdownTimers = new Map<string, ReturnType<typeof setInterval>>();
   private currentAudio: HTMLAudioElement | null = null;
+  @state() private fileToast = "";
   @query(".messages") private messagesEl!: HTMLElement;
+
+  private async openFile(filePath: string, e: Event) {
+    e.stopPropagation();
+    try {
+      await api.files.open(filePath);
+    } catch {
+      try {
+        await navigator.clipboard.writeText(filePath);
+        this.fileToast = "Path copied to clipboard";
+      } catch {
+        this.fileToast = "Could not open file";
+      }
+      setTimeout(() => { this.fileToast = ""; }, 2500);
+    }
+  }
+
+  private toggleCollapse(index: number) {
+    const next = new Set(this.collapsedTools);
+    if (next.has(index)) next.delete(index); else next.add(index);
+    this.collapsedTools = next;
+  }
 
   updated(changed: Map<string, unknown>) {
     super.updated(changed);
@@ -130,15 +185,49 @@ export class ChatMessages extends LitElement {
 
   // ── Approval ──
 
-  private handleApproval(id: string, approved: boolean) {
-    this.dispatchEvent(new CustomEvent("handle-approval", { detail: { id, approved }, bubbles: true, composed: true }));
+  private startCountdown(id: string) {
+    if (this.countdownTimers.has(id)) return;
+    const next = new Map(this.approvalCountdowns);
+    next.set(id, 300);
+    this.approvalCountdowns = next;
+    const timer = setInterval(() => {
+      const cur = this.approvalCountdowns.get(id) ?? 0;
+      if (cur <= 1) {
+        clearInterval(timer);
+        this.countdownTimers.delete(id);
+        this.handleApproval(id, false, false);
+        return;
+      }
+      const upd = new Map(this.approvalCountdowns);
+      upd.set(id, cur - 1);
+      this.approvalCountdowns = upd;
+    }, 1000);
+    this.countdownTimers.set(id, timer);
+  }
+
+  private handleApproval(id: string, approved: boolean, allowAlways = false) {
+    const timer = this.countdownTimers.get(id);
+    if (timer) { clearInterval(timer); this.countdownTimers.delete(id); }
+    this.dispatchEvent(new CustomEvent("handle-approval", { detail: { id, approved, allowAlways }, bubbles: true, composed: true }));
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    for (const timer of this.countdownTimers.values()) clearInterval(timer);
+    this.countdownTimers.clear();
+  }
+
+  private fmtCountdown(secs: number): string {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
   }
 
   // ── Render entries ──
 
   private renderEntry(e: ChatEntry, index: number) {
     if (e.kind === "user") {
-      return html`<div class="msg-rail"><div class="row"><div class="avatar avatar-user">U</div><div class="bubble"><div class="role-label">You</div>${e.content}</div></div></div>`;
+      return html`<div class="msg-rail"><div class="row"><div class="avatar avatar-user">U</div><div class="bubble"><div class="role-label">You</div><div class="md-content">${unsafeHTML(renderMarkdown(e.content))}</div>${e.images?.length ? html`<div class="user-images">${e.images.map((src) => html`<img class="user-image" src=${src} alt="attachment" @click=${() => window.open(src, "_blank")} />`)}</div>` : nothing}</div></div></div>`;
     }
     if (e.kind === "assistant") {
       const speakBtn = !e.streaming && e.content ? html`
@@ -150,7 +239,19 @@ export class ChatMessages extends LitElement {
             <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
           </svg>
         </button>` : nothing;
-      return html`<div class="msg-rail"><div class="row"><div class="avatar avatar-ai">A</div><div class="bubble"><div class="role-label">Undoable</div>${e.content}${e.streaming ? html`<span class="cursor"></span>` : nothing}${!e.streaming && e.content ? html`<div class="msg-actions">${speakBtn}</div>` : nothing}</div></div></div>`;
+      return html`<div class="msg-rail"><div class="row"><div class="avatar avatar-ai">A</div><div class="bubble"><div class="role-label">Undoable</div><div class="md-content">${unsafeHTML(renderMarkdown(e.content, !!e.streaming))}</div>${e.streaming ? html`<span class="cursor"></span>` : nothing}${!e.streaming && e.content ? html`<div class="msg-actions">${speakBtn}</div>` : nothing}</div></div></div>`;
+    }
+    if (e.kind === "thinking") {
+      return html`
+        <div class="msg-rail"><div class="indent">
+          <details class="thinking-block" ?open=${!!e.streaming}>
+            <summary class="thinking-header">
+              <svg class="thinking-icon" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7zM9 21h6M12 17v4"/></svg>
+              <span>Thinking${e.streaming ? html`<span class="cursor"></span>` : ""}</span>
+            </summary>
+            <div class="thinking-content">${e.content}</div>
+          </details>
+        </div></div>`;
     }
     if (e.kind === "tool_call") {
       const cat = this.toolCategory(e.name);
@@ -171,6 +272,12 @@ export class ChatMessages extends LitElement {
             <span class="tool-card-title">${titleText}</span>
             <span class="tool-badge ${this.toolBadgeClass(cat)}">${badgeText}</span>
             ${iter}
+            ${cat === "file" && filePath ? html`
+              <button class="btn-open-file" @click=${(ev: Event) => this.openFile(filePath, ev)} title="Open file">
+                <svg viewBox="0 0 24 24" width="12" height="12"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                Open
+              </button>
+            ` : nothing}
           </div>
           <div class="tool-card-body">
             ${isProcess ? html`<div class="exec-cmd">${e.args.sessionId ? html`<b>session</b> ${e.args.sessionId}` : ""}${e.args.waitMs ? html` <b>wait</b> ${e.args.waitMs}ms` : ""}</div>`
@@ -189,26 +296,42 @@ export class ChatMessages extends LitElement {
       const execTail = resultObj?.tail as string | undefined;
       const execStatus = resultObj?.status as string | undefined;
       const execCmd = resultObj?.command as string | undefined;
+      const resultFilePath = (resultObj?.path ?? resultObj?.file_path ?? "") as string;
       const resultStr = isProcess && execTail ? execTail : this.fmtResult(e.result);
       const titleText = isProcess && execCmd ? `${execCmd.slice(0, 80)}` : (e.name ?? "result");
       const badgeLabel = isError ? "error" : isProcess ? (execStatus ?? "done") : "done";
       const badgeCls = isError ? "badge-exec" : execStatus === "running" ? "badge-search" : this.toolBadgeClass(cat);
+      const collapsed = this.collapsedTools.has(index);
+      const longOutput = resultStr.length > 200;
       return html`
         <div class="msg-rail"><div class="indent"><div class="tool-card done">
-          <div class="tool-card-header">
+          <div class="tool-card-header" @click=${() => longOutput && this.toggleCollapse(index)} style="${longOutput ? "cursor:pointer" : ""}">
             ${this.toolIcon(cat)}
             <span class="tool-card-title">${titleText}</span>
             <span class="tool-badge ${badgeCls}">${badgeLabel}</span>
+            ${cat === "file" && resultFilePath ? html`
+              <button class="btn-open-file" @click=${(ev: Event) => this.openFile(resultFilePath, ev)} title="Open file">
+                <svg viewBox="0 0 24 24" width="12" height="12"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                Open
+              </button>
+            ` : nothing}
+            ${longOutput ? html`
+              <svg class="tool-collapse-icon ${collapsed ? "collapsed" : ""}" viewBox="0 0 24 24" width="14" height="14"><path d="M6 9l6 6 6-6"/></svg>
+            ` : nothing}
           </div>
-          <div class="tool-card-body">
-            ${cat === "exec" ? html`<div class="exec-output">${resultStr}</div>`
-          : cat === "file" ? html`<div class="code-block">${resultStr}</div>`
-            : html`<div class="generic-detail">${resultStr}</div>`}
-          </div>
+          ${!collapsed ? html`
+            <div class="tool-card-body">
+              ${cat === "exec" ? html`<div class="exec-output">${resultStr}</div>`
+            : cat === "file" ? html`<div class="code-block">${resultStr}</div>`
+              : html`<div class="generic-detail">${resultStr}</div>`}
+            </div>
+          ` : nothing}
         </div></div></div>`;
     }
     if (e.kind === "approval") {
       const resolved = e.resolved;
+      if (!resolved && !this.approvalCountdowns.has(e.id)) this.startCountdown(e.id);
+      const countdown = this.approvalCountdowns.get(e.id) ?? 0;
       const headerCls = resolved ? (e.approved ? "done" : "") : "pending";
       return html`
         <div class="msg-rail"><div class="indent"><div class="tool-card ${headerCls}" style="${resolved ? "opacity:0.6" : ""}">
@@ -218,6 +341,7 @@ export class ChatMessages extends LitElement {
             <span class="tool-badge" style="background: ${resolved ? (e.approved ? "var(--accent-subtle)" : "var(--danger-subtle)") : "var(--warning-subtle)"}; color: ${resolved ? (e.approved ? "var(--accent)" : "var(--danger)") : "var(--warning)"}">
               ${resolved ? (e.approved ? "approved" : "rejected") : "pending"}
             </span>
+            ${!resolved && countdown > 0 ? html`<span class="approval-timer">${this.fmtCountdown(countdown)}</span>` : nothing}
           </div>
           <div class="tool-card-body tool-card-body-pad">
             ${e.description ? html`<div style="color: var(--text-secondary); font-size: 12px; margin-bottom: 6px;">${e.description}</div>` : nothing}
@@ -225,6 +349,7 @@ export class ChatMessages extends LitElement {
             ${!resolved ? html`
               <div class="approval-actions" style="margin-top: 10px;">
                 <button class="btn-approve" @click=${() => this.handleApproval(e.id, true)}>Approve</button>
+                <button class="btn-approve" style="background: var(--surface-1); color: var(--dark); border: 1px solid var(--border-strong);" @click=${() => this.handleApproval(e.id, true, true)}>Allow Always</button>
                 <button class="btn-reject" @click=${() => this.handleApproval(e.id, false)}>Reject</button>
               </div>
             ` : nothing}
@@ -255,6 +380,7 @@ export class ChatMessages extends LitElement {
         ${this.entries.map((e, i) => this.renderEntry(e, i))}
         ${this.renderProgress()}
       </div>
+      ${this.fileToast ? html`<div class="file-toast">${this.fileToast}</div>` : nothing}
     `;
   }
 }

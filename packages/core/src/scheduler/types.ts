@@ -13,6 +13,7 @@ export type JobState = {
   nextRunAtMs?: number;
   runningAtMs?: number;
   lastRunAtMs?: number;
+  lastRunId?: string;
   lastStatus?: JobStatus;
   lastError?: string;
   lastDurationMs?: number;
@@ -63,4 +64,5 @@ export type SchedulerConfig = {
 export type JobExecutor = (job: ScheduledJob) => Promise<{
   status: JobStatus;
   error?: string;
+  runId?: string;
 }>;

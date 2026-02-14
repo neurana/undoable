@@ -103,6 +103,20 @@ export const chatAreaStyles = css`
     .btn-toggle-sidebar:hover { background: var(--wash); color: var(--text-secondary); }
     .toggle-icon { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.5; fill: none; }
     .chat-header-spacer { flex: 1; }
+    .btn-header-icon {
+      width: 32px; height: 32px; flex-shrink: 0;
+      border-radius: 8px; border: none;
+      background: transparent; color: var(--text-tertiary);
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
+    }
+    .btn-header-icon:hover { background: var(--wash); color: var(--text-secondary); }
+    .model-label {
+      font-size: 11px; font-weight: 500; color: var(--text-tertiary);
+      background: var(--wash); padding: 2px 8px; border-radius: 6px;
+      max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      letter-spacing: 0.2px;
+    }
 `;
 
 export const messageStyles = css`
@@ -136,7 +150,7 @@ export const messageStyles = css`
     .bubble {
       flex: 1; min-width: 0;
       font-size: 14px; line-height: 1.6;
-      color: var(--text-primary); white-space: pre-wrap; word-break: break-word;
+      color: var(--text-primary); word-break: break-word;
     }
     .role-label {
       font-size: 11px; font-weight: 600; color: var(--text-tertiary);
@@ -178,6 +192,11 @@ export const messageStyles = css`
       font-size: 10px; color: var(--text-tertiary);
       font-family: var(--mono); flex-shrink: 0;
     }
+    .tool-collapse-icon {
+      width: 14px; height: 14px; stroke: var(--text-tertiary); stroke-width: 2; fill: none;
+      flex-shrink: 0; transition: transform 180ms ease; margin-left: auto;
+    }
+    .tool-collapse-icon.collapsed { transform: rotate(-90deg); }
     .tool-card-body { padding: 0; }
     .tool-card-body-pad { padding: 10px 12px; }
 
@@ -225,6 +244,16 @@ export const messageStyles = css`
       padding: 10px 12px;
     }
 
+    .user-images {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;
+    }
+    .user-image {
+      max-width: 240px; max-height: 180px; border-radius: 8px;
+      border: 1px solid var(--border-strong); cursor: pointer;
+      object-fit: cover; transition: opacity 150ms ease;
+    }
+    .user-image:hover { opacity: 0.85; }
+
     .empty {
       flex: 1; display: flex; flex-direction: column;
       align-items: center; justify-content: center;
@@ -248,11 +277,41 @@ export const messageStyles = css`
       padding: 6px var(--gutter) 6px calc(var(--gutter) + var(--col-offset));
     }
 
+    /* ── Thinking block ── */
+    .thinking-block {
+      background: var(--surface-1); border: 1px solid var(--border-strong);
+      border-radius: 12px; overflow: hidden; font-size: 12px;
+      border-left: 3px solid var(--mint-strong);
+    }
+    .thinking-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; cursor: pointer;
+      color: var(--text-secondary); font-size: 11px; font-weight: 600;
+      user-select: none; list-style: none;
+    }
+    .thinking-header::-webkit-details-marker { display: none; }
+    .thinking-header::marker { display: none; content: ""; }
+    .thinking-icon {
+      width: 14px; height: 14px; fill: none;
+      stroke: var(--mint-strong); stroke-width: 2;
+      stroke-linecap: round; stroke-linejoin: round;
+    }
+    .thinking-content {
+      padding: 8px 12px 10px; font-size: 12px; line-height: 1.6;
+      color: var(--text-secondary); white-space: pre-wrap; word-break: break-word;
+      border-top: 1px solid var(--border-divider);
+      background: var(--bg-deep); max-height: 300px; overflow-y: auto;
+    }
+
     .approval-inner {
       background: var(--warning-subtle); border: 1px solid rgba(184,134,11,0.15);
       border-radius: 12px;
       padding: 10px 14px; font-size: 12px; color: var(--warning);
       border-left: 3px solid var(--warning);
+    }
+    .approval-timer {
+      font-family: var(--mono); font-size: 10px; color: var(--warning);
+      margin-left: auto; flex-shrink: 0;
     }
     .approval-actions { display: flex; gap: 8px; margin-top: 8px; }
     .btn-approve {
@@ -379,6 +438,7 @@ export const inputStyles = css`
       font-size: 14px; font-family: inherit;
       resize: none; min-height: 24px; max-height: 320px;
       outline: none; line-height: 1.5;
+      overflow-y: hidden;
     }
     textarea::placeholder { color: var(--text-tertiary); }
     .btn-send {
@@ -492,6 +552,168 @@ export const voiceStyles = css`
       font-size: 12px; color: var(--text-tertiary); font-style: italic;
       padding: 8px 0; flex: 1;
     }
+
+    .btn-think {
+      height: 28px; padding: 0 8px; flex-shrink: 0;
+      border: none; border-radius: 8px;
+      background: var(--wash); color: var(--text-tertiary);
+      cursor: pointer; transition: all 160ms ease;
+      display: flex; align-items: center; gap: 4px;
+      font-size: 11px; font-weight: 500; font-family: var(--font);
+    }
+    .btn-think:hover { background: var(--wash-strong); color: var(--text-secondary); }
+    .btn-think.think-active {
+      background: var(--accent-subtle); color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 8px;
+    }
+    .think-icon { width: 14px; height: 14px; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+`;
+
+export const markdownStyles = css`
+    /* ── Markdown rendered content ── */
+    .md-content {
+      line-height: 1.6;
+      word-break: break-word;
+    }
+
+    /* Remove margin from first/last children for tight layout */
+    .md-content > :first-child { margin-top: 0; }
+    .md-content > :last-child { margin-bottom: 0; }
+
+    /* Paragraphs */
+    .md-content p {
+      margin: 0 0 0.6em;
+    }
+    .md-content p:last-child { margin-bottom: 0; }
+
+    /* Headings */
+    .md-content h1, .md-content h2, .md-content h3,
+    .md-content h4, .md-content h5, .md-content h6 {
+      margin: 1em 0 0.4em;
+      font-weight: 600;
+      line-height: 1.3;
+      color: var(--text-primary);
+    }
+    .md-content h1 { font-size: 1.4em; }
+    .md-content h2 { font-size: 1.25em; }
+    .md-content h3 { font-size: 1.1em; }
+    .md-content h4, .md-content h5, .md-content h6 { font-size: 1em; }
+
+    /* Inline code */
+    .md-content code {
+      font-family: var(--mono);
+      font-size: 0.85em;
+      background: var(--wash);
+      border: 1px solid var(--border-divider);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--text-primary);
+    }
+
+    /* Fenced code blocks */
+    .md-content pre {
+      margin: 0.6em 0;
+      padding: 12px 14px;
+      background: var(--bg-deep);
+      border: 1px solid var(--border-divider);
+      border-radius: 8px;
+      overflow-x: auto;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .md-content pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+      white-space: pre;
+    }
+
+    /* Blockquotes */
+    .md-content blockquote {
+      margin: 0.6em 0;
+      padding: 4px 14px;
+      border-left: 3px solid var(--mint-strong);
+      color: var(--text-secondary);
+      background: var(--wash);
+      border-radius: 0 6px 6px 0;
+    }
+    .md-content blockquote p { margin: 0.3em 0; }
+
+    /* Lists */
+    .md-content ul, .md-content ol {
+      margin: 0.4em 0;
+      padding-left: 1.6em;
+    }
+    .md-content li {
+      margin: 0.15em 0;
+    }
+    .md-content li > p { margin: 0.2em 0; }
+
+    /* Task lists (GFM) */
+    .md-content ul:has(> li > input[type="checkbox"]) {
+      list-style: none;
+      padding-left: 0.4em;
+    }
+    .md-content li > input[type="checkbox"] {
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    /* Tables (GFM) */
+    .md-content table {
+      border-collapse: collapse;
+      margin: 0.6em 0;
+      font-size: 0.9em;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+    }
+    .md-content th, .md-content td {
+      border: 1px solid var(--border-divider);
+      padding: 6px 10px;
+      text-align: left;
+    }
+    .md-content th {
+      background: var(--bg-deep);
+      font-weight: 600;
+      font-size: 0.85em;
+      color: var(--text-secondary);
+    }
+    .md-content tr:nth-child(even) {
+      background: var(--wash);
+    }
+
+    /* Horizontal rules */
+    .md-content hr {
+      border: none;
+      border-top: 1px solid var(--border-divider);
+      margin: 1em 0;
+    }
+
+    /* Links */
+    .md-content a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .md-content a:hover {
+      color: var(--accent-hover);
+    }
+
+    /* Images */
+    .md-content img {
+      max-width: 100%;
+      border-radius: 8px;
+      margin: 0.4em 0;
+    }
+
+    /* Strong / emphasis */
+    .md-content strong { font-weight: 600; }
+    .md-content em { font-style: italic; }
+    .md-content del { text-decoration: line-through; color: var(--text-tertiary); }
 `;
 
 export const responsiveStyles = css`

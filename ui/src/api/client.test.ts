@@ -52,26 +52,6 @@ describe("api.runs", () => {
   });
 });
 
-describe("api.users", () => {
-  it("list calls GET /api/users", async () => {
-    mockFetch.mockResolvedValue(mockResponse([{ id: "u1" }]));
-    const result = await api.users.list();
-    expect(result).toEqual([{ id: "u1" }]);
-  });
-
-  it("create calls POST /api/users", async () => {
-    mockFetch.mockResolvedValue(mockResponse({ id: "u2", apiKey: "key123" }));
-    const result = await api.users.create("alice", "admin");
-    expect(result.apiKey).toBe("key123");
-  });
-
-  it("delete calls DELETE /api/users/:id", async () => {
-    mockFetch.mockResolvedValue(mockResponse({ deleted: true }));
-    const result = await api.users.delete("u1");
-    expect(result.deleted).toBe(true);
-  });
-});
-
 describe("api.agents", () => {
   it("list calls GET /api/agents", async () => {
     mockFetch.mockResolvedValue(mockResponse([{ id: "default" }]));

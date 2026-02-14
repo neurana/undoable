@@ -1,35 +1,46 @@
-import { describe, it, expect } from "vitest";
-import { hasRole, USER_ROLES } from "./middleware.js";
-import type { AuthUser } from "./types.js";
+import { describe, it, expect, vi } from "vitest";
+import { createGatewayAuthHook } from "./middleware.js";
 
-function user(role: AuthUser["role"]): AuthUser {
-  return { id: "u1", username: "test", role };
+function mockReq(authorization?: string) {
+  return { headers: { authorization } } as unknown as import("fastify").FastifyRequest;
 }
 
-describe("middleware", () => {
-  describe("USER_ROLES", () => {
-    it("contains admin, operator, viewer", () => {
-      expect(USER_ROLES).toEqual(["admin", "operator", "viewer"]);
-    });
+function mockReply() {
+  const reply = { code: vi.fn().mockReturnThis(), send: vi.fn() };
+  return reply as unknown as import("fastify").FastifyReply & { code: ReturnType<typeof vi.fn>; send: ReturnType<typeof vi.fn> };
+}
+
+describe("createGatewayAuthHook", () => {
+  it("allows all requests when no token configured (local dev)", async () => {
+    const hook = createGatewayAuthHook();
+    const req = mockReq();
+    const reply = mockReply();
+    await hook(req, reply);
+    expect((req as unknown as Record<string, unknown>).identity).toEqual({ id: "local", method: "local" });
+    expect(reply.code).not.toHaveBeenCalled();
   });
 
-  describe("hasRole", () => {
-    it("admin has all roles", () => {
-      expect(hasRole(user("admin"), "admin")).toBe(true);
-      expect(hasRole(user("admin"), "operator")).toBe(true);
-      expect(hasRole(user("admin"), "viewer")).toBe(true);
-    });
+  it("allows requests with valid Bearer token", async () => {
+    const hook = createGatewayAuthHook("secret-token");
+    const req = mockReq("Bearer secret-token");
+    const reply = mockReply();
+    await hook(req, reply);
+    expect((req as unknown as Record<string, unknown>).identity).toEqual({ id: "token", method: "token" });
+  });
 
-    it("operator has operator and viewer", () => {
-      expect(hasRole(user("operator"), "admin")).toBe(false);
-      expect(hasRole(user("operator"), "operator")).toBe(true);
-      expect(hasRole(user("operator"), "viewer")).toBe(true);
-    });
+  it("rejects requests with wrong token", async () => {
+    const hook = createGatewayAuthHook("secret-token");
+    const req = mockReq("Bearer wrong-token");
+    const reply = mockReply();
+    await hook(req, reply);
+    expect(reply.code).toHaveBeenCalledWith(401);
+  });
 
-    it("viewer has only viewer", () => {
-      expect(hasRole(user("viewer"), "admin")).toBe(false);
-      expect(hasRole(user("viewer"), "operator")).toBe(false);
-      expect(hasRole(user("viewer"), "viewer")).toBe(true);
-    });
+  it("rejects requests with no auth header when token required", async () => {
+    const hook = createGatewayAuthHook("secret-token");
+    const req = mockReq();
+    const reply = mockReply();
+    await hook(req, reply);
+    expect(reply.code).toHaveBeenCalledWith(401);
   });
 });

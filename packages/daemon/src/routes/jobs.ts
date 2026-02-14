@@ -8,11 +8,11 @@ export function jobRoutes(app: FastifyInstance, scheduler: SchedulerService) {
   });
 
   app.post<{ Body: JobCreate }>("/jobs", async (req, reply) => {
-    const { name, enabled, schedule, payload } = req.body;
+    const { name, description, enabled, schedule, payload, deleteAfterRun } = req.body;
     if (!name || !schedule || !payload) {
       return reply.code(400).send({ error: "name, schedule, and payload are required" });
     }
-    const job = await scheduler.add({ name, enabled: enabled ?? true, schedule, payload });
+    const job = await scheduler.add({ name, description, enabled: enabled ?? true, schedule, payload, deleteAfterRun });
     return reply.code(201).send(job);
   });
 

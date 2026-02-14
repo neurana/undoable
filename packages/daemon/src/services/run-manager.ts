@@ -1,5 +1,5 @@
 import { generateId, nowISO } from "@undoable/shared";
-import type { RunStatus, RunSummary, PlanGraph } from "@undoable/shared";
+import type { EventEnvelope, RunStatus, RunSummary, PlanGraph } from "@undoable/shared";
 import type { EventBus } from "@undoable/core";
 
 export type CreateRunInput = {
@@ -14,10 +14,24 @@ export type RunRecord = RunSummary & {
 
 export class RunManager {
   private runs = new Map<string, RunRecord>();
+  private eventLogs = new Map<string, EventEnvelope[]>();
   private eventBus: EventBus;
 
   constructor(eventBus: EventBus) {
     this.eventBus = eventBus;
+  }
+
+  appendEvent(runId: string, event: EventEnvelope): void {
+    let log = this.eventLogs.get(runId);
+    if (!log) {
+      log = [];
+      this.eventLogs.set(runId, log);
+    }
+    log.push(event);
+  }
+
+  getEvents(runId: string): EventEnvelope[] {
+    return this.eventLogs.get(runId) ?? [];
   }
 
   create(input: CreateRunInput): RunRecord {
@@ -65,6 +79,7 @@ export class RunManager {
   }
 
   delete(id: string): boolean {
+    this.eventLogs.delete(id);
     return this.runs.delete(id);
   }
 

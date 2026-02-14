@@ -1,3 +1,4 @@
+import os from "node:os";
 import type { FastifyInstance } from "fastify";
 import type { ChatService } from "../services/chat-service.js";
 import type { ToolCall } from "../services/chat-service.js";
@@ -10,15 +11,51 @@ import { createToolRegistry } from "../tools/index.js";
 import { resolveRunMode, shouldAutoApprove, type RunModeConfig } from "../actions/index.js";
 import { DriftDetector, buildStabilizer } from "../alignment/index.js";
 import { parseAttachments, type ChatAttachment } from "../services/chat-attachments.js";
+import type { ProviderService } from "../services/provider-service.js";
+import { buildSystemPrompt } from "../services/system-prompt-builder.js";
+import { needsCompaction, compactMessages } from "../services/context-window.js";
+import { filterToolsByPolicy } from "../services/tool-policy.js";
+import { loadContextFiles } from "../services/context-files.js";
+import { OnboardingService } from "../services/onboarding-service.js";
+import { createSubagentTools } from "../tools/subagent-tools.js";
+import type { HeartbeatService } from "../services/heartbeat-service.js";
+import {
+  type ThinkLevel,
+  type ReasoningVisibility,
+  type ThinkingConfig,
+  DEFAULT_THINKING_CONFIG,
+  supportsReasoningEffort,
+  isTagReasoningProvider,
+  mapToReasoningEffort,
+  normalizeThinkLevel,
+  splitThinkingTags,
+  extractThinkingFromStream,
+  stripThinkingTags,
+} from "../services/thinking.js";
 
 const MAX_TOOL_RESULT_CHARS = 30_000;
 const DEFAULT_MAX_ITERATIONS = 10;
+
+type ActiveChatRun = {
+  controller: AbortController;
+  sessionId: string;
+  startedAtMs: number;
+};
+
+const activeChatRuns = new Map<string, ActiveChatRun>();
+let chatRunCounter = 0;
+
+function generateRunId(): string {
+  return `run-${Date.now()}-${++chatRunCounter}`;
+}
 
 export type ChatRouteConfig = {
   apiKey: string;
   model: string;
   baseUrl: string;
+  provider?: string;
   runMode?: RunModeConfig;
+  thinking?: ThinkingConfig;
 };
 
 type StreamDelta = {
@@ -26,43 +63,64 @@ type StreamDelta = {
     delta?: { content?: string; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> };
     finish_reason?: string;
   }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 };
 
-async function callLLM(
+type UsageAccumulator = { promptTokens: number; completionTokens: number; totalTokens: number };
+
+export async function callLLM(
   config: ChatRouteConfig,
   messages: unknown[],
   toolDefs: unknown[],
   stream: false,
-): Promise<{ content: string | null; tool_calls?: ToolCall[] }>;
-async function callLLM(
+  thinkLevel?: ThinkLevel,
+  abortSignal?: AbortSignal,
+): Promise<{ content: string | null; tool_calls?: ToolCall[]; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } }>;
+export async function callLLM(
   config: ChatRouteConfig,
   messages: unknown[],
   toolDefs: unknown[],
   stream: true,
+  thinkLevel?: ThinkLevel,
+  abortSignal?: AbortSignal,
 ): Promise<Response>;
-async function callLLM(
+export async function callLLM(
   config: ChatRouteConfig,
   messages: unknown[],
   toolDefs: unknown[],
   stream: boolean,
-) {
+  thinkLevel?: ThinkLevel,
+  abortSignal?: AbortSignal,
+): Promise<{ content: string | null; tool_calls?: ToolCall[]; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } } | Response> {
+  const body: Record<string, unknown> = {
+    model: config.model,
+    stream,
+    messages,
+    tools: toolDefs,
+  };
+
+  // Add reasoning_effort for models that support it (OpenAI o-series)
+  if (thinkLevel && thinkLevel !== "off" && supportsReasoningEffort(config.model)) {
+    body.reasoning_effort = mapToReasoningEffort(thinkLevel);
+  }
+
+  if (stream) {
+    body.stream_options = { include_usage: true };
+  }
+
   const res = await fetch(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
-    body: JSON.stringify({
-      model: config.model,
-      stream,
-      messages,
-      tools: toolDefs,
-    }),
+    body: JSON.stringify(body),
+    signal: abortSignal,
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
     throw new Error(`LLM API error: ${res.status} ${errText}`);
   }
   if (!stream) {
-    const data = await res.json() as { choices: Array<{ message: { content: string | null; tool_calls?: ToolCall[] } }> };
-    return data.choices[0]!.message;
+    const data = await res.json() as { choices: Array<{ message: { content: string | null; tool_calls?: ToolCall[] } }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } };
+    return { ...data.choices[0]!.message, usage: data.usage };
   }
   return res;
 }
@@ -75,11 +133,49 @@ export function chatRoutes(
   scheduler: SchedulerService,
   browserSvc: BrowserService,
   skillsService?: { getPrompt(): string },
+  providerService?: ProviderService,
+  agentRegistry?: import("@undoable/core").AgentRegistry,
+  instructionsStore?: import("../services/instructions-store.js").InstructionsStore,
+  memoryService?: import("../services/memory-service.js").MemoryService,
+  sandboxExec?: import("../services/sandbox-exec.js").SandboxExecService,
+  heartbeatService?: HeartbeatService,
 ) {
   let runModeConfig = config.runMode ?? resolveRunMode();
   const approvalMode = shouldAutoApprove(runModeConfig) ? "off" as const : undefined;
-  const registry = createToolRegistry({ runManager, scheduler, browserSvc, approvalMode });
+  const registry = createToolRegistry({ runManager, scheduler, browserSvc, memoryService: memoryService ?? undefined, sandboxExec: sandboxExec ?? undefined, approvalMode });
   let maxIterations = runModeConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+
+  if (agentRegistry) {
+    const boundCallLLM = (msgs: unknown[], defs: unknown[], stream: boolean) => {
+      const conf = providerService ? { ...config, ...providerService.getActiveConfig() } : config;
+      return callLLM(conf, msgs, defs, stream as false);
+    };
+    registry.registerTools(createSubagentTools({
+      agentRegistry,
+      callLLM: boundCallLLM,
+      toolExecute: registry.execute,
+      toolDefs: registry.definitions,
+      maxIterations: 5,
+    }));
+  }
+  let thinkingConfig: ThinkingConfig = config.thinking ?? { ...DEFAULT_THINKING_CONFIG };
+
+  const getActiveConfig = () => {
+    if (providerService) return providerService.getActiveConfig();
+    return { apiKey: config.apiKey, baseUrl: config.baseUrl, model: config.model, provider: config.provider ?? "" };
+  };
+  const useTagReasoning = () => {
+    if (providerService) return providerService.modelUsesTagReasoning();
+    return isTagReasoningProvider(config.provider ?? "");
+  };
+  const canThink = () => {
+    if (providerService) return providerService.modelSupportsThinking();
+    return supportsReasoningEffort(getActiveConfig().model);
+  };
+  const shouldDisableStreaming = (model: string) => {
+    if (providerService) return providerService.shouldDisableStreaming(model);
+    return false;
+  };
 
   const driftDetector = new DriftDetector();
   let activeSse: ((data: unknown) => void) | null = null;
@@ -94,9 +190,17 @@ export function chatRoutes(
     });
   });
 
-  app.post<{ Body: { id: string; approved: boolean } }>("/chat/approve", async (req, reply) => {
-    const { id, approved } = req.body;
+  app.post<{ Body: { id: string; approved: boolean; allowAlways?: boolean } }>("/chat/approve", async (req, reply) => {
+    const { id, approved, allowAlways } = req.body;
     if (!id) return reply.code(400).send({ error: "id is required" });
+
+    if (approved && allowAlways) {
+      const pending = registry.approvalGate.getApproval(id);
+      if (pending) {
+        registry.approvalGate.addAutoApprovePattern(pending.toolName);
+      }
+    }
+
     const resolved = registry.approvalGate.resolve(id, approved);
     if (!resolved) return reply.code(404).send({ error: "Approval not found or already resolved" });
     return { ok: true, id, approved };
@@ -115,8 +219,22 @@ export function chatRoutes(
     return { ok: true, mode };
   });
 
+  app.get("/chat/agents", async () => {
+    if (!agentRegistry) return { agents: [], defaultId: null };
+    const agents = agentRegistry.list().map((a) => ({ id: a.id, name: a.name ?? a.id, model: a.model, identity: a.identity }));
+    let defaultId: string | null = null;
+    try { defaultId = agentRegistry.getDefaultId(); } catch { /* none */ }
+    return { agents, defaultId };
+  });
+
   app.get("/chat/run-config", async () => {
-    return { mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode() };
+    const active = getActiveConfig();
+    return {
+      mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode(),
+      thinking: thinkingConfig.level, reasoningVisibility: thinkingConfig.visibility,
+      model: active.model, provider: active.provider,
+      canThink: canThink(),
+    };
   });
 
   app.post<{ Body: { mode?: string; maxIterations?: number } }>("/chat/run-config", async (req, reply) => {
@@ -136,6 +254,89 @@ export function chatRoutes(
       maxIterations = newMax;
     }
     return { ok: true, mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode() };
+  });
+
+  app.get("/chat/thinking", async () => {
+    return { level: thinkingConfig.level, visibility: thinkingConfig.visibility, canThink: canThink() };
+  });
+
+  app.post<{ Body: { level?: string; visibility?: string } }>("/chat/thinking", async (req, reply) => {
+    const { level, visibility } = req.body;
+    if (level !== undefined) {
+      const normalized = normalizeThinkLevel(level);
+      if (!normalized) return reply.code(400).send({ error: "level must be off, low, medium, or high" });
+      thinkingConfig.level = normalized;
+    }
+    if (visibility !== undefined) {
+      if (!["off", "on", "stream"].includes(visibility)) {
+        return reply.code(400).send({ error: "visibility must be off, on, or stream" });
+      }
+      thinkingConfig.visibility = visibility as ReasoningVisibility;
+    }
+    return { ok: true, level: thinkingConfig.level, visibility: thinkingConfig.visibility, canThink: canThink() };
+  });
+
+  // ── Model & Provider endpoints ──
+
+  app.get("/chat/model", async () => {
+    if (providerService) {
+      const active = providerService.getActive();
+      return { provider: active.provider, model: active.model, name: active.name, capabilities: active.capabilities };
+    }
+    return { provider: config.provider ?? "openai", model: config.model, name: config.model, capabilities: { thinking: supportsReasoningEffort(config.model), tagReasoning: false, vision: false, tools: true } };
+  });
+
+  app.post<{ Body: { provider: string; model: string } }>("/chat/model", async (req, reply) => {
+    if (!providerService) return reply.code(400).send({ error: "Provider service not available" });
+    const { provider, model } = req.body;
+    if (!provider || !model) return reply.code(400).send({ error: "provider and model required" });
+    const result = await providerService.setActiveModel(provider, model);
+    if (!result) return reply.code(400).send({ error: "Invalid provider/model or missing API key" });
+    // Reset thinking if new model doesn't support it
+    if (!result.capabilities.thinking && thinkingConfig.level !== "off") {
+      thinkingConfig.level = "off";
+    }
+    return { ok: true, ...result };
+  });
+
+  app.get("/chat/models", async () => {
+    if (!providerService) return { models: [] };
+    return { models: providerService.listAllModels() };
+  });
+
+  app.get("/chat/providers", async () => {
+    if (!providerService) return { providers: [] };
+    return { providers: providerService.listProviders() };
+  });
+
+  app.post<{ Body: { provider: string; apiKey: string; baseUrl?: string } }>("/chat/providers", async (req, reply) => {
+    if (!providerService) return reply.code(400).send({ error: "Provider service not available" });
+    const { provider, apiKey, baseUrl } = req.body;
+    if (!provider) return reply.code(400).send({ error: "provider required" });
+    await providerService.setProviderKey(provider, apiKey, baseUrl);
+    return { ok: true };
+  });
+
+  app.delete<{ Body: { provider: string } }>("/chat/providers", async (req, reply) => {
+    if (!providerService) return reply.code(400).send({ error: "Provider service not available" });
+    const { provider } = req.body;
+    if (!provider) return reply.code(400).send({ error: "provider required" });
+    await providerService.removeProviderKey(provider);
+    return { ok: true };
+  });
+
+  app.get("/chat/local-servers", async () => {
+    if (!providerService) return { servers: [] };
+    return { servers: providerService.getLocalServers() };
+  });
+
+  app.post("/chat/local-models/refresh", async () => {
+    if (!providerService) return { models: [] };
+    await providerService.refreshLocalModels();
+    return {
+      models: providerService.listAllModels().filter((m) => m.local),
+      servers: providerService.getLocalServers(),
+    };
   });
 
   app.post<{ Body: { action: string; id?: string; count?: number } }>("/chat/undo", async (req, reply) => {
@@ -171,11 +372,48 @@ export function chatRoutes(
     };
   });
 
-  app.post<{ Body: { message: string; sessionId?: string; attachments?: ChatAttachment[] } }>("/chat", async (req, reply) => {
-    const { message, sessionId = "default", attachments } = req.body;
+  app.post<{ Body: { message: string; sessionId?: string; agentId?: string; attachments?: ChatAttachment[] } }>("/chat", async (req, reply) => {
+    const { message, sessionId = "default", agentId, attachments } = req.body;
     if (!message?.trim() && (!attachments || attachments.length === 0)) {
       return reply.code(400).send({ error: "message or attachments required" });
     }
+
+    let agentModelOverride: string | undefined;
+    let agentFallbacks: string[] = [];
+    let agentName: string | undefined;
+    let agentInstructions: string | undefined;
+    let agentWorkspace: string | undefined;
+    let agentToolDefs = registry.definitions;
+    if (agentId && agentRegistry) {
+      const agent = agentRegistry.get(agentId);
+      if (agent?.model) agentModelOverride = agent.model;
+      if (agent?.fallbacks?.length) agentFallbacks = agent.fallbacks;
+      if (agent?.name) agentName = agent.name;
+      if (agent?.workspace) agentWorkspace = agent.workspace;
+      if (agent?.tools) agentToolDefs = filterToolsByPolicy(registry.definitions, agent.tools);
+      if (instructionsStore) {
+        agentInstructions = (await instructionsStore.getCurrent(agentId)) ?? undefined;
+      }
+    }
+
+    const activeConf = getActiveConfig();
+    const workspaceDir = agentWorkspace || os.homedir();
+    const contextFiles = loadContextFiles(workspaceDir);
+    const dynamicSystemPrompt = buildSystemPrompt({
+      agentName,
+      agentInstructions,
+      skillsPrompt: skillsService?.getPrompt(),
+      toolDefinitions: agentToolDefs,
+      contextFiles,
+      workspaceDir,
+      runtime: {
+        model: agentModelOverride ?? activeConf.model,
+        provider: activeConf.provider,
+        os: `${os.platform()} ${os.release()}`,
+        arch: os.arch(),
+        node: process.version,
+      },
+    });
 
     if (attachments && attachments.length > 0) {
       const parsed = parseAttachments(attachments);
@@ -184,9 +422,13 @@ export function chatRoutes(
       await chatService.addUserMessage(sessionId, message);
     }
 
-    const session = await chatService.getOrCreate(sessionId);
+    const session = await chatService.getOrCreate(sessionId, { systemPrompt: dynamicSystemPrompt, agentId });
     const turnIndex = session.messages.filter((m) => m.role === "user").length;
     const driftScore = driftDetector.analyze(sessionId, message, turnIndex);
+
+    const runId = generateRunId();
+    const abortController = new AbortController();
+    activeChatRuns.set(runId, { controller: abortController, sessionId, startedAtMs: Date.now() });
 
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -194,10 +436,27 @@ export function chatRoutes(
       Connection: "keep-alive",
     });
 
-    const sse = (data: unknown) => reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+    const sse = (data: unknown) => {
+      if (abortController.signal.aborted) return;
+      try { reply.raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* connection closed */ }
+    };
     activeSse = sse;
+    sse({ type: "run_start", runId });
 
-    sse({ type: "session_info", mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode() });
+    if (heartbeatService) {
+      heartbeatService.register(sessionId, {
+        agentId,
+        onHeartbeat: () => {
+          try { reply.raw.write(`: heartbeat\n\n`); } catch { /* connection closed */ }
+        },
+      });
+    }
+
+    sse({
+      type: "session_info", mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode(),
+      thinking: thinkingConfig.level, reasoningVisibility: thinkingConfig.visibility,
+      model: activeConf.model, provider: activeConf.provider, canThink: canThink(),
+    });
 
     if (driftScore.exceeds) {
       const reinforcement = buildStabilizer(driftScore);
@@ -210,55 +469,150 @@ export function chatRoutes(
 
     try {
       let loops = 0;
+      const totalUsage: UsageAccumulator = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
       while (loops < maxIterations) {
+        if (abortController.signal.aborted) {
+          sse({ type: "aborted", runId });
+          break;
+        }
         loops++;
         sse({ type: "progress", iteration: loops, maxIterations });
-        const messages = await chatService.buildApiMessages(sessionId);
-        const skillsPrompt = skillsService?.getPrompt();
-        if (skillsPrompt && messages.length > 0 && messages[0]?.role === "system") {
-          const sys = messages[0] as { role: "system"; content: string };
-          messages[0] = { role: "system" as const, content: sys.content + "\n\n" + skillsPrompt };
+        let messages = await chatService.buildApiMessages(sessionId);
+        if (messages.length > 0 && messages[0]?.role === "system") {
+          messages[0] = { role: "system" as const, content: dynamicSystemPrompt };
         }
-        const res = await callLLM(config, messages, registry.definitions, true) as Response;
+        if (needsCompaction(messages)) {
+          messages = compactMessages(messages);
+          sse({ type: "compaction", messageCount: messages.length });
+        }
+        const activeThinkLevel = canThink() ? thinkingConfig.level : "off";
+        const baseConf: ChatRouteConfig = { ...config, ...getActiveConfig(), ...(agentModelOverride ? { model: agentModelOverride } : {}) };
+        const modelsToTry = [baseConf.model, ...agentFallbacks];
 
-        const reader = res.body?.getReader();
-        if (!reader) { sse({ type: "error", content: "No response body" }); break; }
+        const useNonStreaming = shouldDisableStreaming(baseConf.model);
 
         let fullContent = "";
         const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
         let hasToolCalls = false;
+        let iterUsage: UsageAccumulator = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
-        for await (const line of readSseStream(reader)) {
-          if (line.data === "[DONE]") break;
-          try {
-            const parsed = JSON.parse(line.data) as StreamDelta;
-            const choice = parsed.choices?.[0];
-            const delta = choice?.delta;
-
-            if (delta?.content) {
-              fullContent += delta.content;
-              sse({ type: "token", content: delta.content });
+        if (useNonStreaming) {
+          let nonStreamRes: { content: string | null; tool_calls?: ToolCall[]; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } } | undefined;
+          for (const model of modelsToTry) {
+            try {
+              nonStreamRes = await callLLM({ ...baseConf, model }, messages, agentToolDefs, false, activeThinkLevel, abortController.signal) as typeof nonStreamRes;
+              break;
+            } catch (err) {
+              sse({ type: "fallback", failedModel: model, error: String(err) });
+              if (model === modelsToTry[modelsToTry.length - 1]) throw err;
             }
+          }
+          if (!nonStreamRes) { sse({ type: "error", content: "All models failed" }); break; }
 
-            if (delta?.tool_calls) {
-              hasToolCalls = true;
-              for (const tc of delta.tool_calls) {
-                let entry = pendingToolCalls.get(tc.index);
-                if (!entry) {
-                  entry = { id: tc.id ?? "", name: "", args: "" };
-                  pendingToolCalls.set(tc.index, entry);
+          fullContent = nonStreamRes.content ?? "";
+          if (fullContent) sse({ type: "token", content: fullContent });
+          if (nonStreamRes.usage) {
+            iterUsage.promptTokens += nonStreamRes.usage.prompt_tokens ?? 0;
+            iterUsage.completionTokens += nonStreamRes.usage.completion_tokens ?? 0;
+            iterUsage.totalTokens += nonStreamRes.usage.total_tokens ?? 0;
+          }
+
+          if (nonStreamRes.tool_calls?.length) {
+            hasToolCalls = true;
+            for (let i = 0; i < nonStreamRes.tool_calls.length; i++) {
+              const tc = nonStreamRes.tool_calls[i]!;
+              pendingToolCalls.set(i, { id: tc.id, name: tc.function.name, args: tc.function.arguments });
+            }
+          }
+        } else {
+          let res: Response | undefined;
+          for (const model of modelsToTry) {
+            try {
+              res = await callLLM({ ...baseConf, model }, messages, agentToolDefs, true, activeThinkLevel, abortController.signal) as Response;
+              break;
+            } catch (err) {
+              sse({ type: "fallback", failedModel: model, error: String(err) });
+              if (model === modelsToTry[modelsToTry.length - 1]) throw err;
+            }
+          }
+          if (!res) { sse({ type: "error", content: "All models failed" }); break; }
+
+          const reader = res.body?.getReader();
+          if (!reader) { sse({ type: "error", content: "No response body" }); break; }
+
+          let lastThinkingEmitted = "";
+
+          for await (const line of readSseStream(reader)) {
+            if (line.data === "[DONE]") break;
+            try {
+              const parsed = JSON.parse(line.data) as StreamDelta;
+              const choice = parsed.choices?.[0];
+              const delta = choice?.delta;
+
+              if (delta?.content) {
+                fullContent += delta.content;
+
+                if (useTagReasoning() && thinkingConfig.visibility === "stream") {
+                  const thinking = extractThinkingFromStream(fullContent);
+                  if (thinking && thinking !== lastThinkingEmitted) {
+                    const newThinking = thinking.slice(lastThinkingEmitted.length);
+                    if (newThinking) sse({ type: "thinking", content: newThinking, streaming: true });
+                    lastThinkingEmitted = thinking;
+                  }
+                  const visible = stripThinkingTags(fullContent);
+                  const prevVisible = stripThinkingTags(fullContent.slice(0, -delta.content.length));
+                  const visibleDelta = visible.slice(prevVisible.length);
+                  if (visibleDelta) sse({ type: "token", content: visibleDelta });
+                } else {
+                  sse({ type: "token", content: delta.content });
                 }
-                if (tc.id) entry.id = tc.id;
-                if (tc.function?.name) entry.name += tc.function.name;
-                if (tc.function?.arguments) entry.args += tc.function.arguments;
               }
+
+              if (delta?.tool_calls) {
+                hasToolCalls = true;
+                for (const tc of delta.tool_calls) {
+                  let entry = pendingToolCalls.get(tc.index);
+                  if (!entry) {
+                    entry = { id: tc.id ?? "", name: "", args: "" };
+                    pendingToolCalls.set(tc.index, entry);
+                  }
+                  if (tc.id) entry.id = tc.id;
+                  if (tc.function?.name) entry.name += tc.function.name;
+                  if (tc.function?.arguments) entry.args += tc.function.arguments;
+                }
+              }
+
+              if (parsed.usage) {
+                iterUsage.promptTokens += parsed.usage.prompt_tokens ?? 0;
+                iterUsage.completionTokens += parsed.usage.completion_tokens ?? 0;
+                iterUsage.totalTokens += parsed.usage.total_tokens ?? 0;
+              }
+            } catch { continue; }
+          }
+        }
+
+        let visibleContent = fullContent;
+        if (useTagReasoning()) {
+          const blocks = splitThinkingTags(fullContent);
+          if (blocks) {
+            const thinkingText = blocks.filter((b) => b.type === "thinking").map((b) => b.content).join("\n");
+            visibleContent = blocks.filter((b) => b.type === "text").map((b) => b.content).join("\n").trim();
+            if (thinkingText && thinkingConfig.visibility !== "off" && thinkingConfig.visibility !== "stream") {
+              sse({ type: "thinking", content: thinkingText });
             }
-          } catch { continue; }
+          }
+        }
+
+        if (iterUsage.totalTokens > 0) {
+          totalUsage.promptTokens += iterUsage.promptTokens;
+          totalUsage.completionTokens += iterUsage.completionTokens;
+          totalUsage.totalTokens += iterUsage.totalTokens;
+          sse({ type: "usage", usage: { ...totalUsage } });
         }
 
         if (!hasToolCalls) {
-          await chatService.addAssistantMessage(sessionId, fullContent);
-          sse({ type: "done", content: fullContent, iterations: loops, maxIterations });
+          await chatService.addAssistantMessage(sessionId, visibleContent);
+          sse({ type: "done", content: visibleContent, iterations: loops, maxIterations, usage: { ...totalUsage } });
           break;
         }
 
@@ -277,6 +631,7 @@ export function chatRoutes(
         if (isOnlyProcessPoll) loops--;
 
         for (const tc of toolCalls) {
+          if (abortController.signal.aborted) break;
           let args: Record<string, unknown> = {};
           try { args = JSON.parse(tc.function.arguments); } catch { }
           sse({ type: "tool_call", name: tc.function.name, args, iteration: loops, maxIterations });
@@ -287,6 +642,7 @@ export function chatRoutes(
             await chatService.addToolResult(sessionId, tc.id, resultStr);
             sse({ type: "tool_result", name: tc.function.name, result });
           } catch (err) {
+            if (abortController.signal.aborted) break;
             const errStr = String(err);
             await chatService.addToolResult(sessionId, tc.id, JSON.stringify({ error: errStr }));
             sse({ type: "tool_result", name: tc.function.name, result: { error: errStr } });
@@ -302,12 +658,51 @@ export function chatRoutes(
         });
       }
     } catch (err) {
-      sse({ type: "error", content: String(err) });
+      if (abortController.signal.aborted) {
+        sse({ type: "aborted", runId });
+      } else {
+        sse({ type: "error", content: String(err) });
+      }
+    } finally {
+      activeChatRuns.delete(runId);
     }
 
     activeSse = null;
-    reply.raw.write("data: [DONE]\n\n");
-    reply.raw.end();
+    if (heartbeatService) heartbeatService.unregister(sessionId);
+    try { reply.raw.write("data: [DONE]\n\n"); reply.raw.end(); } catch { /* connection already closed */ }
+  });
+
+  app.post<{ Body: { runId?: string; sessionId?: string } }>("/chat/abort", async (req) => {
+    const { runId, sessionId: targetSession } = req.body;
+
+    if (runId) {
+      const run = activeChatRuns.get(runId);
+      if (!run) return { ok: true, aborted: false };
+      run.controller.abort();
+      activeChatRuns.delete(runId);
+      return { ok: true, aborted: true, runId };
+    }
+
+    if (targetSession) {
+      const aborted: string[] = [];
+      for (const [id, run] of activeChatRuns) {
+        if (run.sessionId === targetSession) {
+          run.controller.abort();
+          activeChatRuns.delete(id);
+          aborted.push(id);
+        }
+      }
+      return { ok: true, aborted: aborted.length > 0, runIds: aborted };
+    }
+
+    // Abort all active runs
+    const aborted: string[] = [];
+    for (const [id, run] of activeChatRuns) {
+      run.controller.abort();
+      aborted.push(id);
+    }
+    activeChatRuns.clear();
+    return { ok: true, aborted: aborted.length > 0, runIds: aborted };
   });
 
   app.get<{ Querystring: { sessionId?: string } }>("/chat/history", async (req) => {
@@ -316,19 +711,20 @@ export function chatRoutes(
   });
 
   app.get("/chat/sessions", async () => {
-    return chatService.listSessions();
+    const all = await chatService.listSessions();
+    return all.filter((s) => !s.id.startsWith("run-"));
   });
 
-  app.post<{ Body: { title?: string } }>("/chat/sessions", async (req) => {
-    const session = await chatService.createSession(req.body.title);
-    return { id: session.id, title: session.title, createdAt: session.createdAt };
+  app.post<{ Body: { title?: string; agentId?: string } }>("/chat/sessions", async (req) => {
+    const session = await chatService.createSession({ title: req.body.title, agentId: req.body.agentId });
+    return { id: session.id, title: session.title, agentId: session.agentId, createdAt: session.createdAt };
   });
 
   app.get<{ Params: { id: string } }>("/chat/sessions/:id", async (req, reply) => {
     const session = await chatService.loadSession(req.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     const history = session.messages.filter((m) => m.role !== "system");
-    return { id: session.id, title: session.title, createdAt: session.createdAt, updatedAt: session.updatedAt, messages: history };
+    return { id: session.id, title: session.title, agentId: session.agentId, createdAt: session.createdAt, updatedAt: session.updatedAt, messages: history };
   });
 
   app.delete<{ Params: { id: string } }>("/chat/sessions/:id", async (req, reply) => {
@@ -341,5 +737,21 @@ export function chatRoutes(
     const renamed = await chatService.renameSession(req.params.id, req.body.title);
     if (!renamed) return reply.code(404).send({ error: "Session not found" });
     return { ok: true };
+  });
+
+  app.post<{ Params: { id: string } }>("/chat/sessions/:id/reset", async (req, reply) => {
+    const reset = await chatService.resetSession(req.params.id);
+    if (!reset) return reply.code(404).send({ error: "Session not found" });
+    return { ok: true };
+  });
+
+  const onboardingSvc = new OnboardingService();
+
+  app.get("/chat/onboarding", async () => {
+    return onboardingSvc.load();
+  });
+
+  app.post<{ Body: { userName?: string; botName?: string; timezone?: string; personality?: string; instructions?: string } }>("/chat/onboarding", async (req) => {
+    return onboardingSvc.save(req.body);
   });
 }

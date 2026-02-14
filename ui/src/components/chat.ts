@@ -1,11 +1,11 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import gsap from "gsap";
 import type { ChatEntry, SessionItem, ApiMessage, SseEvent } from "./chat-types.js";
 import { chatStyles, chatAreaStyles, responsiveStyles } from "./chat-styles.js";
 import "./chat-sidebar.js";
 import "./chat-input.js";
 import "./chat-messages.js";
+import "./chat-settings.js";
 
 @customElement("undoable-chat")
 export class UndoableChat extends LitElement {
@@ -40,23 +40,42 @@ export class UndoableChat extends LitElement {
     .badge-off { background: var(--bg-deep); color: var(--text-tertiary); border-color: var(--border-strong); }
     .badge-mutate { background: var(--warning-subtle); color: var(--warning); border-color: rgba(184,134,11,0.15); }
     .badge-always { background: var(--danger-subtle); color: var(--danger); border-color: rgba(192,57,43,0.15); }
-    .undo-bar {
-      display: flex; align-items: center; justify-content: center; gap: 8px;
-      padding: 6px var(--space-2);
-      border-top: 1px solid var(--border-divider);
+    .usage-label {
+      font-family: var(--mono); font-size: 10px; color: var(--text-tertiary);
+      background: var(--wash); padding: 2px 8px; border-radius: var(--radius-pill);
+      cursor: help;
     }
-    .btn-undo {
-      padding: 5px 14px; border-radius: var(--radius-pill);
-      background: var(--surface-1); color: var(--text-secondary);
-      font-size: 11px; font-weight: 500;
-      border: 1px solid var(--border-strong); cursor: pointer;
-      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
-    }
-    .btn-undo:hover { background: var(--wash); border-color: var(--mint-strong); color: var(--dark); }
     .sidebar-backdrop {
       display: none; position: fixed; inset: 0;
       background: rgba(17,26,23,0.25); z-index: 9;
     }
+    .agent-selector { position: relative; }
+    .agent-btn {
+      display: flex; align-items: center; gap: 4px;
+      padding: 3px 10px; border-radius: var(--radius-pill);
+      background: var(--wash); color: var(--text-secondary);
+      font-size: 11px; font-weight: 500; border: 1px solid var(--border-strong);
+      cursor: pointer; transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
+      white-space: nowrap;
+    }
+    .agent-btn:hover { background: var(--wash-strong); border-color: var(--mint-strong); color: var(--dark); }
+    .agent-btn svg { width: 10px; height: 10px; stroke: currentColor; stroke-width: 2; fill: none; }
+    .agent-dropdown {
+      position: absolute; top: 100%; left: 0; margin-top: 4px;
+      min-width: 200px; max-height: 240px; overflow-y: auto;
+      background: var(--surface-1); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm); box-shadow: var(--shadow-raised);
+      z-index: 20;
+    }
+    .agent-option {
+      display: flex; flex-direction: column; gap: 1px;
+      padding: 8px 12px; cursor: pointer;
+      transition: background 120ms ease;
+    }
+    .agent-option:hover { background: var(--wash); }
+    .agent-option.active { background: var(--accent-subtle); }
+    .agent-option-name { font-size: 12px; font-weight: 500; color: var(--text-primary); }
+    .agent-option-model { font-size: 10px; color: var(--text-tertiary); font-family: var(--mono); }
     @media (max-width: 768px) {
       .sidebar-backdrop.visible { display: block; }
       .empty-title { font-size: 18px; }
@@ -75,9 +94,19 @@ export class UndoableChat extends LitElement {
   @state() private maxIter = 0;
   @state() private currentIter = 0;
   @state() private hasUndoable = false;
+  @state() private thinkingLevel = "";
+  @state() private canThink = false;
+  @state() private currentModel = "";
+  @state() private currentProvider = "";
+  @state() private reasoningVis = "";
+  @state() private settingsOpen = false;
+  @state() private agents: Array<{ id: string; name: string; model: string; identity?: { emoji?: string } }> = [];
+  @state() private currentAgentId = "";
+  @state() private agentDropdownOpen = false;
+  @state() private activeRunId = "";
+  @state() private usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  @state() private showOnboarding = false;
 
-  private antAnimated = false;
-  private antTimeline: gsap.core.Timeline | null = null;
 
   // ── Lifecycle ──
 
@@ -86,22 +115,55 @@ export class UndoableChat extends LitElement {
     if (window.innerWidth <= 768) this.sidebarOpen = false;
     this.loadSessions().then(() => this.restoreFromUrl());
     this.fetchRunConfig();
+    this.fetchAgents();
+    this.checkOnboarding();
     window.addEventListener("popstate", this.onPopState);
+    window.addEventListener("keydown", this.onGlobalKey);
+    this.addEventListener("click", this.closeAgentDropdown);
+    this.addEventListener("onboarding-complete", this.onOnboardingDone as EventListener);
+    this.addEventListener("onboarding-close", this.onOnboardingDone as EventListener);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    if (this.antTimeline) { this.antTimeline.kill(); this.antTimeline = null; }
     window.removeEventListener("popstate", this.onPopState);
+    window.removeEventListener("keydown", this.onGlobalKey);
+    this.removeEventListener("click", this.closeAgentDropdown);
+    this.removeEventListener("onboarding-complete", this.onOnboardingDone as EventListener);
+    this.removeEventListener("onboarding-close", this.onOnboardingDone as EventListener);
   }
+
+  private async checkOnboarding() {
+    try {
+      const res = await fetch("/api/chat/onboarding");
+      if (res.ok) {
+        const p = await res.json();
+        if (!p.completed) this.showOnboarding = true;
+      }
+    } catch { }
+  }
+
+  private onOnboardingDone = () => { this.showOnboarding = false; };
+
+  private onGlobalKey = (e: KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "b") {
+      e.preventDefault();
+      this.toggleSidebar();
+    }
+    if (e.key === "Escape" && this.sidebarOpen && window.innerWidth <= 768) {
+      this.sidebarOpen = false;
+    }
+  };
+
+  private closeAgentDropdown = (e: Event) => {
+    if (!this.agentDropdownOpen) return;
+    const path = e.composedPath();
+    const sel = this.shadowRoot?.querySelector(".agent-selector");
+    if (sel && !path.includes(sel)) this.agentDropdownOpen = false;
+  };
 
   updated(changed: Map<string, unknown>) {
     super.updated(changed);
-    if (this.entries.length === 0 && !this.antAnimated) this.animateAnt();
-    if (this.entries.length > 0 && this.antAnimated) {
-      if (this.antTimeline) { this.antTimeline.kill(); this.antTimeline = null; }
-      this.antAnimated = false;
-    }
   }
 
   // ── URL / routing ──
@@ -127,12 +189,34 @@ export class UndoableChat extends LitElement {
     try {
       const res = await fetch("/api/chat/run-config");
       if (res.ok) {
-        const data = await res.json() as { mode: string; maxIterations: number; approvalMode: string };
+        const data = await res.json() as { mode: string; maxIterations: number; approvalMode: string; thinking?: string; reasoningVisibility?: string; model?: string; provider?: string; canThink?: boolean };
         this.runMode = data.mode;
         this.maxIter = data.maxIterations;
         this.approvalModeLabel = data.approvalMode;
+        this.thinkingLevel = data.thinking ?? "";
+        this.reasoningVis = data.reasoningVisibility ?? "";
+        this.currentModel = data.model ?? "";
+        this.currentProvider = data.provider ?? "";
+        this.canThink = data.canThink ?? false;
       }
     } catch { /* ignore */ }
+  }
+
+  private async fetchAgents() {
+    try {
+      const res = await fetch("/api/chat/agents");
+      if (res.ok) {
+        const data = await res.json() as { agents: Array<{ id: string; name: string; model: string; identity?: { emoji?: string } }>; defaultId: string | null };
+        this.agents = data.agents;
+        if (!this.currentAgentId && data.defaultId) this.currentAgentId = data.defaultId;
+        else if (!this.currentAgentId && data.agents.length > 0) this.currentAgentId = data.agents[0]!.id;
+      }
+    } catch { /* ignore */ }
+  }
+
+  private selectAgent(id: string) {
+    this.currentAgentId = id;
+    this.agentDropdownOpen = false;
   }
 
   private async loadSessions() {
@@ -166,8 +250,12 @@ export class UndoableChat extends LitElement {
     try {
       const res = await fetch(`/api/chat/sessions/${id}`);
       if (!res.ok) return;
-      const data = await res.json() as { messages: ApiMessage[] };
+      const data = await res.json() as { messages: ApiMessage[]; agentId?: string };
       this.entries = this.apiMessagesToEntries(data.messages);
+      // Restore agent context from the session
+      if (data.agentId && this.agents.some((a) => a.id === data.agentId)) {
+        this.currentAgentId = data.agentId;
+      }
     } catch { }
   }
 
@@ -175,6 +263,24 @@ export class UndoableChat extends LitElement {
     try {
       await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
       if (this.activeSessionId === id) { this.activeSessionId = ""; this.entries = []; this.pushChatUrl(""); }
+      await this.loadSessions();
+    } catch { }
+  }
+
+  private async renameSession(detail: { id: string; title: string }) {
+    try {
+      await fetch(`/api/chat/sessions/${detail.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: detail.title }),
+      });
+      await this.loadSessions();
+    } catch { }
+  }
+
+  private async resetSession(id: string) {
+    try {
+      await fetch(`/api/chat/sessions/${id}/reset`, { method: "POST" });
+      if (this.activeSessionId === id) { this.entries = []; this.hasUndoable = false; }
       await this.loadSessions();
     } catch { }
   }
@@ -203,16 +309,28 @@ export class UndoableChat extends LitElement {
 
   // ── Approval & undo ──
 
-  private async handleApproval(detail: { id: string; approved: boolean }) {
+  private async handleApproval(detail: { id: string; approved: boolean; allowAlways?: boolean }) {
     try {
       await fetch("/api/chat/approve", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: detail.id, approved: detail.approved }),
+        body: JSON.stringify({ id: detail.id, approved: detail.approved, allowAlways: detail.allowAlways }),
       });
       this.entries = this.entries.map((e) =>
         e.kind === "approval" && e.id === detail.id ? { ...e, resolved: true, approved: detail.approved } : e,
       );
     } catch (err) { this.error = `Approval failed: ${err}`; }
+  }
+
+  private async handleAbort() {
+    try {
+      const body: Record<string, string> = {};
+      if (this.activeRunId) body.runId = this.activeRunId;
+      else if (this.activeSessionId) body.sessionId = this.activeSessionId;
+      await fetch("/api/chat/abort", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch { /* ignore */ }
   }
 
   private async handleUndo(action: string) {
@@ -236,11 +354,13 @@ export class UndoableChat extends LitElement {
     if (!this.activeSessionId) await this.newChat();
 
     const hasFiles = !!attachments?.length;
-    const displayText = hasFiles ? `${text || ""}${text ? " " : ""}[${attachments!.length} file${attachments!.length > 1 ? "s" : ""}]` : text;
+    const displayText = hasFiles && text ? text : hasFiles ? `[${attachments!.length} file${attachments!.length > 1 ? "s" : ""}]` : text;
+    const images = attachments?.filter((a) => a.mimeType.startsWith("image/")).map((a) => `data:${a.mimeType};base64,${a.content}`) ?? [];
 
     this.error = "";
     this.currentIter = 0;
-    this.entries = [...this.entries, { kind: "user", content: displayText }];
+    this.usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    this.entries = [...this.entries, { kind: "user", content: displayText, ...(images.length > 0 ? { images } : {}) }];
     this.loading = true;
 
     const aiEntry: ChatEntry & { kind: "assistant" } = { kind: "assistant", content: "", streaming: true };
@@ -249,7 +369,7 @@ export class UndoableChat extends LitElement {
     try {
       const res = await fetch("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, sessionId: this.activeSessionId, attachments }),
+        body: JSON.stringify({ message: text, sessionId: this.activeSessionId, agentId: this.currentAgentId || undefined, attachments }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -274,13 +394,30 @@ export class UndoableChat extends LitElement {
           if (raw === "[DONE]") continue;
           try {
             const evt = JSON.parse(raw) as SseEvent;
-            if (evt.type === "session_info") {
+            if (evt.type === "run_start") {
+              this.activeRunId = evt.runId ?? "";
+            } else if (evt.type === "aborted") {
+              this.entries = [...this.entries, { kind: "warning", content: "Generation stopped." }];
+              this.activeRunId = "";
+            } else if (evt.type === "session_info") {
               this.runMode = evt.mode ?? "";
               this.approvalModeLabel = evt.approvalMode ?? "";
               this.maxIter = evt.maxIterations ?? 0;
+              this.thinkingLevel = evt.thinking ?? "";
+              this.reasoningVis = evt.reasoningVisibility ?? "";
+              this.currentModel = evt.model ?? this.currentModel;
+              this.currentProvider = evt.provider ?? this.currentProvider;
+              this.canThink = evt.canThink ?? false;
             } else if (evt.type === "progress") {
               this.currentIter = evt.iteration ?? 0;
               this.maxIter = evt.maxIterations ?? this.maxIter;
+            } else if (evt.type === "thinking") {
+              const last = this.entries[this.entries.length - 1];
+              if (last?.kind === "thinking" && last.streaming) {
+                this.entries = [...this.entries.slice(0, -1), { kind: "thinking", content: last.content + (evt.content ?? ""), streaming: !!evt.streaming }];
+              } else {
+                this.entries = [...this.entries, { kind: "thinking", content: evt.content ?? "", streaming: !!evt.streaming }];
+              }
             } else if (evt.type === "token") {
               if (!aiAdded) { this.entries = [...this.entries, aiEntry]; aiAdded = true; }
               aiEntry.content += evt.content ?? "";
@@ -306,7 +443,10 @@ export class UndoableChat extends LitElement {
               }];
             } else if (evt.type === "warning") {
               this.entries = [...this.entries, { kind: "warning", content: evt.content ?? "" }];
+            } else if (evt.type === "usage" && evt.usage) {
+              this.usage = { ...evt.usage };
             } else if (evt.type === "done") {
+              if (evt.usage) this.usage = { ...evt.usage };
               if (!aiAdded && evt.content) {
                 this.entries = [...this.entries, { kind: "assistant", content: evt.content }];
               } else if (aiAdded) {
@@ -332,6 +472,7 @@ export class UndoableChat extends LitElement {
     } finally {
       this.loading = false;
       this.currentIter = 0;
+      this.activeRunId = "";
       this.loadSessions();
     }
   }
@@ -367,6 +508,24 @@ export class UndoableChat extends LitElement {
     } catch { }
   }
 
+  private async cycleThinkingLevel() {
+    const cycle: Record<string, string> = { off: "low", low: "medium", medium: "high", high: "off" };
+    const next = cycle[this.thinkingLevel || "off"] ?? "off";
+    const vis = this.reasoningVis === "off" && next !== "off" ? "stream" : this.reasoningVis;
+    try {
+      const res = await fetch("/api/chat/thinking", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ level: next, visibility: vis }),
+      });
+      if (res.ok) {
+        const data = await res.json() as { level: string; visibility: string; canThink: boolean };
+        this.thinkingLevel = data.level;
+        this.reasoningVis = data.visibility;
+        this.canThink = data.canThink;
+      }
+    } catch { }
+  }
+
   private async editMaxIter() {
     const val = prompt("Max iterations:", String(this.maxIter));
     if (val === null) return;
@@ -384,35 +543,17 @@ export class UndoableChat extends LitElement {
     } catch { }
   }
 
+  private fmtTokens(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+    return String(n);
+  }
+
   private badgeClass(mode: string) {
     const m: Record<string, string> = { autonomous: "badge-autonomous", supervised: "badge-supervised", mutate: "badge-mutate", always: "badge-always", off: "badge-off" };
     return m[mode] ?? "badge-interactive";
   }
 
-  // ── Ant animation ──
-
-  private animateAnt() {
-    const root = this.shadowRoot;
-    if (!root) return;
-    const svg = root.querySelector(".ant-logo");
-    if (!svg) return;
-    this.antAnimated = true;
-    const tl = gsap.timeline({ repeat: -1 });
-    this.antTimeline = tl;
-    const groupA = [".leg-f1", ".leg-m2", ".leg-b1"].map((s) => svg.querySelector(s)).filter(Boolean);
-    const groupB = [".leg-f2", ".leg-m1", ".leg-b2"].map((s) => svg.querySelector(s)).filter(Boolean);
-    const antennaL = svg.querySelector(".antenna-l");
-    const antennaR = svg.querySelector(".antenna-r");
-    tl.to(groupA, { rotation: 8, transformOrigin: "50% 0%", duration: 0.3, ease: "sine.inOut" }, 0);
-    tl.to(groupB, { rotation: -8, transformOrigin: "50% 0%", duration: 0.3, ease: "sine.inOut" }, 0);
-    tl.to(groupA, { rotation: -8, transformOrigin: "50% 0%", duration: 0.3, ease: "sine.inOut" }, 0.3);
-    tl.to(groupB, { rotation: 8, transformOrigin: "50% 0%", duration: 0.3, ease: "sine.inOut" }, 0.3);
-    tl.to(groupA, { rotation: 0, transformOrigin: "50% 0%", duration: 0.3, ease: "sine.inOut" }, 0.6);
-    tl.to(groupB, { rotation: 0, transformOrigin: "50% 0%", duration: 0.3, ease: "sine.inOut" }, 0.6);
-    if (antennaL) gsap.to(antennaL, { rotation: 5, transformOrigin: "100% 100%", duration: 0.8, ease: "sine.inOut", yoyo: true, repeat: -1 });
-    if (antennaR) gsap.to(antennaR, { rotation: -5, transformOrigin: "0% 100%", duration: 0.9, ease: "sine.inOut", yoyo: true, repeat: -1, delay: 0.2 });
-    gsap.to(svg, { y: -3, duration: 0.45, ease: "sine.inOut", yoyo: true, repeat: -1 });
-  }
 
   // ── Navigation ──
 
@@ -435,7 +576,10 @@ export class UndoableChat extends LitElement {
         @new-chat=${() => this.newChat()}
         @select-session=${(e: CustomEvent) => this.selectSession(e.detail)}
         @delete-session=${(e: CustomEvent) => this.deleteSession(e.detail)}
+        @rename-session=${(e: CustomEvent) => this.renameSession(e.detail)}
+        @reset-session=${(e: CustomEvent) => this.resetSession(e.detail)}
         @navigate=${(e: CustomEvent) => this.emitNavigate(e.detail)}
+        @open-settings=${() => { this.settingsOpen = true; }}
       ></chat-sidebar>
 
       <div class="chat-area">
@@ -446,40 +590,42 @@ export class UndoableChat extends LitElement {
               <line x1="9" y1="3" x2="9" y2="21"/>
             </svg>
           </button>
+          ${this.agents.length > 0 ? html`
+            <div class="agent-selector">
+              <button class="agent-btn" @click=${() => { this.agentDropdownOpen = !this.agentDropdownOpen; }} title="Switch agent">
+                ${(() => { const a = this.agents.find((a) => a.id === this.currentAgentId); return a ? `${a.identity?.emoji ? a.identity.emoji + " " : ""}${a.name}` : "Agent"; })()}
+                <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+              ${this.agentDropdownOpen ? html`
+                <div class="agent-dropdown">
+                  ${this.agents.map((a) => html`
+                    <div class="agent-option ${a.id === this.currentAgentId ? "active" : ""}" @click=${() => this.selectAgent(a.id)}>
+                      <span class="agent-option-name">${a.identity?.emoji ? a.identity.emoji + " " : ""}${a.name}</span>
+                      <span class="agent-option-model">${a.model}</span>
+                    </div>
+                  `)}
+                </div>
+              ` : nothing}
+            </div>
+          ` : nothing}
+          ${this.currentModel ? html`<span class="model-label" style="cursor:pointer;" title=${`${this.currentProvider}/${this.currentModel}. Click to change.`} @click=${() => { this.settingsOpen = true; }}>${this.currentModel}</span>` : nothing}
           <div class="chat-header-spacer"></div>
+          <button class="btn-header-icon" @click=${() => { this.showOnboarding = true; }} title="Profile & Onboarding">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          </button>
           ${this.runMode && this.entries.length > 0 ? html`
             <div class="status-info">
               <span>Mode: <span class="status-badge ${this.badgeClass(this.runMode)}" style="cursor:pointer;" title="Click to cycle" @click=${this.cycleRunMode}>${this.runMode}</span></span>
               <span>Approval: <span class="status-badge ${this.badgeClass(this.approvalModeLabel)}" style="cursor:pointer;" title="Click to cycle" @click=${this.cycleApprovalMode}>${this.approvalModeLabel || "off"}</span></span>
               ${this.maxIter ? html`<span style="cursor:pointer;" title="Click to change" @click=${this.editMaxIter}>Max: <b>${this.maxIter}</b></span>` : nothing}
+              ${this.usage.totalTokens > 0 ? html`<span class="usage-label" title="Prompt: ${this.usage.promptTokens} | Completion: ${this.usage.completionTokens}">${this.fmtTokens(this.usage.totalTokens)} tokens</span>` : nothing}
             </div>
           ` : nothing}
         </div>
 
         ${this.entries.length === 0 ? html`
           <div class="empty">
-            <svg class="ant-logo" viewBox="0 0 200 180" xmlns="http://www.w3.org/2000/svg">
-              <ellipse cx="100" cy="170" rx="55" ry="6" fill="rgba(0,0,0,0.15)"/>
-              <ellipse cx="60" cy="110" rx="30" ry="24" fill="#00D090" stroke="#0B0C10" stroke-width="4"/>
-              <ellipse cx="60" cy="108" rx="22" ry="14" fill="#33E0AD" opacity="0.4"/>
-              <ellipse cx="100" cy="100" rx="22" ry="20" fill="#00D090" stroke="#0B0C10" stroke-width="4"/>
-              <ellipse cx="100" cy="98" rx="15" ry="11" fill="#33E0AD" opacity="0.4"/>
-              <ellipse cx="138" cy="88" rx="26" ry="24" fill="#00D090" stroke="#0B0C10" stroke-width="4"/>
-              <ellipse cx="138" cy="86" rx="18" ry="14" fill="#33E0AD" opacity="0.4"/>
-              <circle cx="145" cy="82" r="4" fill="#0B0C10"/>
-              <circle cx="146" cy="81" r="1.5" fill="#33E0AD"/>
-              <circle cx="133" cy="84" r="3" fill="#0B0C10"/>
-              <circle cx="134" cy="83" r="1" fill="#33E0AD"/>
-              <path d="M140 96 Q144 100 148 96" stroke="#0B0C10" stroke-width="2" fill="none" stroke-linecap="round"/>
-              <g class="antenna-l"><path d="M130 72 Q120 40 110 30" stroke="#0B0C10" stroke-width="3.5" fill="none" stroke-linecap="round"/><circle cx="110" cy="30" r="4" fill="#00D090" stroke="#0B0C10" stroke-width="2"/></g>
-              <g class="antenna-r"><path d="M142 70 Q148 38 156 28" stroke="#0B0C10" stroke-width="3.5" fill="none" stroke-linecap="round"/><circle cx="156" cy="28" r="4" fill="#00D090" stroke="#0B0C10" stroke-width="2"/></g>
-              <g class="leg-f1"><path d="M148 100 Q158 120 165 140 Q168 148 162 150" stroke="#0B0C10" stroke-width="3.5" fill="none" stroke-linecap="round"/></g>
-              <g class="leg-f2"><path d="M142 104 Q150 125 155 142 Q157 150 151 152" stroke="#0B0C10" stroke-width="3.5" fill="none" stroke-linecap="round"/></g>
-              <g class="leg-m1"><path d="M108 108 Q118 130 122 148 Q124 156 118 158" stroke="#0B0C10" stroke-width="3.5" fill="none" stroke-linecap="round"/></g>
-              <g class="leg-m2"><path d="M96 112 Q104 134 106 150 Q107 158 101 160" stroke="#0B0C10" stroke-width="3.5" fill="none" stroke-linecap="round"/></g>
-              <g class="leg-b1"><path d="M70 118 Q76 138 78 152 Q79 160 73 162" stroke="#0B0C10" stroke-width="3.5" fill="none" stroke-linecap="round"/></g>
-              <g class="leg-b2"><path d="M54 120 Q58 140 58 154 Q58 162 52 163" stroke="#0B0C10" stroke-width="3.5" fill="none" stroke-linecap="round"/></g>
-            </svg>
+            <img class="ant-logo" src="/logo.svg" alt="Undoable" />
             <div class="empty-title">Undoable</div>
             <div class="empty-sub">Everything the AI does is recorded and can be undone. Start a conversation or pick one from the sidebar.</div>
           </div>
@@ -496,19 +642,38 @@ export class UndoableChat extends LitElement {
 
         ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
 
-        ${this.hasUndoable && !this.loading ? html`
-          <div class="undo-bar">
-            <button class="btn-undo" @click=${() => this.handleUndo("last")}>\u27f2 Undo Last</button>
-            <button class="btn-undo" @click=${() => this.handleUndo("all")}>\u27f2 Undo All</button>
-          </div>
-        ` : nothing}
-
         <chat-input
           ?loading=${this.loading}
+          ?hasUndoable=${this.hasUndoable}
+          .thinkingLevel=${this.canThink ? this.thinkingLevel : ""}
+          ?canThink=${this.canThink}
           @send-message=${(e: CustomEvent) => this.handleSendMessage(e.detail)}
+          @abort-chat=${() => this.handleAbort()}
+          @undo=${(e: CustomEvent) => this.handleUndo(e.detail)}
+          @cycle-thinking=${this.cycleThinkingLevel}
           @chat-error=${(e: CustomEvent) => { this.error = e.detail; }}
         ></chat-input>
       </div>
+
+      <chat-settings
+        ?open=${this.settingsOpen}
+        .currentModel=${this.currentModel}
+        .currentProvider=${this.currentProvider}
+        @model-changed=${(e: CustomEvent) => this.handleModelChanged(e.detail)}
+        @close-settings=${() => { this.settingsOpen = false; }}
+      ></chat-settings>
+
+      ${this.showOnboarding ? html`<undoable-onboarding></undoable-onboarding>` : nothing}
     `;
+  }
+
+  private handleModelChanged(detail: { model: string; provider: string; name: string; capabilities: { thinking: boolean } }) {
+    this.currentModel = detail.model;
+    this.currentProvider = detail.provider;
+    this.canThink = detail.capabilities.thinking;
+    if (!this.canThink && this.thinkingLevel !== "off") {
+      this.thinkingLevel = "off";
+    }
+    this.settingsOpen = false;
   }
 }

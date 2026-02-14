@@ -18,8 +18,25 @@ export const EVENT_TYPES = [
   "RUN_FAILED",
   "RUN_COMPLETED",
   "LLM_TOKEN",
+  "LLM_THINKING",
+  "TOOL_CALL",
+  "TOOL_RESULT",
+  "RUN_WARNING",
   "SUBAGENT_SPAWNED",
   "SUBAGENT_COMPLETED",
+  /* Canvas events */
+  "CANVAS_PRESENT",
+  "CANVAS_HIDE",
+  "CANVAS_NAVIGATE",
+  "CANVAS_SNAPSHOT",
+  "CANVAS_A2UI_PUSH",
+  "CANVAS_A2UI_RESET",
+  /* Node/device events */
+  "NODE_RESULT",
+  "NODE_CAMERA_SNAP",
+  "NODE_SCREEN_RECORD",
+  "NODE_LOCATION",
+  "NODE_NOTIFY",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];

@@ -109,6 +109,16 @@ describe("RunManager", () => {
     it("returns false for unknown run", () => {
       expect(manager.delete("nope")).toBe(false);
     });
+
+    it("cleans up event log on delete", () => {
+      const run = manager.create({ userId: "u1", agentId: "default", instruction: "test" });
+      manager.appendEvent(run.id, {
+        eventId: 1, runId: run.id, ts: "2024-01-01T00:00:00Z", type: "STATUS_CHANGED",
+      });
+      expect(manager.getEvents(run.id)).toHaveLength(1);
+      manager.delete(run.id);
+      expect(manager.getEvents(run.id)).toHaveLength(0);
+    });
   });
 
   describe("count", () => {
@@ -116,6 +126,54 @@ describe("RunManager", () => {
       expect(manager.count()).toBe(0);
       manager.create({ userId: "u1", agentId: "default", instruction: "test" });
       expect(manager.count()).toBe(1);
+    });
+  });
+
+  describe("event log", () => {
+    it("stores and retrieves events by run id", () => {
+      const run = manager.create({ userId: "u1", agentId: "default", instruction: "test" });
+      const event = { eventId: 1, runId: run.id, ts: "2024-01-01T00:00:00Z", type: "STATUS_CHANGED" as const };
+      manager.appendEvent(run.id, event);
+      const events = manager.getEvents(run.id);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toBe(event);
+    });
+
+    it("returns empty array for unknown run", () => {
+      expect(manager.getEvents("nonexistent")).toEqual([]);
+    });
+
+    it("preserves event order", () => {
+      const run = manager.create({ userId: "u1", agentId: "default", instruction: "test" });
+      manager.appendEvent(run.id, { eventId: 1, runId: run.id, ts: "t1", type: "RUN_CREATED" as const });
+      manager.appendEvent(run.id, { eventId: 2, runId: run.id, ts: "t2", type: "STATUS_CHANGED" as const });
+      manager.appendEvent(run.id, { eventId: 3, runId: run.id, ts: "t3", type: "TOOL_CALL" as const });
+      const events = manager.getEvents(run.id);
+      expect(events).toHaveLength(3);
+      expect(events.map((e) => e.eventId)).toEqual([1, 2, 3]);
+    });
+
+    it("isolates events between runs", () => {
+      const run1 = manager.create({ userId: "u1", agentId: "default", instruction: "a" });
+      const run2 = manager.create({ userId: "u1", agentId: "default", instruction: "b" });
+      manager.appendEvent(run1.id, { eventId: 1, runId: run1.id, ts: "t1", type: "RUN_CREATED" as const });
+      manager.appendEvent(run2.id, { eventId: 2, runId: run2.id, ts: "t2", type: "RUN_CREATED" as const });
+      manager.appendEvent(run2.id, { eventId: 3, runId: run2.id, ts: "t3", type: "STATUS_CHANGED" as const });
+      expect(manager.getEvents(run1.id)).toHaveLength(1);
+      expect(manager.getEvents(run2.id)).toHaveLength(2);
+    });
+
+    it("captures events emitted via eventBus.onAll wiring", () => {
+      const collected: unknown[] = [];
+      eventBus.onAll((event) => {
+        manager.appendEvent(event.runId, event);
+        collected.push(event);
+      });
+      const run = manager.create({ userId: "u1", agentId: "default", instruction: "test" });
+      // create() emits RUN_CREATED which is captured by onAll
+      const events = manager.getEvents(run.id);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0]!.type).toBe("RUN_CREATED");
     });
   });
 });

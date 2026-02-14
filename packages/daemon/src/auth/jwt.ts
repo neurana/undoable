@@ -1,8 +1,14 @@
-import { SignJWT, jwtVerify, type JWTPayload } from "jose";
-import type { AuthUser, TokenPayload } from "./types.js";
+import { SignJWT, jwtVerify } from "jose";
 
 const ALG = "HS256";
 const DEFAULT_EXPIRY = "24h";
+
+export type TokenPayload = {
+  sub: string;
+  iat: number;
+  exp: number;
+  [key: string]: unknown;
+};
 
 export class JwtService {
   private secret: Uint8Array;
@@ -11,13 +17,11 @@ export class JwtService {
     this.secret = new TextEncoder().encode(secret);
   }
 
-  async sign(user: AuthUser, expiresIn: string = DEFAULT_EXPIRY): Promise<string> {
-    return new SignJWT({
-      username: user.username,
-      role: user.role,
-    })
+  async sign(claims: { sub: string; [key: string]: unknown }, expiresIn: string = DEFAULT_EXPIRY): Promise<string> {
+    const { sub, ...rest } = claims;
+    return new SignJWT(rest)
       .setProtectedHeader({ alg: ALG })
-      .setSubject(user.id)
+      .setSubject(sub)
       .setIssuedAt()
       .setExpirationTime(expiresIn)
       .sign(this.secret);
@@ -26,19 +30,9 @@ export class JwtService {
   async verify(token: string): Promise<TokenPayload | null> {
     try {
       const { payload } = await jwtVerify(token, this.secret);
-      return this.toTokenPayload(payload);
+      return { sub: payload.sub!, iat: payload.iat!, exp: payload.exp!, ...payload };
     } catch {
       return null;
     }
-  }
-
-  private toTokenPayload(payload: JWTPayload): TokenPayload {
-    return {
-      sub: payload.sub!,
-      username: payload.username as string,
-      role: payload.role as TokenPayload["role"],
-      iat: payload.iat!,
-      exp: payload.exp!,
-    };
   }
 }

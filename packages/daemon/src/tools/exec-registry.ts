@@ -2,6 +2,15 @@ import type { ChildProcess } from "node:child_process";
 
 export type ProcessStatus = "running" | "completed" | "failed" | "killed";
 
+export type PtyHandle = {
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(signal?: string): void;
+  pid: number;
+  onData(cb: (data: string) => void): void;
+  onExit(cb: (ev: { exitCode: number; signal?: number }) => void): void;
+};
+
 export type ProcessSession = {
   id: string;
   command: string;
@@ -9,6 +18,8 @@ export type ProcessSession = {
   startedAt: number;
   cwd?: string;
   child?: ChildProcess;
+  ptyHandle?: PtyHandle;
+  isPty: boolean;
   aggregated: string;
   tail: string;
   totalOutputChars: number;
@@ -134,10 +145,38 @@ export function markBackgrounded(session: ProcessSession) {
   session.backgrounded = true;
 }
 
+export function writeStdin(sessionId: string, data: string): boolean {
+  const session = runningSessions.get(sessionId);
+  if (!session || session.exited) return false;
+  if (session.ptyHandle) {
+    session.ptyHandle.write(data);
+    return true;
+  }
+  if (session.child?.stdin && !session.child.stdin.destroyed) {
+    session.child.stdin.write(data);
+    return true;
+  }
+  return false;
+}
+
+export function resizePty(sessionId: string, cols: number, rows: number): boolean {
+  const session = runningSessions.get(sessionId);
+  if (!session || session.exited || !session.ptyHandle) return false;
+  session.ptyHandle.resize(cols, rows);
+  return true;
+}
+
 export function killSession(session: ProcessSession) {
   if (session.exited) return;
   try {
-    if (session.child && !session.child.killed) {
+    if (session.ptyHandle) {
+      session.ptyHandle.kill("SIGTERM");
+      setTimeout(() => {
+        if (!session.exited) {
+          try { session.ptyHandle?.kill("SIGKILL"); } catch { }
+        }
+      }, 3000);
+    } else if (session.child && !session.child.killed) {
       session.child.kill("SIGTERM");
       setTimeout(() => {
         if (!session.exited && session.child && !session.child.killed) {
@@ -146,6 +185,11 @@ export function killSession(session: ProcessSession) {
       }, 3000);
     }
   } catch { }
+}
+
+/** Strip DSR (Device Status Report) escape sequences from PTY output. */
+export function stripDsrSequences(input: string): string {
+  return input.replace(/\x1b\[\d+;\d+R/g, "");
 }
 
 export function waitForExit(sessionId: string, timeoutMs: number): Promise<boolean> {

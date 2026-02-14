@@ -12,6 +12,7 @@
     "@mozilla/readability": "^0.6.0",
     "@undoable/core": "workspace:*",
     "@undoable/llm-sdk": "workspace:*",
+    "@undoable/sandbox": "workspace:*",
     "@undoable/shared": "workspace:*",
     "fastify": "^5.7.4",
     "jose": "^6.1.3",

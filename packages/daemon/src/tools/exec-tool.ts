@@ -4,12 +4,15 @@ import os from "node:os";
 import type { AgentTool } from "./types.js";
 import { validateEnv, isDestructiveCommand } from "./exec-security.js";
 import { type ExecAllowlistConfig, loadAllowlistConfig, evaluateCommand } from "./exec-allowlist.js";
+import type { SandboxExecService } from "../services/sandbox-exec.js";
 import {
+  type PtyHandle,
   addSession,
   appendOutput,
   createSessionId,
   markExited,
   markBackgrounded,
+  stripDsrSequences,
   MAX_OUTPUT_CHARS,
 } from "./exec-registry.js";
 
@@ -28,7 +31,46 @@ function getShell(): { shell: string; args: string[] } {
   return { shell: "/bin/sh", args: ["-c"] };
 }
 
-export function createExecTool(opts?: { allowlistConfig?: ExecAllowlistConfig }): AgentTool {
+/** Try to load node-pty at runtime. Returns null if not installed. */
+async function tryLoadNodePty(): Promise<{
+  spawn: (
+    file: string,
+    args: string[],
+    opts: { name?: string; cols?: number; rows?: number; cwd?: string; env?: Record<string, string> },
+  ) => PtyHandle;
+} | null> {
+  try {
+    // @ts-expect-error — node-pty is an optional peer dependency, loaded dynamically
+    const mod = await import("node-pty");
+    return {
+      spawn: (file, args, opts) => {
+        const pty = mod.spawn(file, args, {
+          name: opts.name ?? "xterm-256color",
+          cols: opts.cols ?? 120,
+          rows: opts.rows ?? 30,
+          cwd: opts.cwd,
+          env: opts.env as Record<string, string>,
+        });
+        return {
+          pid: pty.pid,
+          write: (data: string) => pty.write(data),
+          resize: (cols: number, rows: number) => pty.resize(cols, rows),
+          kill: (signal?: string) => pty.kill(signal),
+          onData: (cb: (data: string) => void) => pty.onData(cb),
+          onExit: (cb: (ev: { exitCode: number; signal?: number }) => void) => pty.onExit(cb),
+        };
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function createExecTool(opts?: {
+  allowlistConfig?: ExecAllowlistConfig;
+  sandboxExec?: SandboxExecService;
+  sandboxSessionId?: string;
+}): AgentTool {
   const allowlistConfig = opts?.allowlistConfig ?? loadAllowlistConfig();
   return {
     name: "exec",
@@ -36,8 +78,12 @@ export function createExecTool(opts?: { allowlistConfig?: ExecAllowlistConfig })
       type: "function",
       function: {
         name: "exec",
-        description:
-          "Execute a shell command. Supports background execution for long-running commands. Returns stdout/stderr and exit code. Use for installing packages, running scripts, git, system tasks.",
+        description: [
+          "Execute a shell command. Supports background execution for long-running commands.",
+          "Returns stdout/stderr and exit code. Use for installing packages, running scripts, git, system tasks.",
+          "Set pty=true for interactive CLI tools that need terminal features (colors, prompts, curses).",
+          "Use the process tool to write stdin, poll output, or kill running sessions.",
+        ].join(" "),
         parameters: {
           type: "object",
           properties: {
@@ -50,6 +96,12 @@ export function createExecTool(opts?: { allowlistConfig?: ExecAllowlistConfig })
               description: "Ms to wait before backgrounding (default: 10000)",
             },
             env: { type: "object", description: "Extra environment variables" },
+            pty: {
+              type: "boolean",
+              description: "Run in a pseudo-terminal (PTY) for interactive commands. Requires node-pty.",
+            },
+            cols: { type: "number", description: "PTY columns (default: 120)" },
+            rows: { type: "number", description: "PTY rows (default: 30)" },
           },
           required: ["command"],
         },
@@ -62,6 +114,7 @@ export function createExecTool(opts?: { allowlistConfig?: ExecAllowlistConfig })
       const cwd = (args.cwd as string) || HOME;
       const timeoutSec = (args.timeout as number) || DEFAULT_TIMEOUT_SEC;
       const backgroundRequested = args.background === true;
+      const usePty = args.pty === true;
       const yieldMs = backgroundRequested
         ? 0
         : typeof args.yieldMs === "number"
@@ -89,6 +142,28 @@ export function createExecTool(opts?: { allowlistConfig?: ExecAllowlistConfig })
         }
       }
 
+      /* ── Sandbox path ── */
+      if (opts?.sandboxExec?.available && opts.sandboxSessionId) {
+        try {
+          await opts.sandboxExec.ensureSandbox(opts.sandboxSessionId);
+          const result = await opts.sandboxExec.exec(opts.sandboxSessionId, {
+            command,
+            cwd: cwd !== HOME ? cwd : undefined,
+            timeout: timeoutSec * 1000,
+            env: Object.keys(extraEnv).length > 0 ? extraEnv : undefined,
+          });
+          return {
+            exitCode: result.exitCode,
+            stdout: result.stdout.slice(0, 8000),
+            stderr: result.stderr.slice(0, 8000),
+            status: result.exitCode === 0 ? "completed" : "failed",
+            sandbox: true,
+          };
+        } catch (err) {
+          return { error: `Sandbox exec failed: ${(err as Error).message}`, command };
+        }
+      }
+
       if (!existsSync(cwd)) {
         return {
           error: `Working directory does not exist: ${cwd}`,
@@ -97,6 +172,121 @@ export function createExecTool(opts?: { allowlistConfig?: ExecAllowlistConfig })
         };
       }
 
+      /* ── PTY path ── */
+      if (usePty) {
+        const ptyMod = await tryLoadNodePty();
+        if (!ptyMod) {
+          return {
+            error: "PTY mode requested but node-pty is not installed. Install it with: pnpm add node-pty",
+            command,
+          };
+        }
+
+        const { shell } = getShell();
+        const sessionId = createSessionId();
+        const startedAt = Date.now();
+        const cols = (args.cols as number) ?? 120;
+        const rows = (args.rows as number) ?? 30;
+
+        const ptyHandle = ptyMod.spawn(shell, ["-c", command], {
+          name: "xterm-256color",
+          cols,
+          rows,
+          cwd,
+          env: { ...process.env, ...extraEnv } as Record<string, string>,
+        });
+
+        const session = {
+          id: sessionId,
+          command,
+          pid: ptyHandle.pid,
+          startedAt,
+          cwd,
+          ptyHandle,
+          isPty: true,
+          aggregated: "",
+          tail: "",
+          totalOutputChars: 0,
+          maxOutputChars: MAX_OUTPUT_CHARS,
+          exited: false,
+          exitCode: undefined as number | null | undefined,
+          exitSignal: undefined as NodeJS.Signals | null | undefined,
+          backgrounded: false,
+          truncated: false,
+        };
+        addSession(session);
+
+        ptyHandle.onData((data) => {
+          const cleaned = stripDsrSequences(data);
+          if (cleaned) appendOutput(session, cleaned);
+        });
+
+        let timeoutTimer: NodeJS.Timeout | null = null;
+        if (timeoutSec > 0) {
+          timeoutTimer = setTimeout(() => {
+            if (!session.exited) {
+              try { ptyHandle.kill("SIGKILL"); } catch { }
+            }
+          }, timeoutSec * 1000);
+        }
+
+        const exitPromise = new Promise<{
+          status: "completed" | "failed";
+          exitCode: number | null;
+          durationMs: number;
+          output: string;
+        }>((resolve) => {
+          ptyHandle.onExit((ev) => {
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+            markExited(session, ev.exitCode, null);
+            resolve({
+              status: ev.exitCode === 0 ? "completed" : "failed",
+              exitCode: ev.exitCode,
+              durationMs: Date.now() - startedAt,
+              output: session.aggregated.trim(),
+            });
+          });
+        });
+
+        if (backgroundRequested || yieldMs === 0) {
+          markBackgrounded(session);
+          return {
+            status: "running",
+            sessionId,
+            pid: ptyHandle.pid,
+            pty: true,
+            message: `PTY session running in background (session ${sessionId}). Use process tool to poll/write/kill.`,
+          };
+        }
+
+        const raceResult = await Promise.race([
+          exitPromise,
+          new Promise<"yield">((resolve) => setTimeout(() => resolve("yield"), yieldMs)),
+        ]);
+
+        if (raceResult === "yield") {
+          markBackgrounded(session);
+          return {
+            status: "running",
+            sessionId,
+            pid: ptyHandle.pid,
+            pty: true,
+            tail: session.tail,
+            message: `PTY still running after ${yieldMs}ms (session ${sessionId}). Use process tool to poll/write/kill.`,
+          };
+        }
+
+        return {
+          exitCode: raceResult.exitCode,
+          stdout: raceResult.output.slice(0, 8000),
+          status: raceResult.status,
+          durationMs: raceResult.durationMs,
+          pty: true,
+          truncated: raceResult.output.length > 8000,
+        };
+      }
+
+      /* ── Standard shell path ── */
       const { shell, args: shellArgs } = getShell();
       const sessionId = createSessionId();
       const startedAt = Date.now();
@@ -115,6 +305,7 @@ export function createExecTool(opts?: { allowlistConfig?: ExecAllowlistConfig })
         startedAt,
         cwd,
         child,
+        isPty: false,
         aggregated: "",
         tail: "",
         totalOutputChars: 0,

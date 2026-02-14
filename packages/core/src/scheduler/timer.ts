@@ -110,7 +110,7 @@ async function executeJob(state: TimerState, job: ScheduledJob, nowMs: number): 
   state.onEvent?.({ jobId: job.id, action: "started", runAtMs: nowMs });
 
   const startMs = state.nowMs();
-  let result: { status: "ok" | "error" | "skipped"; error?: string };
+  let result: { status: "ok" | "error" | "skipped"; error?: string; runId?: string };
 
   try {
     result = await state.executor(job);
@@ -121,6 +121,7 @@ async function executeJob(state: TimerState, job: ScheduledJob, nowMs: number): 
   const endMs = state.nowMs();
   job.state.runningAtMs = undefined;
   job.state.lastRunAtMs = nowMs;
+  job.state.lastRunId = result.runId;
   job.state.lastStatus = result.status;
   job.state.lastDurationMs = endMs - startMs;
 

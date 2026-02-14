@@ -1,7 +1,7 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
 
-type View = "chat" | "runs" | "agents" | "users" | "jobs" | "skills";
+type View = "chat" | "runs" | "agents" | "jobs" | "skills" | "nodes";
 
 @customElement("undoable-app")
 export class UndoableApp extends LitElement {
@@ -36,10 +36,18 @@ export class UndoableApp extends LitElement {
     .page-content {
       flex: 1; overflow-y: auto;
       padding: var(--space-4);
-      max-width: 960px;
+      width: 100%; box-sizing: border-box;
       background: var(--bg-base);
     }
+
+    @media (max-width: 640px) {
+      .page-content { padding: var(--space-2); }
+      .page-header { padding: 0 12px; }
+      .page-title { font-size: 14px; }
+    }
   `;
+
+  private static VIEWS = new Set<View>(["chat", "runs", "agents", "jobs", "skills", "nodes"]);
 
   @state() private view: View = "chat";
   @state() private selectedRunId: string | null = null;
@@ -47,24 +55,53 @@ export class UndoableApp extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.addEventListener("navigate", this.onNavigate as EventListener);
+    window.addEventListener("popstate", this.onPopState);
+    this.syncFromUrl();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this.removeEventListener("navigate", this.onNavigate as EventListener);
+    window.removeEventListener("popstate", this.onPopState);
   }
+
+  private syncFromUrl() {
+    const parts = window.location.pathname.split("/").filter(Boolean);
+    const first = parts[0] as View | undefined;
+    if (first && UndoableApp.VIEWS.has(first)) {
+      this.view = first;
+      if (first === "runs" && parts[1]) this.selectedRunId = parts[1];
+      else this.selectedRunId = null;
+    } else {
+      this.view = "chat";
+      this.selectedRunId = null;
+    }
+  }
+
+  private pushUrl(path: string) {
+    if (window.location.pathname !== path) window.history.pushState(null, "", path);
+  }
+
+  private onPopState = () => { this.syncFromUrl(); };
 
   private onNavigate = (e: CustomEvent<View>) => {
     this.view = e.detail;
     this.selectedRunId = null;
+    this.pushUrl(`/${e.detail}`);
   };
 
-  private selectRun(e: CustomEvent<string>) { this.selectedRunId = e.detail; }
-  private backToList() { this.selectedRunId = null; }
+  private selectRun(e: CustomEvent<string>) {
+    this.selectedRunId = e.detail;
+    this.pushUrl(`/runs/${e.detail}`);
+  }
+  private backToList() {
+    this.selectedRunId = null;
+    this.pushUrl("/runs");
+  }
   private goChat() {
     this.view = "chat";
     this.selectedRunId = null;
-    if (window.location.pathname !== "/") window.history.pushState(null, "", "/");
+    this.pushUrl("/");
   }
 
   render() {
@@ -72,7 +109,7 @@ export class UndoableApp extends LitElement {
       return html`<undoable-chat></undoable-chat>`;
     }
 
-    const titles: Record<string, string> = { runs: "Runs", agents: "Agents", users: "Users", jobs: "Scheduled Jobs", skills: "Skills" };
+    const titles: Record<string, string> = { runs: "Run History", agents: "Agents", jobs: "Scheduled Jobs", skills: "Skills", nodes: "Nodes" };
 
     return html`
       <main>
@@ -87,9 +124,9 @@ export class UndoableApp extends LitElement {
           ${this.view === "runs" && !this.selectedRunId ? html`<run-list @select-run=${this.selectRun}></run-list>` : ""}
           ${this.view === "runs" && this.selectedRunId ? html`<run-detail .runId=${this.selectedRunId} @back=${this.backToList}></run-detail>` : ""}
           ${this.view === "agents" ? html`<agent-list></agent-list>` : ""}
-          ${this.view === "users" ? html`<user-list></user-list>` : ""}
           ${this.view === "jobs" ? html`<job-list></job-list>` : ""}
           ${this.view === "skills" ? html`<skill-list></skill-list>` : ""}
+          ${this.view === "nodes" ? html`<undoable-nodes-panel></undoable-nodes-panel>` : ""}
         </div>
       </main>
     `;

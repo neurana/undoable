@@ -22,6 +22,7 @@ export type ToolCall = {
 export type SessionMeta = {
   id: string;
   title: string;
+  agentId?: string;
   createdAt: number;
   updatedAt: number;
   messageCount: number;
@@ -31,6 +32,7 @@ export type SessionMeta = {
 export type ChatSession = {
   id: string;
   title: string;
+  agentId?: string;
   messages: ChatMessage[];
   createdAt: number;
   updatedAt: number;
@@ -138,6 +140,7 @@ export class ChatService {
     const meta: SessionMeta = {
       id: session.id,
       title: session.title,
+      agentId: session.agentId,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       messageCount: session.messages.filter((m) => m.role !== "system").length,
@@ -156,13 +159,14 @@ export class ChatService {
     return this.loadIndex();
   }
 
-  async createSession(title?: string): Promise<ChatSession> {
+  async createSession(opts?: { title?: string; systemPrompt?: string; agentId?: string }): Promise<ChatSession> {
     const id = generateId();
     const now = Date.now();
     const session: ChatSession = {
       id,
-      title: title ?? "New conversation",
-      messages: [{ role: "system", content: SYSTEM_PROMPT }],
+      title: opts?.title ?? "New conversation",
+      agentId: opts?.agentId,
+      messages: [{ role: "system", content: opts?.systemPrompt ?? SYSTEM_PROMPT }],
       createdAt: now,
       updatedAt: now,
     };
@@ -171,7 +175,7 @@ export class ChatService {
     return session;
   }
 
-  async getOrCreate(sessionId: string): Promise<ChatSession> {
+  async getOrCreate(sessionId: string, createOpts?: { systemPrompt?: string; agentId?: string }): Promise<ChatSession> {
     let session = this.sessions.get(sessionId);
     if (session) return session;
 
@@ -181,7 +185,18 @@ export class ChatService {
       this.sessions.set(sessionId, session);
       return session;
     } catch {
-      return this.createSession();
+      const now = Date.now();
+      session = {
+        id: sessionId,
+        title: "New conversation",
+        agentId: createOpts?.agentId,
+        messages: [{ role: "system" as const, content: createOpts?.systemPrompt ?? SYSTEM_PROMPT }],
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.sessions.set(sessionId, session);
+      await this.persistSession(session);
+      return session;
     }
   }
 
@@ -212,6 +227,17 @@ export class ChatService {
     const session = await this.loadSession(sessionId);
     if (!session) return false;
     session.title = title;
+    await this.persistSession(session);
+    return true;
+  }
+
+  async resetSession(sessionId: string): Promise<boolean> {
+    const session = await this.loadSession(sessionId);
+    if (!session) return false;
+    const systemMsg = session.messages.find((m) => m.role === "system");
+    session.messages = systemMsg ? [systemMsg] : [];
+    session.title = "New conversation";
+    session.updatedAt = Date.now();
     await this.persistSession(session);
     return true;
   }

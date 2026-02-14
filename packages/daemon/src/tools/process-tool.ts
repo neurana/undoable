@@ -7,6 +7,8 @@ import {
   deleteSession,
   killSession,
   waitForExit,
+  writeStdin,
+  resizePty,
 } from "./exec-registry.js";
 
 function formatDuration(ms: number): string {
@@ -22,24 +24,34 @@ export function createProcessTool(): AgentTool {
       type: "function",
       function: {
         name: "process",
-        description:
-          "Manage running exec sessions. Actions: list (all sessions), poll (check status/output — use waitMs to block until done instead of polling repeatedly), log (full output), kill (terminate), remove (delete finished). IMPORTANT: For long-running commands, use poll with waitMs (e.g. 30000) to wait up to that many ms for completion instead of calling poll repeatedly.",
+        description: [
+          "Manage running exec sessions.",
+          "Actions: list, poll (use waitMs to block), log, kill, remove, write (send stdin/keys), resize (PTY cols/rows).",
+          "IMPORTANT: For long-running commands, use poll with waitMs (e.g. 30000) instead of polling repeatedly.",
+          "Use write to send input to interactive PTY sessions (e.g. answering prompts, sending Ctrl+C as \\x03).",
+        ].join(" "),
         parameters: {
           type: "object",
           properties: {
             action: {
               type: "string",
-              enum: ["list", "poll", "log", "kill", "remove"],
+              enum: ["list", "poll", "log", "kill", "remove", "write", "resize"],
               description: "Process action",
             },
             sessionId: {
               type: "string",
-              description: "Session ID (required for poll/log/kill/remove)",
+              description: "Session ID (required for poll/log/kill/remove/write/resize)",
             },
             waitMs: {
               type: "number",
-              description: "For poll: block up to this many ms for the process to finish (max 120000). Avoids repeated polling.",
+              description: "For poll: block up to this many ms for the process to finish (max 120000).",
             },
+            input: {
+              type: "string",
+              description: "For write: text to send to stdin. Use \\n for Enter, \\x03 for Ctrl+C, etc.",
+            },
+            cols: { type: "number", description: "For resize: new column count" },
+            rows: { type: "number", description: "For resize: new row count" },
           },
           required: ["action"],
         },
@@ -53,6 +65,7 @@ export function createProcessTool(): AgentTool {
           sessionId: s.id,
           status: "running",
           pid: s.pid,
+          pty: s.isPty,
           command: s.command.slice(0, 120),
           runtime: formatDuration(Date.now() - s.startedAt),
           cwd: s.cwd,
@@ -75,6 +88,27 @@ export function createProcessTool(): AgentTool {
 
       const sessionId = args.sessionId as string;
       if (!sessionId) return { error: "sessionId is required for this action" };
+
+      /* ── write action (doesn't need finished lookup) ── */
+      if (action === "write") {
+        const input = args.input as string;
+        if (!input && input !== "") return { error: "input is required for write action" };
+        const ok = writeStdin(sessionId, input);
+        return ok
+          ? { sessionId, written: true, bytes: input.length }
+          : { error: `Cannot write to session ${sessionId} (not running or no stdin)` };
+      }
+
+      /* ── resize action ── */
+      if (action === "resize") {
+        const cols = args.cols as number;
+        const rows = args.rows as number;
+        if (!cols || !rows) return { error: "cols and rows are required for resize" };
+        const ok = resizePty(sessionId, cols, rows);
+        return ok
+          ? { sessionId, resized: true, cols, rows }
+          : { error: `Cannot resize session ${sessionId} (not a PTY or not running)` };
+      }
 
       const running = getSession(sessionId);
       const finished = getFinishedSession(sessionId);
@@ -109,6 +143,7 @@ export function createProcessTool(): AgentTool {
                 sessionId: still.id,
                 status: "running",
                 pid: still.pid,
+                pty: still.isPty,
                 command: still.command,
                 runtime: formatDuration(Date.now() - still.startedAt),
                 tail: still.tail.slice(-2000),
@@ -124,6 +159,7 @@ export function createProcessTool(): AgentTool {
               sessionId: running.id,
               status: "running",
               pid: running.pid,
+              pty: running.isPty,
               command: running.command,
               runtime: formatDuration(Date.now() - running.startedAt),
               tail: running.tail.slice(-2000),

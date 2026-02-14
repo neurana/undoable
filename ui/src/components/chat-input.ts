@@ -8,6 +8,26 @@ type PendingFile = { fileName: string; mimeType: string; content: string; previe
 export class ChatInput extends LitElement {
   static styles = [inputStyles, voiceStyles, css`
     :host { display: block; flex-shrink: 0; }
+    .toolbar-spacer { flex: 1; }
+    .btn-undo {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 10px; border-radius: var(--radius-pill);
+      background: none; color: var(--text-tertiary);
+      font-size: 11px; font-weight: 500;
+      border: 1px solid var(--border-divider); cursor: pointer;
+      transition: all 150ms ease;
+    }
+    .btn-undo:hover { background: var(--wash); border-color: var(--mint-strong); color: var(--text-primary); }
+    .btn-undo svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: 2; fill: none; }
+    .btn-stop {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; border-radius: 50%;
+      background: var(--danger, #e74c3c); border: none;
+      cursor: pointer; transition: all 150ms ease; flex-shrink: 0;
+    }
+    .btn-stop:hover { background: var(--danger-hover, #c0392b); transform: scale(1.05); }
+    .btn-stop svg { width: 14px; height: 14px; fill: white; stroke: none; }
+    .btn-stop:active { transform: scale(0.95); }
     @media (max-width: 768px) {
       .input-area { padding: 0 12px 12px; }
       .input-box { padding: 10px; border-radius: 16px; }
@@ -15,6 +35,9 @@ export class ChatInput extends LitElement {
   `];
 
   @property({ type: Boolean }) loading = false;
+  @property({ type: String }) thinkingLevel = "";
+  @property({ type: Boolean }) canThink = false;
+  @property({ type: Boolean }) hasUndoable = false;
   @state() private input = "";
   @state() private pendingFiles: PendingFile[] = [];
   @state() private dragOver = false;
@@ -27,6 +50,26 @@ export class ChatInput extends LitElement {
 
   private emit(name: string, detail?: unknown) {
     this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true }));
+  }
+
+  // ── Auto-resize textarea ──
+
+  private autoResize(textarea: HTMLTextAreaElement) {
+    textarea.style.height = "auto";
+    const maxH = 320;
+    if (textarea.scrollHeight > maxH) {
+      textarea.style.height = `${maxH}px`;
+      textarea.style.overflowY = "auto";
+    } else {
+      textarea.style.height = `${textarea.scrollHeight}px`;
+      textarea.style.overflowY = "hidden";
+    }
+  }
+
+  private onInput(e: Event) {
+    const ta = e.target as HTMLTextAreaElement;
+    this.input = ta.value;
+    this.autoResize(ta);
   }
 
   // ── Send ──
@@ -47,6 +90,8 @@ export class ChatInput extends LitElement {
     this.emit("send-message", { text, attachments });
     this.input = "";
     this.pendingFiles = [];
+    const ta = this.shadowRoot?.querySelector("textarea");
+    if (ta) { ta.style.height = "auto"; ta.style.overflowY = "hidden"; }
   }
 
   // ── File handling ──
@@ -236,13 +281,19 @@ export class ChatInput extends LitElement {
               <div class="voice-transcribing">Transcribing audio...</div>
             ` : html`
               <textarea rows="1" placeholder="Message Undoable..." .value=${this.input}
-                @input=${(e: Event) => this.input = (e.target as HTMLTextAreaElement).value}
+                @input=${this.onInput}
                 @keydown=${this.onKeyDown}
                 @paste=${this.handlePaste}></textarea>
             `}
-            <button class="btn-send" ?disabled=${this.loading || this.recording || this.transcribing || (!this.input.trim() && this.pendingFiles.length === 0)} @click=${this.doSend}>
-              <svg class="send-icon" viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-            </button>
+            ${this.loading ? html`
+              <button class="btn-stop" @click=${() => this.emit("abort-chat")} title="Stop generation">
+                <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              </button>
+            ` : html`
+              <button class="btn-send" ?disabled=${this.recording || this.transcribing || (!this.input.trim() && this.pendingFiles.length === 0)} @click=${this.doSend}>
+                <svg class="send-icon" viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+              </button>
+            `}
           </div>
           <div class="input-divider"></div>
           <div class="input-toolbar">
@@ -260,6 +311,23 @@ export class ChatInput extends LitElement {
               </svg>
               <span>Voice</span>
             </button>
+            ${this.canThink ? html`
+              <button class="btn-think ${this.thinkingLevel && this.thinkingLevel !== "off" ? "think-active" : ""}" @click=${() => this.emit("cycle-thinking")} title=${`Thinking: ${this.thinkingLevel || "off"}. Click to cycle.`}>
+                <svg class="think-icon" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7zM9 21h6M12 17v4"/></svg>
+                <span>${this.thinkingLevel && this.thinkingLevel !== "off" ? this.thinkingLevel : "Think"}</span>
+              </button>
+            ` : nothing}
+            ${this.hasUndoable && !this.loading ? html`
+              <div class="toolbar-spacer"></div>
+              <button class="btn-undo" @click=${() => this.emit("undo", "last")} title="Undo last action">
+                <svg viewBox="0 0 24 24"><path d="M3 10h10a5 5 0 0 1 0 10H12"/><path d="M3 10l4-4M3 10l4 4"/></svg>
+                Last
+              </button>
+              <button class="btn-undo" @click=${() => this.emit("undo", "all")} title="Undo all actions">
+                <svg viewBox="0 0 24 24"><path d="M3 10h10a5 5 0 0 1 0 10H12"/><path d="M3 10l4-4M3 10l4 4"/></svg>
+                All
+              </button>
+            ` : nothing}
           </div>
         </div>
       </div>

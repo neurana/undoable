@@ -66,6 +66,9 @@ importers:
       '@undoable/llm-sdk':
         specifier: workspace:*
         version: link:../llm-sdk
+      '@undoable/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@undoable/shared':
         specifier: workspace:*
         version: link:../shared
@@ -114,6 +117,9 @@ importers:
       lit:
         specifier: ^3.2.1
         version: 3.3.2
+      marked:
+        specifier: ^17.0.2
+        version: 17.0.2
     devDependencies:
       vite:
         specifier: ^6.3.5
@@ -1257,6 +1263,11 @@ packages:
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
+
+  marked@17.0.2:
+    resolution: {integrity: sha512-s5HZGFQea7Huv5zZcAGhJLT3qLpAfnY7v7GWkICUr0+Wd5TFEtdlRR2XUL5Gg+RH7u2Df595ifrxR03mBaw7gA==}
+    engines: {node: '>= 20'}
+    hasBin: true
 
   mkdirp-classic@0.5.3:
     resolution: {integrity: sha512-gKLcREMhtuZRwRAfqP3RFW+TK4JqApVBtOIftVgjuABpAtpxhPGaDcfvbhNvD0B8iD1oUr/txX35NjcaY6Ns/A==}
@@ -2545,6 +2556,8 @@ snapshots:
   magic-string@0.30.21:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  marked@17.0.2: {}
 
   mkdirp-classic@0.5.3: {}
 

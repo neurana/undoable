@@ -5,8 +5,9 @@ import { api, type RunItem } from "../api/client.js";
 @customElement("run-list")
 export class RunList extends LitElement {
   static styles = css`
-    :host { display: block; }
-    .toolbar { display: flex; gap: 12px; margin-bottom: var(--space-3); }
+    :host { display: block; width: 100%; box-sizing: border-box; }
+    .toolbar { display: flex; gap: 12px; margin-bottom: var(--space-3); flex-wrap: wrap; }
+    .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
     input {
       flex: 1; padding: 10px 14px; border-radius: var(--radius-sm);
       border: 1px solid var(--border-strong); background: var(--surface-1);
@@ -45,8 +46,30 @@ export class RunList extends LitElement {
     .status-completed { background: var(--accent-subtle); color: var(--success); }
     .status-failed { background: var(--danger-subtle); color: var(--danger); }
     .status-cancelled, .status-paused { background: var(--wash); color: var(--text-tertiary); }
+    .source-scheduled {
+      display: inline-block; padding: 2px 8px; border-radius: var(--radius-pill);
+      font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
+      background: rgba(109,40,217,0.08); color: #7c3aed;
+    }
+    .source-manual {
+      display: inline-block; padding: 2px 8px; border-radius: var(--radius-pill);
+      font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
+      background: var(--wash); color: var(--text-tertiary);
+    }
     .mono { font-family: var(--mono); font-size: 11px; color: var(--text-tertiary); }
+    .btn-delete {
+      background: none; border: none; color: var(--text-tertiary); cursor: pointer;
+      font-size: 16px; padding: 2px 6px; border-radius: 4px;
+      transition: all 120ms ease;
+    }
+    .btn-delete:hover { color: var(--danger); background: var(--danger-subtle); }
     .empty { text-align: center; padding: 48px; color: var(--text-tertiary); font-size: 13px; }
+
+    @media (max-width: 640px) {
+      .toolbar { flex-direction: column; }
+      .toolbar input { width: 100%; }
+      table { min-width: 600px; }
+    }
   `;
 
   @state() private runs: RunItem[] = [];
@@ -68,11 +91,18 @@ export class RunList extends LitElement {
     if (!this.instruction.trim()) return;
     this.loading = true;
     try {
-      await api.runs.create(this.instruction);
+      const run = await api.runs.create(this.instruction);
       this.instruction = "";
-      await this.loadRuns();
+      this.selectRun(run.id);
     } catch {}
     this.loading = false;
+  }
+
+  private async deleteRun(id: string) {
+    try {
+      await api.runs.delete(id);
+      await this.loadRuns();
+    } catch {}
   }
 
   private selectRun(id: string) {
@@ -93,21 +123,23 @@ export class RunList extends LitElement {
           ${this.loading ? "Creating..." : "New Run"}
         </button>
       </div>
-      ${this.runs.length === 0 ? html`<div class="empty">No runs yet</div>` : html`
-        <table>
-          <thead><tr><th>ID</th><th>Instruction</th><th>Status</th><th>Agent</th><th>Created</th></tr></thead>
+      ${this.runs.length === 0 ? html`<div class="empty">No runs yet. Runs are created when you or a scheduled job executes a task.</div>` : html`
+        <div class="table-wrap"><table>
+          <thead><tr><th>ID</th><th>Instruction</th><th>Status</th><th>Source</th><th>Agent</th><th>Created</th><th></th></tr></thead>
           <tbody>
             ${this.runs.map((r) => html`
               <tr @click=${() => this.selectRun(r.id)}>
                 <td class="mono">${r.id.slice(0, 8)}</td>
                 <td>${r.instruction}</td>
                 <td><span class="status status-${r.status}">${r.status}</span></td>
+                <td><span class="${r.userId === "scheduler" ? "source-scheduled" : "source-manual"}">${r.userId === "scheduler" ? "scheduled" : "manual"}</span></td>
                 <td class="mono">${r.agentId}</td>
                 <td class="mono">${this.formatTime(r.createdAt)}</td>
+                <td><button class="btn-delete" @click=${(e: Event) => { e.stopPropagation(); this.deleteRun(r.id); }} title="Delete">\u00d7</button></td>
               </tr>
             `)}
           </tbody>
-        </table>
+        </table></div>
       `}
     `;
   }

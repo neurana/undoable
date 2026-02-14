@@ -1,6 +1,7 @@
 export type ChatEntry =
-  | { kind: "user"; content: string }
+  | { kind: "user"; content: string; images?: string[] }
   | { kind: "assistant"; content: string; streaming?: boolean }
+  | { kind: "thinking"; content: string; streaming?: boolean }
   | { kind: "tool_call"; name: string; args: Record<string, unknown>; iteration?: number; maxIterations?: number }
   | { kind: "tool_result"; name: string; result: unknown }
   | { kind: "approval"; id: string; tool: string; description?: string; args?: Record<string, unknown>; resolved?: boolean; approved?: boolean }
@@ -36,4 +37,12 @@ export type SseEvent = {
   mode?: string;
   approvalMode?: string;
   sessionId?: string;
+  thinking?: string;
+  reasoningVisibility?: string;
+  streaming?: boolean;
+  model?: string;
+  provider?: string;
+  canThink?: boolean;
+  runId?: string;
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
 };

@@ -1,42 +1,20 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import type { AuthUser } from "./types.js";
+import type { GatewayIdentity } from "./types.js";
+import { extractBearerToken } from "./api-key.js";
 
-export const USER_ROLES = ["admin", "operator", "viewer"] as const;
-export type UserRole = (typeof USER_ROLES)[number];
+const LOCAL_IDENTITY: GatewayIdentity = { id: "local", method: "local" };
 
-const ROLE_HIERARCHY: Record<UserRole, number> = {
-  admin: 3,
-  operator: 2,
-  viewer: 1,
-};
-
-export function hasRole(user: AuthUser, requiredRole: UserRole): boolean {
-  return ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY[requiredRole];
-}
-
-export type AuthenticateFunction = (req: FastifyRequest) => Promise<AuthUser | null>;
-
-export function createAuthHook(authenticate: AuthenticateFunction) {
+export function createGatewayAuthHook(token?: string) {
   return async (req: FastifyRequest, reply: FastifyReply) => {
-    const user = await authenticate(req);
-    if (!user) {
-      reply.code(401).send({ error: "Unauthorized" });
+    if (!token) {
+      (req as FastifyRequest & { identity: GatewayIdentity }).identity = LOCAL_IDENTITY;
       return;
     }
-    (req as FastifyRequest & { user: AuthUser }).user = user;
-  };
-}
-
-export function createRoleGuard(requiredRole: UserRole) {
-  return async (req: FastifyRequest, reply: FastifyReply) => {
-    const user = (req as FastifyRequest & { user?: AuthUser }).user;
-    if (!user) {
-      reply.code(401).send({ error: "Unauthorized" });
+    const bearer = extractBearerToken(req.headers.authorization);
+    if (bearer === token) {
+      (req as FastifyRequest & { identity: GatewayIdentity }).identity = { id: "token", method: "token" };
       return;
     }
-    if (!hasRole(user, requiredRole)) {
-      reply.code(403).send({ error: "Forbidden: insufficient role" });
-      return;
-    }
+    reply.code(401).send({ error: "Unauthorized" });
   };
 }
