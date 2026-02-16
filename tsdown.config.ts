@@ -11,6 +11,7 @@ export default defineConfig([
     entry: "packages/daemon/src/index.ts",
     outDir: "dist/daemon",
     platform: "node",
+    external: ["@undoable/sandbox", "dockerode", "ssh2", "cpu-features"],
     env: { NODE_ENV: "production" },
   },
   {
@@ -29,6 +30,8 @@ export default defineConfig([
     entry: "packages/sandbox/src/index.ts",
     outDir: "dist/sandbox",
     platform: "node",
+    inlineOnly: false,
+    external: ["dockerode"],
     env: { NODE_ENV: "production" },
   },
   {

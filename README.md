@@ -44,6 +44,19 @@ Each run includes a receipt and cryptographic fingerprint for integrity verifica
 ## Quick Start
 
 ```bash
+# Fastest path (terminal-first)
+nrn chat --session main
+
+# Optional: stop background daemon when done
+nrn daemon stop
+```
+
+```bash
+# Source/dev quick start (without global install)
+pnpm exec tsx packages/cli/src/index.ts chat --session main
+```
+
+```bash
 # Start infrastructure
 docker compose -f docker/docker-compose.yml up -d
 

@@ -64,7 +64,6 @@ export class ChatSidebar extends LitElement {
   @property({ type: Boolean, reflect: true }) collapsed = false;
   @property({ type: Array }) sessions: SessionItem[] = [];
   @property({ type: String }) activeSessionId = "";
-  @property({ type: Boolean }) canvasOpen = false;
   @state() private contextMenuId = "";
   @state() private renamingId = "";
   @state() private renameValue = "";
@@ -192,12 +191,6 @@ export class ChatSidebar extends LitElement {
           </button>
           <button class="nav-item" @click=${() => this.emit("navigate", "nodes")} title="Nodes">
             <svg class="nav-icon" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg>
-          </button>
-          <button class="nav-item" @click=${() => this.emit("navigate", "swarm")} title="SWARM">
-            <svg class="nav-icon" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="12" cy="19" r="2"/><path d="M7 11L10 7M14 7L17 11M7 13L10 17M14 17L17 13"/></svg>
-          </button>
-          <button class="nav-item" ?data-active=${this.canvasOpen} @click=${() => this.emit("toggle-canvas")} title="Canvas">
-            <svg class="nav-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
           </button>
           <button class="nav-item" @click=${() => this.emit("open-settings")} title="Settings">
             <svg class="nav-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>

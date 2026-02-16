@@ -53,6 +53,20 @@ function buildToolingSection(toolDefs?: ToolDefinition[]): string[] {
     "Subagents": ["subagent_spawn", "subagent_list"],
     "Connectors": ["connect", "nodes"],
     "Workflow": ["list_runs", "create_run", "list_jobs", "create_job", "delete_job", "toggle_job", "run_job", "scheduler_status"],
+    "SWARM Orchestration": [
+      "swarm_list_workflows",
+      "swarm_get_workflow",
+      "swarm_create_workflow",
+      "swarm_update_workflow",
+      "swarm_delete_workflow",
+      "swarm_reconcile_jobs",
+      "swarm_add_node",
+      "swarm_update_node",
+      "swarm_delete_node",
+      "swarm_set_edges",
+      "swarm_run_node",
+    ],
+    "Canvas": ["canvas"],
   };
 
   const toolMap = new Map<string, ToolDefinition>();
@@ -144,6 +158,10 @@ function buildBehaviorSection(): string[] {
     "5. **Confirm before destructive actions** (rm, overwrite, etc.).",
     "6. Use markdown formatting for readability.",
     "7. **For long-running commands**, use exec with background=true, then poll with the process tool.",
+    "8. **Use SWARM only when it helps orchestration.** Prefer normal direct execution for one-off tasks. Use SWARM tools when the user asks for a workflow, recurring automation, scheduled jobs, or multi-step team/orchestrator behavior.",
+    "9. **When SWARM is requested, build a runnable minimal workflow first.** Create workflow, add essential nodes, set edges, and avoid unnecessary clarification loops unless critical inputs are missing.",
+    "10. **If the user asks for a simple example, provide one immediately.** Use sensible defaults and state assumptions briefly instead of asking broad follow-up questions.",
+    "11. **For data-capture requests (like market verifier + CSV), default to a concrete schema and sample rows first.** If needed, then offer optional refinements after delivering the usable example.",
     "",
   ];
 }

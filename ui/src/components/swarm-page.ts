@@ -13,19 +13,27 @@ type PositionMap = Record<string, NodePos>;
 @customElement("swarm-page")
 export class SwarmPage extends LitElement {
   static styles = css`
-    :host { display: block; min-height: 100%; }
+    :host {
+      display: grid;
+      gap: 8px;
+      min-height: 100%;
+    }
     .layout {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 340px;
-      gap: 14px;
-      min-height: calc(100vh - 180px);
-      height: calc(100vh - 180px);
+      grid-template-columns: minmax(0, 1fr) minmax(312px, 360px);
+      gap: 10px;
+      min-height: calc(100vh - 150px);
+      height: calc(100vh - 150px);
     }
     .left {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
       gap: 10px;
       min-width: 0;
+      min-height: 0;
+    }
+    .inspector-col {
+      min-height: 0;
     }
     .err {
       margin: 0 0 10px;
@@ -44,10 +52,20 @@ export class SwarmPage extends LitElement {
       border-radius: 10px;
       background: var(--surface-2);
     }
+    @media (max-width: 1240px) {
+      .layout {
+        grid-template-columns: minmax(0, 1fr) 320px;
+      }
+    }
     @media (max-width: 1080px) {
       .layout {
         grid-template-columns: 1fr;
         height: auto;
+        min-height: 0;
+        gap: 8px;
+      }
+      .inspector-col {
+        min-height: 360px;
       }
     }
   `;
@@ -229,13 +247,19 @@ export class SwarmPage extends LitElement {
   }
 
   render() {
+    const workflow = this.workflow;
+    const selectedNode = this.selectedNode;
+
     return html`
       ${this.error ? html`<div class="err">${this.error}</div>` : ""}
+
       <div class="layout">
         <div class="left">
           <swarm-toolbar
             .workflows=${this.workflows}
+            .workflow=${workflow}
             .workflowId=${this.workflowId}
+            .selectedNodeName=${selectedNode?.name ?? ""}
             .busy=${this.busy}
             @workflow-change=${(e: CustomEvent<string>) => { this.workflowId = e.detail; this.selectedNodeId = ""; void this.loadWorkflows(); }}
             @workflow-create=${() => this.createWorkflow()}
@@ -254,18 +278,20 @@ export class SwarmPage extends LitElement {
           ></swarm-canvas>
         </div>
 
-        <swarm-inspector
-          .workflow=${this.workflow}
-          .node=${this.selectedNode}
-          .runs=${this.runs}
-          .busy=${this.busy}
-          @node-save=${(e: CustomEvent<SwarmNodePatchInput>) => this.saveNode(e.detail)}
-          @node-delete=${() => this.deleteNode()}
-          @edge-link=${(e: CustomEvent<{ to?: string }>) => this.linkEdge(e.detail)}
-          @node-run-history=${() => this.refreshRuns()}
-          @run-action=${(e: CustomEvent<{ runId: string; action: string }>) => this.runAction(e.detail)}
-          @run-open=${(e: CustomEvent<string>) => this.openRun(e.detail)}
-        ></swarm-inspector>
+        <div class="inspector-col">
+          <swarm-inspector
+            .workflow=${workflow}
+            .node=${selectedNode}
+            .runs=${this.runs}
+            .busy=${this.busy}
+            @node-save=${(e: CustomEvent<SwarmNodePatchInput>) => this.saveNode(e.detail)}
+            @node-delete=${() => this.deleteNode()}
+            @edge-link=${(e: CustomEvent<{ to?: string }>) => this.linkEdge(e.detail)}
+            @node-run-history=${() => this.refreshRuns()}
+            @run-action=${(e: CustomEvent<{ runId: string; action: string }>) => this.runAction(e.detail)}
+            @run-open=${(e: CustomEvent<string>) => this.openRun(e.detail)}
+          ></swarm-inspector>
+        </div>
       </div>
 
       ${this.workflows.length === 0 && !this.busy ? html`<div class="muted">No workflows yet. Use “New workflow”.</div>` : ""}

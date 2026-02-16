@@ -7,6 +7,7 @@ import "./chat-input.js";
 import "./chat-messages.js";
 import "./chat-settings.js";
 import "./canvas-panel.js";
+import "./swarm-panel.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -82,19 +83,256 @@ export class UndoableChat extends LitElement {
     .agent-option.active { background: var(--accent-subtle); }
     .agent-option-name { font-size: 12px; font-weight: 500; color: var(--text-primary); }
     .agent-option-model { font-size: 10px; color: var(--text-tertiary); font-family: var(--mono); }
-    .canvas-shell {
-      height: 280px;
-      padding: 10px 16px 8px;
-      box-sizing: border-box;
-      border-bottom: 1px solid var(--border-divider);
-      background: var(--bg-base);
+    .btn-swarm-nav {
+      height: 30px;
+      padding: 0 10px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-strong);
+      background: var(--surface-1);
+      color: var(--text-secondary);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
       flex-shrink: 0;
+    }
+    .btn-swarm-nav:hover {
+      background: var(--wash);
+      color: var(--text-primary);
+      border-color: var(--mint-strong);
+    }
+    .btn-swarm-nav.active {
+      background: linear-gradient(135deg, color-mix(in srgb, var(--mint) 34%, transparent), var(--accent-subtle));
+      color: var(--dark);
+      border-color: var(--mint-strong);
+      box-shadow: inset 0 0 0 1px rgba(46,69,57,0.14);
+    }
+    .btn-swarm-nav svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      fill: none;
+    }
+    .btn-canvas {
+      height: 30px;
+      padding: 0 10px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-strong);
+      background: var(--surface-1);
+      color: var(--text-secondary);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
+      flex-shrink: 0;
+    }
+    .btn-canvas:hover {
+      background: var(--wash);
+      color: var(--text-primary);
+      border-color: var(--mint-strong);
+    }
+    .btn-canvas.active {
+      background: var(--accent-subtle);
+      color: var(--dark);
+      border-color: var(--mint-strong);
+      box-shadow: inset 0 0 0 1px rgba(46,69,57,0.14);
+    }
+    .btn-canvas svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      fill: none;
+    }
+    .chat-content {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+    }
+    .chat-main {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .canvas-shell {
+      position: relative;
+      flex-shrink: 0;
+      width: 0;
+      min-width: 0;
+      opacity: 0;
+      transform: translateX(20px) scale(0.96);
+      transform-origin: right center;
+      margin: 0;
+      padding: 10px 0 10px 0;
+      box-sizing: border-box;
+      border-left: 1px solid transparent;
+      background: var(--bg-base);
+      overflow: hidden;
+      pointer-events: none;
+      transition:
+        width 260ms cubic-bezier(0.2,0.8,0.2,1),
+        opacity 220ms ease,
+        transform 260ms cubic-bezier(0.2,0.8,0.2,1),
+        border-color 180ms ease,
+        margin 260ms cubic-bezier(0.2,0.8,0.2,1),
+        padding 260ms cubic-bezier(0.2,0.8,0.2,1);
+    }
+    .canvas-shell.open {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+      border-left-color: var(--border-divider);
+      margin-left: 8px;
+      padding: 10px 12px 10px 12px;
+      pointer-events: auto;
+    }
+    .canvas-shell-frame {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 10px 28px rgba(17,26,23,0.08);
+    }
+    .swarm-shell {
+      position: relative;
+      flex-shrink: 0;
+      width: 0;
+      min-width: 0;
+      opacity: 0;
+      transform: translateX(20px) scale(0.96);
+      transform-origin: right center;
+      margin: 0;
+      padding: 10px 0 10px 0;
+      box-sizing: border-box;
+      border-left: 1px solid transparent;
+      background: var(--bg-base);
+      overflow: hidden;
+      pointer-events: none;
+      transition:
+        width 280ms cubic-bezier(0.2,0.8,0.2,1),
+        opacity 240ms ease,
+        transform 280ms cubic-bezier(0.2,0.8,0.2,1),
+        border-color 180ms ease,
+        margin 280ms cubic-bezier(0.2,0.8,0.2,1),
+        padding 280ms cubic-bezier(0.2,0.8,0.2,1);
+    }
+    .swarm-shell.open {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+      border-left-color: var(--border-divider);
+      margin-left: 8px;
+      padding: 10px 12px 10px 12px;
+      pointer-events: auto;
+    }
+    .resize-handle {
+      position: absolute;
+      left: -8px;
+      top: 0;
+      bottom: 0;
+      width: 16px;
+      cursor: col-resize;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      touch-action: none;
+    }
+    .resize-handle::after {
+      content: "";
+      width: 4px;
+      height: 48px;
+      border-radius: 3px;
+      background: var(--border-strong);
+      opacity: 0.35;
+      transition: opacity 150ms ease, background 150ms ease, width 150ms ease;
+    }
+    .resize-handle:hover::after {
+      opacity: 1;
+      width: 5px;
+      background: var(--mint-strong);
+    }
+    .resize-handle.active::after {
+      opacity: 1;
+      width: 5px;
+      background: var(--mint-strong);
+      box-shadow: 0 0 8px rgba(46,69,57,0.25);
+    }
+    .canvas-shell.resizing,
+    .swarm-shell.resizing {
+      transition: none;
+    }
+    .swarm-shell-frame {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 10px 28px rgba(17,26,23,0.08);
     }
     @media (max-width: 768px) {
       .sidebar-backdrop.visible { display: block; }
       .empty-title { font-size: 18px; }
       .ant-logo { width: 100px; height: 100px; }
-      .canvas-shell { height: 220px; padding: 8px 10px 6px; }
+      .btn-swarm-nav span { display: none; }
+      .btn-swarm-nav { width: 32px; height: 32px; justify-content: center; padding: 0; border-radius: 8px; }
+      .btn-canvas span { display: none; }
+      .btn-canvas { width: 32px; height: 32px; justify-content: center; padding: 0; border-radius: 8px; }
+      .chat-content {
+        position: relative;
+      }
+      .canvas-shell {
+        position: absolute;
+        right: 8px;
+        top: 8px;
+        bottom: 8px;
+        width: min(90vw, 420px);
+        border-left: none;
+        border: 1px solid transparent;
+        border-radius: 14px;
+        background: color-mix(in srgb, var(--bg-base) 92%, transparent);
+        backdrop-filter: blur(3px);
+        margin-left: 0;
+        padding: 0;
+      }
+      .canvas-shell.open {
+        width: min(90vw, 420px);
+        border-color: var(--border-divider);
+        margin-left: 0;
+        padding: 6px;
+      }
+      .canvas-shell-frame { box-shadow: 0 14px 30px rgba(17,26,23,0.18); }
+      .swarm-shell {
+        position: absolute;
+        right: 4px;
+        top: 4px;
+        bottom: 4px;
+        width: 0;
+        border-left: none;
+        border: 1px solid transparent;
+        border-radius: 14px;
+        background: color-mix(in srgb, var(--bg-base) 96%, transparent);
+        backdrop-filter: blur(3px);
+        margin-left: 0;
+        padding: 0;
+      }
+      .swarm-shell.open {
+        width: calc(100% - 8px);
+        border-color: var(--border-divider);
+        margin-left: 0;
+        padding: 4px;
+      }
+      .swarm-shell-frame { box-shadow: 0 14px 30px rgba(17,26,23,0.18); }
     }
   `];
 
@@ -126,6 +364,10 @@ export class UndoableChat extends LitElement {
   @state() private canvasOpen = false;
   @state() private canvasUrl = "";
   @state() private canvasFrames: string[] = [];
+  @state() private swarmOpen = false;
+  @state() private panelWidth = 0;
+  private resizing = false;
+  private resizePointerId = -1;
 
 
   // ── Lifecycle ──
@@ -251,11 +493,43 @@ export class UndoableChat extends LitElement {
     this.agentDropdownOpen = false;
   }
 
+  private ensureCanvasPanelWidth() {
+    const defaultCanvasWidth = Math.round(Math.min(window.innerWidth * 0.42, 560));
+    if (!this.panelWidth || this.panelWidth < 320) {
+      this.panelWidth = Math.max(320, defaultCanvasWidth);
+    }
+  }
+
+  private ensureSwarmPanelWidth() {
+    const minSwarmWidth = Math.min(520, Math.max(360, window.innerWidth - 220));
+    const defaultSwarmWidth = Math.round(Math.min(window.innerWidth * 0.62, 860));
+    if (!this.panelWidth || this.panelWidth < minSwarmWidth) {
+      this.panelWidth = Math.max(minSwarmWidth, defaultSwarmWidth);
+    }
+  }
+
+  private openCanvasPanelFromAgent() {
+    this.swarmOpen = false;
+    this.canvasOpen = true;
+    this.ensureCanvasPanelWidth();
+  }
+
+  private isSwarmToolName(name: string): boolean {
+    return name.trim().toLowerCase().startsWith("swarm_");
+  }
+
+  private applySwarmFromToolName(name: string) {
+    if (!this.isSwarmToolName(name)) return;
+    this.canvasOpen = false;
+    this.swarmOpen = true;
+    this.ensureSwarmPanelWidth();
+  }
+
   private applyCanvasFromToolCall(name: string, args: Record<string, unknown>) {
     if (name !== "canvas") return;
     const action = typeof args.action === "string" ? args.action : "";
     if (action === "present") {
-      this.canvasOpen = true;
+      this.openCanvasPanelFromAgent();
       return;
     }
     if (action === "hide") {
@@ -266,12 +540,12 @@ export class UndoableChat extends LitElement {
       if (typeof args.url === "string" && args.url.trim()) {
         this.canvasUrl = args.url.trim();
       }
-      this.canvasOpen = true;
+      this.openCanvasPanelFromAgent();
       return;
     }
     if (action === "a2ui_reset") {
       this.canvasFrames = [];
-      this.canvasOpen = true;
+      this.openCanvasPanelFromAgent();
       return;
     }
     if (action === "a2ui_push") {
@@ -282,7 +556,7 @@ export class UndoableChat extends LitElement {
           this.canvasFrames = [...this.canvasFrames, ...lines];
         }
       }
-      this.canvasOpen = true;
+      this.openCanvasPanelFromAgent();
     }
   }
 
@@ -301,21 +575,57 @@ export class UndoableChat extends LitElement {
     const action = typeof result.canvasAction === "string" ? result.canvasAction : "";
     if (action === "hide") this.canvasOpen = false;
     if (action === "a2ui_reset") this.canvasFrames = [];
-    if (action === "present" || action === "navigate" || action === "a2ui_push") this.canvasOpen = true;
+    if (action === "present" || action === "navigate" || action === "a2ui_push") this.openCanvasPanelFromAgent();
 
     const textResult = typeof result.result === "string" ? result.result : "";
-    if (textResult === "Canvas shown") this.canvasOpen = true;
+    if (textResult === "Canvas shown") this.openCanvasPanelFromAgent();
     if (textResult === "Canvas hidden") this.canvasOpen = false;
     const navPrefix = "Canvas navigated to ";
     if (textResult.startsWith(navPrefix)) {
       const url = textResult.slice(navPrefix.length).trim();
       if (url) this.canvasUrl = url;
-      this.canvasOpen = true;
+      this.openCanvasPanelFromAgent();
     }
   }
 
   private toggleCanvas = () => {
+    if (!this.canvasOpen) this.swarmOpen = false;
     this.canvasOpen = !this.canvasOpen;
+    if (this.canvasOpen) this.ensureCanvasPanelWidth();
+  };
+
+  private toggleSwarm = () => {
+    if (!this.swarmOpen) this.canvasOpen = false;
+    this.swarmOpen = !this.swarmOpen;
+    if (this.swarmOpen) this.ensureSwarmPanelWidth();
+  };
+
+  private onResizePointerDown = (e: PointerEvent) => {
+    e.preventDefault();
+    this.resizing = true;
+    this.resizePointerId = e.pointerId;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    this.requestUpdate();
+  };
+
+  private onResizePointerMove = (e: PointerEvent) => {
+    if (!this.resizing || e.pointerId !== this.resizePointerId) return;
+    const chatContent = this.shadowRoot?.querySelector(".chat-content") as HTMLElement | null;
+    if (!chatContent) return;
+    const rect = chatContent.getBoundingClientRect();
+    const minWidth = this.swarmOpen
+      ? Math.min(520, Math.max(360, rect.width - 220))
+      : 320;
+    const maxWidth = Math.max(minWidth, rect.width - (this.swarmOpen ? 140 : 200));
+    const newWidth = Math.max(minWidth, Math.min(maxWidth, rect.right - e.clientX));
+    this.panelWidth = Math.round(newWidth);
+  };
+
+  private onResizePointerUp = (e: PointerEvent) => {
+    if (e.pointerId !== this.resizePointerId) return;
+    this.resizing = false;
+    this.resizePointerId = -1;
+    this.requestUpdate();
   };
 
   private async loadSessions() {
@@ -423,6 +733,7 @@ export class UndoableChat extends LitElement {
         for (const tc of msg.tool_calls) {
           let args: Record<string, unknown> = {};
           try { args = JSON.parse(tc.function.arguments); } catch { }
+          this.applySwarmFromToolName(tc.function.name);
           this.applyCanvasFromToolCall(tc.function.name, args);
           entries.push({ kind: "tool_call", name: tc.function.name, args });
         }
@@ -584,12 +895,14 @@ export class UndoableChat extends LitElement {
                 aiAdded = false;
                 aiEntry.content = "";
               }
+              this.applySwarmFromToolName(evt.name ?? "");
               this.applyCanvasFromToolCall(evt.name ?? "", evt.args ?? {});
               this.entries = [...this.entries, {
                 kind: "tool_call", name: evt.name ?? "?", args: evt.args ?? {},
                 iteration: evt.iteration, maxIterations: evt.maxIterations,
               }];
             } else if (evt.type === "tool_result") {
+              this.applySwarmFromToolName(evt.name ?? "");
               this.applyCanvasFromToolResult(evt.result);
               this.entries = [...this.entries, { kind: "tool_result", name: evt.name ?? "?", result: evt.result }];
               this.hasUndoable = true;
@@ -757,13 +1070,11 @@ export class UndoableChat extends LitElement {
         ?collapsed=${!this.sidebarOpen}
         .sessions=${this.sessions}
         .activeSessionId=${this.activeSessionId}
-        .canvasOpen=${this.canvasOpen}
         @new-chat=${() => this.newChat()}
         @select-session=${(e: CustomEvent) => this.selectSession(e.detail)}
         @delete-session=${(e: CustomEvent) => this.deleteSession(e.detail)}
         @rename-session=${(e: CustomEvent) => this.renameSession(e.detail)}
         @reset-session=${(e: CustomEvent) => this.resetSession(e.detail)}
-        @toggle-canvas=${this.toggleCanvas}
         @navigate=${(e: CustomEvent) => this.emitNavigate(e.detail)}
         @open-settings=${() => { this.settingsOpen = true; }}
       ></chat-sidebar>
@@ -795,6 +1106,14 @@ export class UndoableChat extends LitElement {
             </div>
           ` : nothing}
           ${this.currentModel ? html`<span class="model-label" style="cursor:pointer;" title=${`${this.currentProvider}/${this.currentModel}. Click to change.`} @click=${() => { this.settingsOpen = true; }}>${this.currentModel}</span>` : nothing}
+          <button class="btn-swarm-nav ${this.swarmOpen ? "active" : ""}" @click=${this.toggleSwarm} title=${this.swarmOpen ? "Hide SWARM" : "Show SWARM"}>
+            <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="12" cy="19" r="2"/><path d="M7 11L10 7M14 7L17 11M7 13L10 17M14 17L17 13"/></svg>
+            <span>SWARM</span>
+          </button>
+          <button class="btn-canvas ${this.canvasOpen ? "active" : ""}" @click=${this.toggleCanvas} title=${this.canvasOpen ? "Hide canvas" : "Show canvas"}>
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+            <span>Canvas</span>
+          </button>
           <div class="chat-header-spacer"></div>
           <button class="btn-header-icon" @click=${() => { this.showOnboarding = true; }} title="Profile & Onboarding">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -810,49 +1129,64 @@ export class UndoableChat extends LitElement {
           ` : nothing}
         </div>
 
-        ${this.canvasOpen ? html`
-          <div class="canvas-shell">
-            <undoable-canvas-panel
-              .visible=${this.canvasOpen}
-              .url=${this.canvasUrl}
-              .frames=${this.canvasFrames}
-              @canvas-close=${() => { this.canvasOpen = false; }}
-            ></undoable-canvas-panel>
+        <div class="chat-content">
+          <div class="chat-main">
+            ${this.entries.length === 0 ? html`
+              <div class="empty">
+                <img class="ant-logo" src="/logo.svg" alt="Undoable" />
+                <div class="empty-title">Undoable</div>
+                <div class="empty-sub">Everything the AI does is recorded and can be undone. Start a conversation or pick one from the sidebar.</div>
+              </div>
+            ` : html`
+              <chat-messages
+                .entries=${this.entries}
+                ?loading=${this.loading}
+                .currentIter=${this.currentIter}
+                .maxIter=${this.maxIter}
+                @handle-approval=${(e: CustomEvent) => this.handleApproval(e.detail)}
+                @chat-error=${(e: CustomEvent) => { this.error = e.detail; }}
+              ></chat-messages>
+            `}
+
+            ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
+
+            <chat-input
+              ?loading=${this.loading}
+              ?hasUndoable=${this.hasUndoable}
+              ?hasRedoable=${this.hasRedoable}
+              .thinkingLevel=${this.canThink ? this.thinkingLevel : ""}
+              ?canThink=${this.canThink}
+              @send-message=${(e: CustomEvent) => this.handleSendMessage(e.detail)}
+              @abort-chat=${() => this.handleAbort()}
+              @undo=${(e: CustomEvent) => this.handleUndo(e.detail)}
+              @redo=${(e: CustomEvent) => this.handleRedo(e.detail)}
+              @cycle-thinking=${this.cycleThinkingLevel}
+              @chat-error=${(e: CustomEvent) => { this.error = e.detail; }}
+            ></chat-input>
           </div>
-        ` : nothing}
 
-        ${this.entries.length === 0 ? html`
-          <div class="empty">
-            <img class="ant-logo" src="/logo.svg" alt="Undoable" />
-            <div class="empty-title">Undoable</div>
-            <div class="empty-sub">Everything the AI does is recorded and can be undone. Start a conversation or pick one from the sidebar.</div>
-          </div>
-        ` : html`
-          <chat-messages
-            .entries=${this.entries}
-            ?loading=${this.loading}
-            .currentIter=${this.currentIter}
-            .maxIter=${this.maxIter}
-            @handle-approval=${(e: CustomEvent) => this.handleApproval(e.detail)}
-            @chat-error=${(e: CustomEvent) => { this.error = e.detail; }}
-          ></chat-messages>
-        `}
+          <aside class="canvas-shell ${this.canvasOpen ? "open" : ""} ${this.resizing ? "resizing" : ""}" style=${this.canvasOpen ? `width:${this.panelWidth}px` : ""}>
+            <div class="resize-handle ${this.resizing ? "active" : ""}" @pointerdown=${this.onResizePointerDown} @pointermove=${this.onResizePointerMove} @pointerup=${this.onResizePointerUp}></div>
+            <div class="canvas-shell-frame">
+              <undoable-canvas-panel
+                .visible=${this.canvasOpen}
+                .url=${this.canvasUrl}
+                .frames=${this.canvasFrames}
+                @canvas-close=${() => { this.canvasOpen = false; }}
+              ></undoable-canvas-panel>
+            </div>
+          </aside>
 
-        ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
-
-        <chat-input
-          ?loading=${this.loading}
-          ?hasUndoable=${this.hasUndoable}
-          ?hasRedoable=${this.hasRedoable}
-          .thinkingLevel=${this.canThink ? this.thinkingLevel : ""}
-          ?canThink=${this.canThink}
-          @send-message=${(e: CustomEvent) => this.handleSendMessage(e.detail)}
-          @abort-chat=${() => this.handleAbort()}
-          @undo=${(e: CustomEvent) => this.handleUndo(e.detail)}
-          @redo=${(e: CustomEvent) => this.handleRedo(e.detail)}
-          @cycle-thinking=${this.cycleThinkingLevel}
-          @chat-error=${(e: CustomEvent) => { this.error = e.detail; }}
-        ></chat-input>
+          <aside class="swarm-shell ${this.swarmOpen ? "open" : ""} ${this.resizing ? "resizing" : ""}" style=${this.swarmOpen ? `width:${this.panelWidth}px` : ""}>
+            <div class="resize-handle ${this.resizing ? "active" : ""}" @pointerdown=${this.onResizePointerDown} @pointermove=${this.onResizePointerMove} @pointerup=${this.onResizePointerUp}></div>
+            <div class="swarm-shell-frame">
+              <swarm-panel
+                @swarm-close=${() => { this.swarmOpen = false; }}
+                @navigate=${(e: CustomEvent) => { this.swarmOpen = false; this.emitNavigate(e.detail); }}
+              ></swarm-panel>
+            </div>
+          </aside>
+        </div>
       </div>
 
       <chat-settings
