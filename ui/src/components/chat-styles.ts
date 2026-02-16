@@ -79,6 +79,11 @@ export const sidebarStyles = css`
       transition: all 150ms cubic-bezier(0.2,0.8,0.2,1);
     }
     .nav-item:hover { background: var(--wash); color: var(--text-secondary); }
+    .nav-item[data-active] {
+      background: var(--accent-subtle);
+      color: var(--dark);
+      box-shadow: inset 0 0 0 1px var(--mint-strong);
+    }
     .nav-icon { width: 14px; height: 14px; stroke: currentColor; stroke-width: 1.5; fill: none; }
 `;
 

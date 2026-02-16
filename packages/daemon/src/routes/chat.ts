@@ -19,6 +19,7 @@ import { loadContextFiles } from "../services/context-files.js";
 import { OnboardingService } from "../services/onboarding-service.js";
 import { createSubagentTools } from "../tools/subagent-tools.js";
 import type { HeartbeatService } from "../services/heartbeat-service.js";
+import type { SwarmService } from "../services/swarm-service.js";
 import {
   type ThinkLevel,
   type ReasoningVisibility,
@@ -139,10 +140,19 @@ export function chatRoutes(
   memoryService?: import("../services/memory-service.js").MemoryService,
   sandboxExec?: import("../services/sandbox-exec.js").SandboxExecService,
   heartbeatService?: HeartbeatService,
+  swarmService?: SwarmService,
 ) {
   let runModeConfig = config.runMode ?? resolveRunMode();
   const approvalMode = shouldAutoApprove(runModeConfig) ? "off" as const : undefined;
-  const registry = createToolRegistry({ runManager, scheduler, browserSvc, memoryService: memoryService ?? undefined, sandboxExec: sandboxExec ?? undefined, approvalMode });
+  const registry = createToolRegistry({
+    runManager,
+    scheduler,
+    browserSvc,
+    memoryService: memoryService ?? undefined,
+    swarmService: swarmService ?? undefined,
+    sandboxExec: sandboxExec ?? undefined,
+    approvalMode,
+  });
   let maxIterations = runModeConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS;
 
   if (agentRegistry) {
@@ -207,7 +217,10 @@ export function chatRoutes(
   });
 
   app.get("/chat/approval-mode", async () => {
-    return { mode: registry.approvalGate.getMode() };
+    return {
+      mode: registry.approvalGate.getMode(),
+      dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
+    };
   });
 
   app.post<{ Body: { mode: string } }>("/chat/approval-mode", async (req, reply) => {
@@ -215,8 +228,17 @@ export function chatRoutes(
     if (!["off", "mutate", "always"].includes(mode)) {
       return reply.code(400).send({ error: "mode must be off, mutate, or always" });
     }
+    if (runModeConfig.dangerouslySkipPermissions && mode !== "off") {
+      return reply.code(409).send({
+        error: "approval mode is locked to off while --dangerously-skip-permissions is active",
+      });
+    }
     registry.approvalGate.setMode(mode as "off" | "mutate" | "always");
-    return { ok: true, mode };
+    return {
+      ok: true,
+      mode: registry.approvalGate.getMode(),
+      dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
+    };
   });
 
   app.get("/chat/agents", async () => {
@@ -231,6 +253,7 @@ export function chatRoutes(
     const active = getActiveConfig();
     return {
       mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode(),
+      dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
       thinking: thinkingConfig.level, reasoningVisibility: thinkingConfig.visibility,
       model: active.model, provider: active.provider,
       canThink: canThink(),
@@ -243,7 +266,11 @@ export function chatRoutes(
       if (!["interactive", "autonomous", "supervised"].includes(mode)) {
         return reply.code(400).send({ error: "mode must be interactive, autonomous, or supervised" });
       }
-      const newConfig = resolveRunMode({ mode: mode as "interactive" | "autonomous" | "supervised", maxIterations: newMax ?? maxIterations });
+      const newConfig = resolveRunMode({
+        mode: mode as "interactive" | "autonomous" | "supervised",
+        maxIterations: newMax ?? maxIterations,
+        dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
+      });
       runModeConfig = newConfig;
       maxIterations = newConfig.maxIterations;
       if (shouldAutoApprove(newConfig)) {
@@ -252,8 +279,18 @@ export function chatRoutes(
     }
     if (newMax !== undefined && newMax > 0) {
       maxIterations = newMax;
+      runModeConfig = {
+        ...runModeConfig,
+        maxIterations: newMax,
+      };
     }
-    return { ok: true, mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode() };
+    return {
+      ok: true,
+      mode: runModeConfig.mode,
+      maxIterations,
+      approvalMode: registry.approvalGate.getMode(),
+      dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
+    };
   });
 
   app.get("/chat/thinking", async () => {
@@ -341,16 +378,35 @@ export function chatRoutes(
 
   app.post<{ Body: { action: string; id?: string; count?: number } }>("/chat/undo", async (req, reply) => {
     const { action, id, count } = req.body;
+    const toSummary = (items: ReturnType<typeof registry.undoService.listUndoable>) => items.map((a) => ({
+      id: a.id,
+      tool: a.toolName,
+      args: a.args,
+      startedAt: a.startedAt,
+    }));
     switch (action) {
       case "list":
-        return { actions: registry.undoService.listUndoable().map((a) => ({ id: a.id, tool: a.toolName, args: a.args, startedAt: a.startedAt })) };
+        return {
+          undoable: toSummary(registry.undoService.listUndoable()),
+          redoable: toSummary(registry.undoService.listRedoable()),
+        };
       case "one":
+      case "undo_one":
         if (!id) return reply.code(400).send({ error: "id required" });
-        return registry.undoService.undoAction(id);
+        return { result: await registry.undoService.undoAction(id) };
       case "last":
+      case "undo_last":
         return { results: await registry.undoService.undoLastN(count ?? 1) };
       case "all":
+      case "undo_all":
         return { results: await registry.undoService.undoAll() };
+      case "redo_one":
+        if (!id) return reply.code(400).send({ error: "id required" });
+        return { result: await registry.undoService.redoAction(id) };
+      case "redo_last":
+        return { results: await registry.undoService.redoLastN(count ?? 1) };
+      case "redo_all":
+        return { results: await registry.undoService.redoAll() };
       default:
         return reply.code(400).send({ error: `Unknown action: ${action}` });
     }
@@ -363,6 +419,7 @@ export function chatRoutes(
       total: records.length,
       mode: registry.approvalGate.getMode(),
       runMode: runModeConfig.mode,
+      dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
       maxIterations,
       actions: recent.map((r) => ({
         id: r.id, tool: r.toolName, category: r.category,
@@ -454,6 +511,7 @@ export function chatRoutes(
 
     sse({
       type: "session_info", mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode(),
+      dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
       thinking: thinkingConfig.level, reasoningVisibility: thinkingConfig.visibility,
       model: activeConf.model, provider: activeConf.provider, canThink: canThink(),
     });

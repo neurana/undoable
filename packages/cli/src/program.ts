@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { setupCommand } from "./commands/setup.js";
+import { onboardCommand } from "./commands/onboard.js";
 import { startCommand } from "./commands/start.js";
 import { statusCommand } from "./commands/status.js";
 import { daemonCommand } from "./commands/daemon.js";
@@ -23,6 +24,7 @@ export function buildProgram(): Command {
     .version("0.1.0");
 
   program.addCommand(setupCommand());
+  program.addCommand(onboardCommand());
   program.addCommand(startCommand());
   program.addCommand(statusCommand());
   program.addCommand(daemonCommand());

@@ -65,7 +65,8 @@ export function runRoutes(
     return run;
   });
 
-  app.get("/runs", async () => {
+  app.get<{ Querystring: { jobId?: string } }>("/runs", async (req) => {
+    if (req.query.jobId) return runManager.listByJobId(req.query.jobId);
     return runManager.list();
   });
 

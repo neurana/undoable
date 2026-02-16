@@ -1,7 +1,7 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
 
-type View = "chat" | "runs" | "agents" | "jobs" | "skills" | "nodes";
+type View = "chat" | "agents" | "jobs" | "skills" | "nodes" | "channels" | "swarm";
 
 @customElement("undoable-app")
 export class UndoableApp extends LitElement {
@@ -47,10 +47,9 @@ export class UndoableApp extends LitElement {
     }
   `;
 
-  private static VIEWS = new Set<View>(["chat", "runs", "agents", "jobs", "skills", "nodes"]);
+  private static VIEWS = new Set<View>(["chat", "agents", "jobs", "skills", "nodes", "channels", "swarm"]);
 
   @state() private view: View = "chat";
-  @state() private selectedRunId: string | null = null;
 
   connectedCallback() {
     super.connectedCallback();
@@ -70,11 +69,8 @@ export class UndoableApp extends LitElement {
     const first = parts[0] as View | undefined;
     if (first && UndoableApp.VIEWS.has(first)) {
       this.view = first;
-      if (first === "runs" && parts[1]) this.selectedRunId = parts[1];
-      else this.selectedRunId = null;
     } else {
       this.view = "chat";
-      this.selectedRunId = null;
     }
   }
 
@@ -86,21 +82,11 @@ export class UndoableApp extends LitElement {
 
   private onNavigate = (e: CustomEvent<View>) => {
     this.view = e.detail;
-    this.selectedRunId = null;
     this.pushUrl(`/${e.detail}`);
   };
 
-  private selectRun(e: CustomEvent<string>) {
-    this.selectedRunId = e.detail;
-    this.pushUrl(`/runs/${e.detail}`);
-  }
-  private backToList() {
-    this.selectedRunId = null;
-    this.pushUrl("/runs");
-  }
   private goChat() {
     this.view = "chat";
-    this.selectedRunId = null;
     this.pushUrl("/");
   }
 
@@ -109,7 +95,14 @@ export class UndoableApp extends LitElement {
       return html`<undoable-chat></undoable-chat>`;
     }
 
-    const titles: Record<string, string> = { runs: "Run History", agents: "Agents", jobs: "Scheduled Jobs", skills: "Skills", nodes: "Nodes" };
+    const titles: Record<string, string> = {
+      agents: "Agents",
+      jobs: "Scheduled Jobs",
+      skills: "Skills",
+      nodes: "Nodes",
+      channels: "Channels",
+      swarm: "SWARM",
+    };
 
     return html`
       <main>
@@ -121,12 +114,12 @@ export class UndoableApp extends LitElement {
           <span class="page-title">${titles[this.view] ?? ""}</span>
         </div>
         <div class="page-content">
-          ${this.view === "runs" && !this.selectedRunId ? html`<run-list @select-run=${this.selectRun}></run-list>` : ""}
-          ${this.view === "runs" && this.selectedRunId ? html`<run-detail .runId=${this.selectedRunId} @back=${this.backToList}></run-detail>` : ""}
           ${this.view === "agents" ? html`<agent-list></agent-list>` : ""}
           ${this.view === "jobs" ? html`<job-list></job-list>` : ""}
           ${this.view === "skills" ? html`<skill-list></skill-list>` : ""}
           ${this.view === "nodes" ? html`<undoable-nodes-panel></undoable-nodes-panel>` : ""}
+          ${this.view === "channels" ? html`<channel-list></channel-list>` : ""}
+          ${this.view === "swarm" ? html`<swarm-page></swarm-page>` : ""}
         </div>
       </main>
     `;

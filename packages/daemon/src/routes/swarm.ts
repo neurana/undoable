@@ -1,0 +1,150 @@
+import type { FastifyInstance } from "fastify";
+import type { RunManager } from "../services/run-manager.js";
+import type {
+  CreateSwarmNodeInput,
+  CreateSwarmWorkflowInput,
+  SwarmEdge,
+  SwarmService,
+  UpdateSwarmNodePatch,
+  UpdateSwarmWorkflowPatch,
+} from "../services/swarm-service.js";
+
+function toErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export function swarmRoutes(app: FastifyInstance, swarmService: SwarmService, runManager: RunManager) {
+  app.get("/swarm/workflows", async () => {
+    return swarmService.list();
+  });
+
+  app.get<{ Params: { id: string } }>("/swarm/workflows/:id", async (req, reply) => {
+    const workflow = swarmService.getById(req.params.id);
+    if (!workflow) {
+      return reply.code(404).send({ error: "Workflow not found" });
+    }
+    return workflow;
+  });
+
+  app.post<{ Body: CreateSwarmWorkflowInput }>("/swarm/workflows", async (req, reply) => {
+    try {
+      const created = await swarmService.create(req.body);
+      return reply.code(201).send(created);
+    } catch (err) {
+      return reply.code(400).send({ error: toErrorMessage(err) });
+    }
+  });
+
+  app.patch<{ Params: { id: string }; Body: UpdateSwarmWorkflowPatch }>("/swarm/workflows/:id", async (req, reply) => {
+    try {
+      const updated = await swarmService.update(req.params.id, req.body);
+      if (!updated) {
+        return reply.code(404).send({ error: "Workflow not found" });
+      }
+      return updated;
+    } catch (err) {
+      return reply.code(400).send({ error: toErrorMessage(err) });
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/swarm/workflows/:id", async (req, reply) => {
+    const deleted = await swarmService.delete(req.params.id);
+    if (!deleted) {
+      return reply.code(404).send({ error: "Workflow not found" });
+    }
+    return { deleted: true };
+  });
+
+  app.post<{ Params: { id: string }; Body: CreateSwarmNodeInput }>("/swarm/workflows/:id/nodes", async (req, reply) => {
+    try {
+      const node = await swarmService.addNode(req.params.id, req.body);
+      if (!node) {
+        return reply.code(404).send({ error: "Workflow not found" });
+      }
+      return reply.code(201).send(node);
+    } catch (err) {
+      return reply.code(400).send({ error: toErrorMessage(err) });
+    }
+  });
+
+  app.patch<{ Params: { id: string; nodeId: string }; Body: UpdateSwarmNodePatch }>("/swarm/workflows/:id/nodes/:nodeId", async (req, reply) => {
+    try {
+      const node = await swarmService.updateNode(req.params.id, req.params.nodeId, req.body);
+      if (!node) {
+        return reply.code(404).send({ error: "Workflow or node not found" });
+      }
+      return node;
+    } catch (err) {
+      return reply.code(400).send({ error: toErrorMessage(err) });
+    }
+  });
+
+  app.delete<{ Params: { id: string; nodeId: string } }>("/swarm/workflows/:id/nodes/:nodeId", async (req, reply) => {
+    const deleted = await swarmService.removeNode(req.params.id, req.params.nodeId);
+    if (!deleted) {
+      return reply.code(404).send({ error: "Workflow or node not found" });
+    }
+    return { deleted: true };
+  });
+
+  app.put<{ Params: { id: string }; Body: { edges: SwarmEdge[] } }>("/swarm/workflows/:id/edges", async (req, reply) => {
+    try {
+      const edges = Array.isArray(req.body?.edges) ? req.body.edges : [];
+      const workflow = await swarmService.setEdges(req.params.id, edges);
+      if (!workflow) {
+        return reply.code(404).send({ error: "Workflow not found" });
+      }
+      return workflow;
+    } catch (err) {
+      return reply.code(400).send({ error: toErrorMessage(err) });
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: SwarmEdge }>("/swarm/workflows/:id/edges", async (req, reply) => {
+    try {
+      const workflow = await swarmService.upsertEdge(req.params.id, req.body);
+      if (!workflow) {
+        return reply.code(404).send({ error: "Workflow not found" });
+      }
+      return workflow;
+    } catch (err) {
+      return reply.code(400).send({ error: toErrorMessage(err) });
+    }
+  });
+
+  app.delete<{ Params: { id: string }; Querystring: { from: string; to: string } }>("/swarm/workflows/:id/edges", async (req, reply) => {
+    const from = req.query.from;
+    const to = req.query.to;
+    if (!from || !to) {
+      return reply.code(400).send({ error: "from and to are required" });
+    }
+
+    const removed = await swarmService.removeEdge(req.params.id, from, to);
+    if (!removed) {
+      return reply.code(404).send({ error: "Workflow or edge not found" });
+    }
+
+    return { deleted: true };
+  });
+
+  app.get<{ Params: { id: string; nodeId: string } }>("/swarm/workflows/:id/nodes/:nodeId/runs", async (req, reply) => {
+    const workflow = swarmService.getById(req.params.id);
+    if (!workflow) {
+      return reply.code(404).send({ error: "Workflow not found" });
+    }
+
+    const node = workflow.nodes.find((entry) => entry.id === req.params.nodeId);
+    if (!node) {
+      return reply.code(404).send({ error: "Node not found" });
+    }
+
+    if (!node.jobId) {
+      return { jobId: null, runs: [] };
+    }
+
+    return {
+      jobId: node.jobId,
+      runs: runManager.listByJobId(node.jobId),
+    };
+  });
+}

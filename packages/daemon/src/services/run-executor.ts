@@ -28,6 +28,8 @@ export type RunExecutorDeps = {
   thinkingConfig?: ThinkingConfig;
   /** Optional system prompt override (e.g. for scheduled jobs). */
   systemPrompt?: string;
+  /** Persistent session ID. When provided, the run reuses this session across executions (e.g. cron-{jobId}). */
+  sessionId?: string;
 };
 
 export type CallLLMFn = (
@@ -74,7 +76,7 @@ export async function executeRun(
     return false;
   };
 
-  const sessionId = `run-${runId}`;
+  const sessionId = deps.sessionId ?? `run-${runId}`;
   if (deps.systemPrompt) {
     await chatService.getOrCreate(sessionId, { systemPrompt: deps.systemPrompt });
   }

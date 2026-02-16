@@ -38,6 +38,7 @@ export class ChatInput extends LitElement {
   @property({ type: String }) thinkingLevel = "";
   @property({ type: Boolean }) canThink = false;
   @property({ type: Boolean }) hasUndoable = false;
+  @property({ type: Boolean }) hasRedoable = false;
   @state() private input = "";
   @state() private pendingFiles: PendingFile[] = [];
   @state() private dragOver = false;
@@ -317,11 +318,15 @@ export class ChatInput extends LitElement {
                 <span>${this.thinkingLevel && this.thinkingLevel !== "off" ? this.thinkingLevel : "Think"}</span>
               </button>
             ` : nothing}
-            ${this.hasUndoable && !this.loading ? html`
+            ${(this.hasUndoable || this.hasRedoable) && !this.loading ? html`
               <div class="toolbar-spacer"></div>
               <button class="btn-undo" @click=${() => this.emit("undo", "last")} title="Undo last action">
                 <svg viewBox="0 0 24 24"><path d="M3 10h10a5 5 0 0 1 0 10H12"/><path d="M3 10l4-4M3 10l4 4"/></svg>
-                Last
+                Undo
+              </button>
+              <button class="btn-undo" @click=${() => this.emit("redo", "last")} title="Redo last undone action" ?disabled=${!this.hasRedoable}>
+                <svg viewBox="0 0 24 24"><path d="M21 10H11a5 5 0 0 0 0 10h1"/><path d="M21 10l-4-4M21 10l-4 4"/></svg>
+                Redo
               </button>
               <button class="btn-undo" @click=${() => this.emit("undo", "all")} title="Undo all actions">
                 <svg viewBox="0 0 24 24"><path d="M3 10h10a5 5 0 0 1 0 10H12"/><path d="M3 10l4-4M3 10l4 4"/></svg>

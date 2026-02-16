@@ -26,10 +26,11 @@ const DEFAULT_USER = (name: string, tz: string) => `# USER.md — User Profile
 - **Timezone:** ${tz}
 `;
 
-const DEFAULT_IDENTITY = (botName: string) => `# IDENTITY.md — Bot Identity
+const DEFAULT_IDENTITY = (botName: string, instructions: string) => `# IDENTITY.md — Bot Identity
 
 - **Name:** ${botName}
 - **Role:** Personal AI assistant
+- **Instructions:** ${instructions}
 - **Platform:** Undoable
 `;
 
@@ -53,6 +54,14 @@ function extractField(content: string, field: string): string {
   return match?.[1]?.trim() ?? "";
 }
 
+function encodeInline(value: string): string {
+  return value.replace(/\r?\n/g, "\\n");
+}
+
+function decodeInline(value: string): string {
+  return value.replace(/\\n/g, "\n");
+}
+
 export class OnboardingService {
   isCompleted(): boolean {
     return fs.existsSync(path.join(UNDOABLE_DIR, "USER.md"));
@@ -69,7 +78,7 @@ export class OnboardingService {
       botName: extractField(identity, "Name") || "Undoable",
       timezone: extractField(user, "Timezone") || Intl.DateTimeFormat().resolvedOptions().timeZone,
       personality: soul || "",
-      instructions: extractField(identity, "Role") || "",
+      instructions: decodeInline(extractField(identity, "Instructions") || extractField(identity, "Role") || ""),
       completed: this.isCompleted(),
     };
   }
@@ -85,7 +94,10 @@ export class OnboardingService {
     const userContent = DEFAULT_USER(merged.userName || "User", merged.timezone);
     fs.writeFileSync(path.join(UNDOABLE_DIR, "USER.md"), userContent, "utf-8");
 
-    const identityContent = DEFAULT_IDENTITY(merged.botName || "Undoable");
+    const identityContent = DEFAULT_IDENTITY(
+      merged.botName || "Undoable",
+      encodeInline(merged.instructions?.trim() || "Personal AI assistant"),
+    );
     fs.writeFileSync(path.join(UNDOABLE_DIR, "IDENTITY.md"), identityContent, "utf-8");
 
     return merged;

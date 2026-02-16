@@ -100,6 +100,11 @@ export class ChatMessages extends LitElement {
 
     this.playingMsgIndex = msgIndex;
     try {
+      const ttsStatus = await api.gateway.tts.status().catch(() => null);
+      if (ttsStatus && !ttsStatus.enabled) {
+        throw new Error("Voice is disabled. Enable it in Settings → Voice.");
+      }
+
       const res = await fetch("/api/chat/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

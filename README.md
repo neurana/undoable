@@ -1,16 +1,45 @@
 # Undoable
 
-Security-first, local-first computer agent runtime with transactional execution.
+Security-first, local-first agent runtime with **transactional execution**, **reversible changes**, and **SWARM orchestration**.
 
-Every AI agent action is **planned**, **sandboxed**, **diffed**, **approved**, and **reversible**.
+Every agent action is planned, isolated, reviewed, and traceable.
 
-## How It Works
+## Core Execution Model
 
 ```
-PLAN (read-only)  →  SHADOW (isolated execution)  →  APPLY (after approval)  →  UNDO (rollback)
+PLAN (read-only) → SHADOW (isolated execution) → APPLY (approved changes) → UNDO (rollback)
 ```
 
-Each run produces a **receipt** with a cryptographic **fingerprint** for verifiability.
+Each run includes a receipt and cryptographic fingerprint for integrity verification.
+
+## Why Undoable
+
+- **Security by default**: sandboxed execution, approval gates, policy-controlled tools, and auditable operations.
+- **Real undo**: apply only after review, then rollback run effects when needed.
+- **Operator visibility**: status, events, receipts, and run history are first-class.
+- **SWARM workflows**: build DAG-style multi-node workflows with schedules and dependency edges.
+
+## Security Highlights
+
+- Isolated shadow execution (Docker-first runtime)
+- Explicit apply step before mutation
+- Tool-level policy enforcement (e.g. web/file/exec constraints)
+- Approval and audit trail support
+- Fingerprint verification for run receipts
+
+## Undo & Recovery Highlights
+
+- Transactional lifecycle: Plan → Shadow → Apply → Undo
+- Reversible run changes via run-level undo
+- Job history controls (undo/redo) for scheduling operations
+- Pause/resume/cancel for long-running runs
+
+## SWARM Highlights
+
+- Workflow model: **nodes + directed edges** (DAG validation)
+- Node schedules mapped to scheduler jobs
+- Workflow/node enablement controls job behavior
+- Manage through daemon APIs (`/swarm/workflows/...`) and UI SWARM view
 
 ## Quick Start
 
@@ -18,82 +47,58 @@ Each run produces a **receipt** with a cryptographic **fingerprint** for verifia
 # Start infrastructure
 docker compose -f docker/docker-compose.yml up -d
 
-# Start the daemon
+# Start daemon
 nrn daemon start
 
-# Plan a task (read-only)
+# Read-only planning
 nrn plan "refactor this repo to add zod validation"
 
-# Shadow run (safe execution in isolated workspace)
+# Isolated shadow run
 nrn shadow "refactor this repo to add zod validation" --cwd .
 
-# Apply changes (requires approval)
+# Apply approved changes
 nrn apply --run <run_id>
 
-# Undo changes
+# Roll back
 nrn undo --run <run_id>
 
-# Stream a run in real time
+# Inspect and verify
 nrn stream <run_id>
-
-# View receipt
 nrn receipt <run_id> --format md
-
-# Verify fingerprint integrity
 nrn verify <run_id>
 ```
 
-## Architecture
+## Packages
 
 | Package | Description |
 |---------|-------------|
 | `@undoable/shared` | Shared types, utilities, crypto helpers |
-| `@undoable/core` | Engine: phases, event bus, tools, agents, policy |
-| `@undoable/daemon` | HTTP/SSE server (nrn-agentd) |
-| `@undoable/cli` | CLI entrypoint (nrn) |
+| `@undoable/core` | Engine: phases, tools, agents, policies, scheduling primitives |
+| `@undoable/daemon` | HTTP/SSE server and orchestration services |
+| `@undoable/cli` | CLI entrypoint (`nrn`) |
 | `@undoable/llm-sdk` | LLM provider plugin SDK |
-| `@undoable/sandbox` | Docker sandbox runtime |
-
-## Key Features
-
-- **Transactional execution** — Plan → Shadow → Apply → Undo
-- **Docker-first isolation** — shadow runs execute inside containers
-- **Multi-agent** — configurable agents with routing rules and subagent delegation
-- **Multi-user** — RBAC (admin/operator/viewer) with per-user audit trails
-- **Browser tool** — Playwright-based browser automation inside sandbox
-- **HTTP tool** — policy-gated HTTP requests with full audit
-- **Pluggable LLMs** — OpenAI, Anthropic, Gemini, Ollama, or manual plans
-- **Verifiable runs** — cryptographic fingerprints + receipts
-- **Pause/Resume** — checkpoint-based long-running task support
-- **Real-time streaming** — SSE for CLI, WebSocket for UI
+| `@undoable/sandbox` | Sandbox runtime |
 
 ## Configuration
 
-Config is loaded from three sources (in order of precedence):
+Resolution order:
 
-1. **Environment variables** — `UNDOABLE_DAEMON_PORT`, `UNDOABLE_JWT_SECRET`, `UNDOABLE_DATABASE_URL`, `UNDOABLE_LOG_LEVEL`
-2. **Project config** — `.undoable/config.yaml` in project root
-3. **Global config** — `~/.undoable/config.yaml`
+1. Environment variables
+2. Project config: `.undoable/config.yaml`
+3. Global config: `~/.undoable/config.yaml`
 
 ```bash
-nrn config list          # Show resolved config
+nrn config list
 nrn config get daemon.port
 nrn config set daemon.port 9000
-nrn doctor               # Diagnose setup (Node, Docker, Git, config)
+nrn doctor
 ```
 
 ## Development
 
 ```bash
 pnpm install
-pnpm test                # 423 tests across 43 files
-```
-
-Type check all packages:
-```bash
-for pkg in shared core daemon cli llm-sdk sandbox; do
-  npx tsc --noEmit -p packages/$pkg/tsconfig.json
-done
+pnpm test
 ```
 
 ## License

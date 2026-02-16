@@ -18,15 +18,27 @@ import { SkillsService } from "../services/skills-service.js";
 import { skillsRoutes } from "../routes/skills.js";
 import { instructionsRoutes } from "../routes/instructions.js";
 import { InstructionsStore } from "../services/instructions-store.js";
-import { createGatewayAuthHook } from "../auth/middleware.js";
+import { authorizeGatewayHeaders, createGatewayAuthHook } from "../auth/middleware.js";
 import { resolveRunMode, shouldAutoApprove, type RunMode } from "../actions/run-mode.js";
 import { ProviderService } from "../services/provider-service.js";
 import { MemoryService } from "../services/memory-service.js";
 import { SandboxExecService } from "../services/sandbox-exec.js";
 import { HeartbeatService } from "../services/heartbeat-service.js";
 import { heartbeatRoutes } from "../routes/heartbeat.js";
+import { swarmRoutes } from "../routes/swarm.js";
 import { CanvasService } from "../services/canvas-service.js";
 import { fileRoutes } from "../routes/files.js";
+import { channelRoutes } from "../routes/channels.js";
+import { gatewayRoutes } from "../routes/gateway.js";
+import { ChannelManager, createTelegramChannel, createDiscordChannel, createSlackChannel, createWhatsAppChannel } from "../channels/index.js";
+import { WizardService } from "../services/wizard-service.js";
+import { CronRunLogService } from "../services/cron-run-log-service.js";
+import { ExecApprovalService } from "../services/exec-approval-service.js";
+import { NodeGatewayService } from "../services/node-gateway-service.js";
+import { ConnectorRegistry } from "../connectors/index.js";
+import { CANVAS_HOST_PATH, CANVAS_WS_PATH, createCanvasHostHandler } from "../services/canvas-host.js";
+import { recoverExecRegistryState } from "../tools/exec-registry.js";
+import { SwarmService } from "../services/swarm-service.js";
 
 export type ServerOptions = {
   port: number;
@@ -38,7 +50,14 @@ export async function createServer(opts: ServerOptions) {
   const app = Fastify({ logger: true });
 
   const eventBus = new EventBus();
-  const runManager = new RunManager(eventBus);
+  const runStatePath = process.env.UNDOABLE_RUN_STATE_FILE?.trim();
+  const runManager = new RunManager(eventBus, {
+    stateFilePath: runStatePath && runStatePath.length > 0 ? runStatePath : undefined,
+  });
+  const execRecovery = recoverExecRegistryState();
+  if (execRecovery.runningRecovered > 0 || execRecovery.finishedRecovered > 0 || execRecovery.staleRunningDropped > 0) {
+    app.log.info(execRecovery, "recovered persisted exec sessions");
+  }
 
   // Persist all run events so they can be replayed on reconnect
   eventBus.onAll((event) => {
@@ -67,6 +86,7 @@ export async function createServer(opts: ServerOptions) {
   let executorDepsRef: { deps: import("../services/run-executor.js").RunExecutorDeps } | null = null;
 
   const storePath = path.join(os.homedir(), ".undoable", "scheduler-jobs.json");
+  const cronRuns = new CronRunLogService();
 
   const SCHEDULED_JOB_SYSTEM_PROMPT = [
     "You are Undoable executing a SCHEDULED JOB. This is an automated task — not an interactive conversation.",
@@ -74,11 +94,15 @@ export async function createServer(opts: ServerOptions) {
     "IMPORTANT RULES:",
     "1. Execute the instruction immediately using your tools. Do NOT ask clarifying questions.",
     "2. Do NOT greet the user or ask what they need. The instruction below is the complete task.",
-    "3. Use your tools (exec, browser, web_fetch, read_file, write_file, etc.) to accomplish the task.",
+    "3. Use your tools (exec, web_search, browser, browse_page, web_fetch, read_file, write_file, edit_file, etc.) to accomplish the task.",
     "4. When done, return a concise summary of what you did and the results.",
     "5. If the task cannot be completed, explain why in your response.",
     "",
     "You have full access to the system. Act autonomously and complete the task.",
+    "",
+    "CONTEXT: This session is persistent across runs of this scheduled job.",
+    "The conversation history above contains your previous executions.",
+    "Use that context to avoid repeating work, track progress, and build on prior results.",
   ].join("\n");
 
   const scheduler = new SchedulerService({
@@ -90,6 +114,7 @@ export async function createServer(opts: ServerOptions) {
           userId: "scheduler",
           agentId,
           instruction: job.payload.instruction,
+          jobId: job.id,
         });
         app.log.info({ jobId: job.id, runId: run.id, agentId }, "scheduler: created run");
         if (executorDepsRef) {
@@ -98,6 +123,7 @@ export async function createServer(opts: ServerOptions) {
             await executeRun(run.id, job.payload.instruction, {
               ...executorDepsRef.deps,
               systemPrompt: SCHEDULED_JOB_SYSTEM_PROMPT,
+              sessionId: `cron-${job.id}`,
               maxIterations: 50,
             });
             const finalStatus = runManager.getById(run.id)?.status;
@@ -117,12 +143,57 @@ export async function createServer(opts: ServerOptions) {
       }
     },
     onEvent: (evt: SchedulerEvent) => {
+      cronRuns.append(evt);
       app.log.info({ scheduler: evt }, "scheduler event");
     },
   });
+  const swarmService = new SwarmService({ scheduler });
+  await swarmService.reconcileJobs();
 
   const gatewayToken = process.env.UNDOABLE_TOKEN;
   app.addHook("onRequest", createGatewayAuthHook(gatewayToken));
+
+  const canvasHost = await createCanvasHostHandler({
+    rootDir: process.env.UNDOABLE_CANVAS_ROOT,
+    basePath: CANVAS_HOST_PATH,
+    liveReload: process.env.UNDOABLE_CANVAS_LIVE_RELOAD === "false" ? false : true,
+    logError: (message) => app.log.error({ message }, "canvas host"),
+  });
+  if (canvasHost.rootDir) {
+    app.log.info({ path: `${CANVAS_HOST_PATH}/`, rootDir: canvasHost.rootDir }, "canvas host mounted");
+  }
+
+  const handleCanvasRequest = async (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
+    const handled = await canvasHost.handleHttpRequest(req.raw, reply.raw);
+    if (!handled) {
+      reply.code(404).send({ error: "Not Found" });
+      return;
+    }
+    reply.hijack();
+  };
+
+  app.get(CANVAS_HOST_PATH, handleCanvasRequest);
+  app.get(`${CANVAS_HOST_PATH}/*`, handleCanvasRequest);
+
+  app.server.on("upgrade", (req, socket, head) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname !== CANVAS_WS_PATH) {
+      return;
+    }
+
+    const identity = authorizeGatewayHeaders(req.headers, gatewayToken);
+    if (!identity) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    const upgraded = canvasHost.handleUpgrade(req, socket, head);
+    if (!upgraded) {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+    }
+  });
 
   const chatService = new ChatService();
   const runMode = resolveRunMode({
@@ -146,17 +217,42 @@ export async function createServer(opts: ServerOptions) {
   const skillsService = new SkillsService();
   const memorySvc = new MemoryService();
   await memorySvc.init();
+  const wizardService = new WizardService();
+  const execApprovalService = new ExecApprovalService();
+  const nodeGatewayService = new NodeGatewayService();
+  const connectorRegistry = new ConnectorRegistry();
   const sandboxExec = new SandboxExecService();
   const heartbeatSvc = new HeartbeatService();
   heartbeatSvc.start({
     onSessionDead: (id) => app.log.info({ sessionId: id }, "session marked dead by heartbeat"),
   });
-  const browserSvc = await createBrowserService();
+  const browserHeadless = process.env.UNDOABLE_BROWSER_HEADLESS !== "false";
+  const browserViewport = process.env.UNDOABLE_BROWSER_VIEWPORT
+    ? (() => { const [w, h] = process.env.UNDOABLE_BROWSER_VIEWPORT!.split("x").map(Number); return w && h ? { width: w, height: h } : undefined; })()
+    : undefined;
+  const browserSvc = await createBrowserService({
+    headless: browserHeadless,
+    viewport: browserViewport,
+    userAgent: process.env.UNDOABLE_BROWSER_USER_AGENT || undefined,
+    persistSession: process.env.UNDOABLE_BROWSER_PERSIST_SESSION === "true",
+    launchArgs: process.env.UNDOABLE_BROWSER_ARGS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+  });
   const canvasService = new CanvasService();
 
   const { createToolRegistry } = await import("../tools/index.js");
   const { callLLM } = await import("../routes/chat.js");
-  const runRegistry = createToolRegistry({ runManager, scheduler, browserSvc, memoryService: memorySvc, canvasService, approvalMode: shouldAutoApprove(runMode) ? "off" as const : undefined });
+  const runRegistry = createToolRegistry({
+    runManager,
+    scheduler,
+    browserSvc,
+    connectorRegistry,
+    memoryService: memorySvc,
+    canvasService,
+    swarmService,
+    sandboxExec,
+    sandboxSessionId: "daemon",
+    approvalMode: shouldAutoApprove(runMode) ? "off" as const : undefined,
+  });
 
   const boundCallLLM = (messages: unknown[], toolDefs: unknown[], stream: boolean) => {
     const conf = providerSvc
@@ -177,6 +273,17 @@ export async function createServer(opts: ServerOptions) {
     },
   };
 
+  const channelManager = new ChannelManager({
+    chatService,
+    eventBus,
+    callLLM: boundCallLLM,
+    registry: runRegistry,
+  });
+  channelManager.register(createTelegramChannel());
+  channelManager.register(createDiscordChannel());
+  channelManager.register(createSlackChannel());
+  channelManager.register(createWhatsAppChannel());
+
   await app.register(healthRoutes);
   runRoutes(app, runManager, auditService, {
     eventBus,
@@ -190,24 +297,45 @@ export async function createServer(opts: ServerOptions) {
   });
   eventRoutes(app, eventBus, runManager);
   jobRoutes(app, scheduler);
+  swarmRoutes(app, swarmService, runManager);
   agentRoutes(app, agentRegistry, instructionsStore);
   instructionsRoutes(app, instructionsStore);
   voiceRoutes(app, { apiKey: chatConfig.apiKey, baseUrl: chatConfig.baseUrl });
   skillsRoutes(app, skillsService);
   heartbeatRoutes(app, heartbeatSvc);
-  chatRoutes(app, chatService, chatConfig, runManager, scheduler, browserSvc, skillsService, providerSvc, agentRegistry, instructionsStore, memorySvc, sandboxExec, heartbeatSvc);
+  chatRoutes(app, chatService, chatConfig, runManager, scheduler, browserSvc, skillsService, providerSvc, agentRegistry, instructionsStore, memorySvc, sandboxExec, heartbeatSvc, swarmService);
   fileRoutes(app);
+  channelRoutes(app, channelManager);
+  gatewayRoutes(app, {
+    scheduler,
+    cronRuns,
+    chatService,
+    heartbeatService: heartbeatSvc,
+    wizardService,
+    skillsService,
+    channelManager,
+    browserService: browserSvc,
+    providerService: providerSvc,
+    execApprovalService,
+    nodeGatewayService,
+    connectorRegistry,
+    agentRegistry,
+    instructionsStore,
+  });
 
   return {
     start: async () => {
       await scheduler.start();
+      await channelManager.startAll();
       const host = opts.host ?? "127.0.0.1";
       await app.listen({ port: opts.port, host });
     },
     stop: async () => {
       scheduler.stop();
       heartbeatSvc.stop();
+      await channelManager.stopAll();
       await providerSvc.destroy();
+      await canvasHost.close();
       await browserSvc.close();
       await app.close();
     },

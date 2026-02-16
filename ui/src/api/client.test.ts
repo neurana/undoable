@@ -66,6 +66,54 @@ describe("api.agents", () => {
   });
 });
 
+describe("api.jobs", () => {
+  it("history undo calls POST /api/jobs/history/undo", async () => {
+    mockFetch.mockResolvedValue(mockResponse({
+      ok: true,
+      result: { ok: true, kind: "create", label: "Created job \"x\"" },
+      status: { undoCount: 0, redoCount: 1 },
+    }));
+
+    const result = await api.jobs.undo();
+    expect(result.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/jobs/history/undo",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+});
+
+describe("api.gateway", () => {
+  it("tts.status calls gateway RPC", async () => {
+    mockFetch.mockResolvedValue(mockResponse({ ok: true, result: { enabled: true, provider: "system", providers: ["system"] } }));
+    const result = await api.gateway.tts.status();
+    expect(result.enabled).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/gateway",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ method: "tts.status", params: {} }),
+      }),
+    );
+  });
+
+  it("agents.files.set calls gateway RPC with content", async () => {
+    mockFetch.mockResolvedValue(mockResponse({ ok: true, result: { agentId: "a1", path: "instructions.md", version: 2 } }));
+    const result = await api.gateway.agentsFiles.set("a1", "hello", "summary");
+    expect(result.version).toBe(2);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/gateway",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          method: "agents.files.set",
+          params: { agentId: "a1", path: "instructions.md", content: "hello", summary: "summary" },
+        }),
+      }),
+    );
+  });
+});
+
 describe("streamEvents", () => {
   it("creates EventSource and returns cleanup function", () => {
     const closeFn = vi.fn();

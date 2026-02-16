@@ -2,6 +2,7 @@ import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import os from "node:os";
 import { LocalModelDiscovery, type DiscoveredModel, type LocalProvider } from "./local-model-discovery.js";
+import { decryptSecret, encryptSecret, resolveSecretKey } from "./secrets-crypto.js";
 
 /**
  * Provider and model management for Undoable.
@@ -43,9 +44,15 @@ export type ActiveModel = {
 };
 
 export type ProvidersState = {
-  providers: ProviderConfig[];
+  version?: 1;
+  providers: ProviderStateEntry[];
   activeProvider: string;
   activeModel: string;
+};
+
+type ProviderStateEntry = Omit<ProviderConfig, "apiKey"> & {
+  apiKey?: string;
+  apiKeyEncrypted?: string;
 };
 
 const PROVIDERS_FILE = path.join(os.homedir(), ".undoable", "providers.json");
@@ -112,6 +119,8 @@ export class ProviderService {
   private activeModel = "";
   private localDiscovery = new LocalModelDiscovery();
   private discoveredModels: DiscoveredModel[] = [];
+  private secretKey: Buffer | null = null;
+  private secretKeyInitialized = false;
 
   async init(initialApiKey: string, initialModel: string, initialBaseUrl: string): Promise<void> {
     await this.loadState();
@@ -287,11 +296,65 @@ export class ProviderService {
     return true;
   }
 
+  private async ensureSecretKey(): Promise<void> {
+    if (this.secretKeyInitialized) return;
+    const resolved = await resolveSecretKey();
+    this.secretKey = resolved.key;
+    this.secretKeyInitialized = true;
+  }
+
+  private hydrateProvider(entry: ProviderStateEntry): ProviderConfig {
+    const legacyApiKey = typeof entry.apiKey === "string" ? entry.apiKey : "";
+    let apiKey = legacyApiKey;
+
+    if (typeof entry.apiKeyEncrypted === "string" && this.secretKey) {
+      const decrypted = decryptSecret(entry.apiKeyEncrypted, this.secretKey);
+      if (decrypted !== null) {
+        apiKey = decrypted;
+      }
+    }
+
+    return {
+      id: entry.id,
+      name: entry.name,
+      baseUrl: entry.baseUrl,
+      apiKey,
+      models: entry.models ?? [],
+    };
+  }
+
+  private toStateProvider(provider: ProviderConfig): ProviderStateEntry {
+    const entry: ProviderStateEntry = {
+      id: provider.id,
+      name: provider.name,
+      baseUrl: provider.baseUrl,
+      models: provider.models,
+    };
+
+    const key = provider.apiKey.trim();
+    if (!key) return entry;
+
+    if (this.secretKey) {
+      return {
+        ...entry,
+        apiKeyEncrypted: encryptSecret(key, this.secretKey),
+      };
+    }
+
+    // Fallback for environments where a local secret key cannot be resolved.
+    return {
+      ...entry,
+      apiKey: key,
+    };
+  }
+
   private async loadState(): Promise<void> {
+    await this.ensureSecretKey();
     try {
       const raw = await fsp.readFile(PROVIDERS_FILE, "utf-8");
       const state = JSON.parse(raw) as ProvidersState;
-      this.providers = state.providers ?? [];
+      const providers = Array.isArray(state.providers) ? state.providers : [];
+      this.providers = providers.map((entry) => this.hydrateProvider(entry));
       this.activeProvider = state.activeProvider ?? "";
       this.activeModel = state.activeModel ?? "";
     } catch {
@@ -300,13 +363,18 @@ export class ProviderService {
   }
 
   private async saveState(): Promise<void> {
+    await this.ensureSecretKey();
     const dir = path.dirname(PROVIDERS_FILE);
     await fsp.mkdir(dir, { recursive: true });
     const state: ProvidersState = {
-      providers: this.providers,
+      version: 1,
+      providers: this.providers.map((provider) => this.toStateProvider(provider)),
       activeProvider: this.activeProvider,
       activeModel: this.activeModel,
     };
-    await fsp.writeFile(PROVIDERS_FILE, JSON.stringify(state, null, 2), "utf-8");
+    await fsp.writeFile(PROVIDERS_FILE, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
+    await fsp.chmod(PROVIDERS_FILE, 0o600).catch(() => {
+      // best effort
+    });
   }
 }

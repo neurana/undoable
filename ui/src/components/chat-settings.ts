@@ -1,5 +1,6 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import { api } from "../api/client.js";
 
 type ModelInfo = {
   id: string;
@@ -24,6 +25,12 @@ type LocalServerInfo = {
   available: boolean;
   modelCount: number;
   lastChecked?: number;
+};
+
+type TtsStatus = {
+  enabled: boolean;
+  provider: string;
+  providers: string[];
 };
 
 @customElement("chat-settings")
@@ -134,6 +141,22 @@ export class ChatSettings extends LitElement {
       background: transparent; color: var(--text-secondary, #666);
       font-size: 10px; font-weight: 600; cursor: pointer; font-family: inherit;
     }
+    .form-select,
+    .form-input {
+      min-width: 140px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-strong, #ccc);
+      background: var(--surface-1, #fff);
+      color: var(--text-primary, #1a1a1a);
+      font-size: 11px;
+      font-family: inherit;
+    }
+    .form-select:focus,
+    .form-input:focus {
+      outline: none;
+      border-color: var(--accent, #00D090);
+    }
     .btn-key:hover { background: var(--wash, #f0f0f0); }
     .btn-key.danger { color: var(--danger, #c0392b); border-color: var(--danger, #c0392b); }
     .btn-key.danger:hover { background: rgba(192,57,43,0.05); }
@@ -143,11 +166,13 @@ export class ChatSettings extends LitElement {
   @property({ type: String }) currentModel = "";
   @property({ type: String }) currentProvider = "";
 
-  @state() private tab: "models" | "providers" = "models";
+  @state() private tab: "models" | "providers" | "voice" = "models";
   @state() private models: ModelInfo[] = [];
   @state() private providers: ProviderInfo[] = [];
   @state() private localServers: LocalServerInfo[] = [];
   @state() private refreshingLocal = false;
+  @state() private tts: TtsStatus = { enabled: false, provider: "system", providers: ["system"] };
+  @state() private customVoiceProvider = "";
 
   private emit(name: string, detail?: unknown) {
     this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true }));
@@ -166,10 +191,12 @@ export class ChatSettings extends LitElement {
 
   private async loadData() {
     try {
-      const [modelsRes, providersRes, serversRes] = await Promise.all([
+      const [modelsRes, providersRes, serversRes, ttsStatus, ttsProviders] = await Promise.all([
         fetch("/api/chat/models"),
         fetch("/api/chat/providers"),
         fetch("/api/chat/local-servers").catch(() => null),
+        api.gateway.tts.status().catch(() => null),
+        api.gateway.tts.providers().catch(() => null),
       ]);
       if (modelsRes.ok) {
         const data = await modelsRes.json() as { models: ModelInfo[] };
@@ -183,7 +210,87 @@ export class ChatSettings extends LitElement {
         const data = await serversRes.json() as { servers: LocalServerInfo[] };
         this.localServers = data.servers;
       }
+      if (ttsStatus) {
+        this.tts = ttsStatus;
+      }
+      if (ttsProviders) {
+        this.tts = {
+          enabled: this.tts.enabled,
+          provider: ttsProviders.active,
+          providers: ttsProviders.providers,
+        };
+      }
     } catch { /* ignore */ }
+  }
+
+  private async toggleVoiceEnabled(enabled: boolean) {
+    try {
+      const next = enabled
+        ? await api.gateway.tts.enable()
+        : await api.gateway.tts.disable();
+      this.tts = {
+        ...this.tts,
+        enabled: next.enabled,
+        provider: next.provider,
+      };
+    } catch { /* ignore */ }
+  }
+
+  private async selectVoiceProvider(provider: string) {
+    if (!provider) return;
+    try {
+      const next = await api.gateway.tts.setProvider(provider);
+      this.tts = {
+        enabled: this.tts.enabled,
+        provider: next.provider,
+        providers: next.providers,
+      };
+      this.customVoiceProvider = "";
+    } catch { /* ignore */ }
+  }
+
+  private renderVoice() {
+    return html`
+      <div class="provider-row">
+        <div class="provider-info">
+          <div class="provider-label">Text-to-Speech</div>
+          <div class="provider-url">Controls gateway TTS state used by parity APIs.</div>
+        </div>
+        <span class="key-status ${this.tts.enabled ? "key-set" : "key-missing"}">${this.tts.enabled ? "Enabled" : "Disabled"}</span>
+        <button class="btn-key" @click=${() => this.toggleVoiceEnabled(!this.tts.enabled)}>
+          ${this.tts.enabled ? "Disable" : "Enable"}
+        </button>
+      </div>
+
+      <div class="provider-row">
+        <div class="provider-info">
+          <div class="provider-label">Voice Provider</div>
+          <div class="provider-url">Current: ${this.tts.provider}</div>
+        </div>
+        <select class="form-select" @change=${(e: Event) => this.selectVoiceProvider((e.target as HTMLSelectElement).value)}>
+          ${this.tts.providers.map((provider) => html`
+            <option value=${provider} ?selected=${provider === this.tts.provider}>${provider}</option>
+          `)}
+        </select>
+      </div>
+
+      <div class="provider-row">
+        <div class="provider-info">
+          <div class="provider-label">Add custom provider</div>
+          <div class="provider-url">Registers provider name in gateway TTS providers list.</div>
+        </div>
+        <input
+          class="form-input"
+          type="text"
+          .value=${this.customVoiceProvider}
+          @input=${(e: Event) => {
+            this.customVoiceProvider = (e.target as HTMLInputElement).value;
+          }}
+          placeholder="e.g. openai-tts"
+        />
+        <button class="btn-key" @click=${() => this.selectVoiceProvider(this.customVoiceProvider.trim())}>Add</button>
+      </div>
+    `;
   }
 
   private async refreshLocalModels() {
@@ -336,9 +443,14 @@ export class ChatSettings extends LitElement {
           <div class="tabs">
             <button class="tab" ?data-active=${this.tab === "models"} @click=${() => this.tab = "models"}>Models</button>
             <button class="tab" ?data-active=${this.tab === "providers"} @click=${() => this.tab = "providers"}>API Keys</button>
+            <button class="tab" ?data-active=${this.tab === "voice"} @click=${() => this.tab = "voice"}>Voice</button>
           </div>
           <div class="panel-body">
-            ${this.tab === "models" ? this.renderModels() : this.renderProviders()}
+            ${this.tab === "models"
+              ? this.renderModels()
+              : this.tab === "providers"
+                ? this.renderProviders()
+                : this.renderVoice()}
           </div>
         </div>
       </div>

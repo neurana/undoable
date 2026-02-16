@@ -12,6 +12,8 @@ export type UndoResult = {
 export class UndoService {
   private engine: UndoEngine;
   private actionLog: ActionLog;
+  private redoSnapshots = new Map<string, FileUndoData>();
+  private redoStack: string[] = [];
 
   constructor(actionLog: ActionLog) {
     this.engine = new UndoEngine();
@@ -62,7 +64,69 @@ export class UndoService {
     return this.actionLog.undoableActions(runId);
   }
 
+  listRedoable(runId?: string): ActionRecord[] {
+    const records: ActionRecord[] = [];
+    for (const actionId of this.redoStack) {
+      const record = this.actionLog.getById(actionId);
+      if (!record) continue;
+      if (runId && record.runId !== runId) continue;
+      records.push(record);
+    }
+    return records;
+  }
+
+  async redoAction(actionId: string): Promise<UndoResult> {
+    const action = this.actionLog.getById(actionId);
+    if (!action) {
+      return { actionId, toolName: "unknown", success: false, error: "Action not found" };
+    }
+    const redo = this.redoSnapshots.get(actionId);
+    if (!redo) {
+      return { actionId, toolName: action.toolName, success: false, error: "Action is not available for redo" };
+    }
+
+    if (redo.type !== "file") {
+      return { actionId, toolName: action.toolName, success: false, error: `Unsupported redo type: ${redo.type}` };
+    }
+
+    const restore: FileBackup = {
+      path: redo.path,
+      content: redo.previousContent,
+      existed: redo.previousExisted,
+    };
+    const result = await this.engine.undoWithFileRestore([restore]);
+    if (result.success) {
+      this.redoSnapshots.delete(actionId);
+      this.removeFromRedoStack(actionId);
+    }
+    return {
+      actionId: action.id,
+      toolName: action.toolName,
+      success: result.success,
+      error: result.error,
+    };
+  }
+
+  async redoLastN(n: number, runId?: string): Promise<UndoResult[]> {
+    const queued = this.getRedoCandidates(runId).slice(-n).reverse();
+    const results: UndoResult[] = [];
+    for (const actionId of queued) {
+      results.push(await this.redoAction(actionId));
+    }
+    return results;
+  }
+
+  async redoAll(runId?: string): Promise<UndoResult[]> {
+    const queued = this.getRedoCandidates(runId).reverse();
+    const results: UndoResult[] = [];
+    for (const actionId of queued) {
+      results.push(await this.redoAction(actionId));
+    }
+    return results;
+  }
+
   private async undoFileAction(action: ActionRecord, undo: FileUndoData): Promise<UndoResult> {
+    const beforeUndo = await this.engine.backupFile(undo.path);
     const backup: FileBackup = {
       path: undo.path,
       content: undo.previousContent,
@@ -70,11 +134,31 @@ export class UndoService {
     };
 
     const result = await this.engine.undoWithFileRestore([backup]);
+    if (result.success) {
+      this.redoSnapshots.set(action.id, {
+        type: "file",
+        path: undo.path,
+        previousContent: beforeUndo.content,
+        previousExisted: beforeUndo.existed,
+      });
+      this.removeFromRedoStack(action.id);
+      this.redoStack.push(action.id);
+    }
     return {
       actionId: action.id,
       toolName: action.toolName,
       success: result.success,
       error: result.error,
     };
+  }
+
+  private removeFromRedoStack(actionId: string) {
+    const idx = this.redoStack.lastIndexOf(actionId);
+    if (idx >= 0) this.redoStack.splice(idx, 1);
+  }
+
+  private getRedoCandidates(runId?: string): string[] {
+    if (!runId) return [...this.redoStack];
+    return this.redoStack.filter((id) => this.actionLog.getById(id)?.runId === runId);
   }
 }

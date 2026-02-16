@@ -164,4 +164,70 @@ describe("UndoService", () => {
 
     expect(undoService.listUndoable().length).toBe(1);
   });
+
+  it("redo restores content after undo", async () => {
+    const filePath = path.join(tmpDir, "redo.txt");
+    await fs.writeFile(filePath, "before");
+
+    const action = await actionLog.record({
+      toolName: "edit_file",
+      category: "mutate",
+      args: { path: filePath },
+      approval: "auto-approved",
+      undoable: true,
+      undoData: { type: "file", path: filePath, previousContent: "before", previousExisted: true },
+    });
+    await fs.writeFile(filePath, "after");
+    await actionLog.complete(action.id, { edited: true });
+
+    const undone = await undoService.undoAction(action.id);
+    expect(undone.success).toBe(true);
+    expect(await fs.readFile(filePath, "utf-8")).toBe("before");
+
+    const redoable = undoService.listRedoable();
+    expect(redoable.map((r) => r.id)).toContain(action.id);
+
+    const redone = await undoService.redoAction(action.id);
+    expect(redone.success).toBe(true);
+    expect(await fs.readFile(filePath, "utf-8")).toBe("after");
+  });
+
+  it("redoAll reapplies multiple undone actions", async () => {
+    const f1 = path.join(tmpDir, "redo-all-1.txt");
+    const f2 = path.join(tmpDir, "redo-all-2.txt");
+    await fs.writeFile(f1, "one-before");
+    await fs.writeFile(f2, "two-before");
+
+    const a1 = await actionLog.record({
+      toolName: "edit_file",
+      category: "mutate",
+      args: { path: f1 },
+      approval: "auto-approved",
+      undoable: true,
+      undoData: { type: "file", path: f1, previousContent: "one-before", previousExisted: true },
+    });
+    await fs.writeFile(f1, "one-after");
+    await actionLog.complete(a1.id, { edited: true });
+
+    const a2 = await actionLog.record({
+      toolName: "edit_file",
+      category: "mutate",
+      args: { path: f2 },
+      approval: "auto-approved",
+      undoable: true,
+      undoData: { type: "file", path: f2, previousContent: "two-before", previousExisted: true },
+    });
+    await fs.writeFile(f2, "two-after");
+    await actionLog.complete(a2.id, { edited: true });
+
+    await undoService.undoAll();
+    expect(await fs.readFile(f1, "utf-8")).toBe("one-before");
+    expect(await fs.readFile(f2, "utf-8")).toBe("two-before");
+
+    const results = await undoService.redoAll();
+    expect(results).toHaveLength(2);
+    expect(results.every((r) => r.success)).toBe(true);
+    expect(await fs.readFile(f1, "utf-8")).toBe("one-after");
+    expect(await fs.readFile(f2, "utf-8")).toBe("two-after");
+  });
 });

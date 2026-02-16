@@ -274,6 +274,7 @@ describe("loadAllSkills", () => {
       bundledDir: bundled,
       userDir: user,
       workspaceDir: ws,
+      includeBundled: true,
     });
 
     expect(skills).toHaveLength(1);

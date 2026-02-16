@@ -1,6 +1,6 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { api, type JobItem, type JobStatus, type AgentItem } from "../api/client.js";
+import { api, type JobItem, type JobStatus, type AgentItem, type RunItem, type JobHistoryStatus } from "../api/client.js";
 
 @customElement("job-list")
 export class JobList extends LitElement {
@@ -63,6 +63,25 @@ export class JobList extends LitElement {
     .sched-label { font-weight: 600; color: var(--text-primary); }
     .sched-meta { color: var(--text-tertiary); font-family: var(--mono); font-size: 11px; }
     .sched-spacer { flex: 1; }
+    .undo-toolbar { display: flex; align-items: center; gap: 8px; }
+    .undo-meta {
+      font-size: 10px;
+      color: var(--text-tertiary);
+      font-family: var(--mono);
+      background: var(--wash);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-pill);
+      padding: 2px 8px;
+    }
+    .history-feedback {
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      background: var(--wash);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+    }
 
     /* Status bar */
     .status-bar {
@@ -154,6 +173,42 @@ export class JobList extends LitElement {
       border: 1px solid rgba(192,57,43,0.15);
     }
 
+    /* Run history panel */
+    .history-row td { padding: 0 12px 12px; background: var(--wash); }
+    .history-panel {
+      background: var(--surface-1); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm); padding: 12px; font-size: 11px;
+    }
+    .history-title {
+      font-weight: 600; font-size: 11px; color: var(--text-tertiary);
+      text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px;
+    }
+    .history-empty { color: var(--text-tertiary); font-style: italic; }
+    .history-item {
+      display: flex; align-items: center; gap: 10px; padding: 6px 0;
+      border-bottom: 1px solid var(--border-divider); cursor: pointer;
+      transition: background 100ms ease;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-item:hover { background: var(--wash); margin: 0 -8px; padding: 6px 8px; border-radius: 4px; }
+    .history-time { font-family: var(--mono); color: var(--text-tertiary); min-width: 130px; }
+    .history-instruction {
+      flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: var(--text-secondary);
+    }
+    .history-context {
+      font-size: 10px; color: var(--text-tertiary); margin-top: 4px;
+      padding: 6px 8px; background: var(--wash); border-radius: 4px;
+      font-family: var(--mono);
+    }
+    .btn-history {
+      padding: 2px 8px; font-size: 10px; font-weight: 500;
+      background: transparent; color: var(--text-tertiary); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-pill); cursor: pointer; margin-top: 4px; display: inline-block;
+      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
+    }
+    .btn-history:hover { color: var(--text-primary); border-color: var(--mint-strong); background: var(--wash); }
+
     @media (max-width: 640px) {
       .form-grid { grid-template-columns: 1fr; }
       table { min-width: 800px; }
@@ -168,6 +223,12 @@ export class JobList extends LitElement {
   @state() private error = "";
   @state() private showCreate = false;
   @state() private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  @state() private selectedRunId: string | null = null;
+  @state() private expandedJobId: string | null = null;
+  @state() private jobRunsCache = new Map<string, RunItem[]>();
+  @state() private historyStatus: JobHistoryStatus = { undoCount: 0, redoCount: 0 };
+  @state() private historyBusy = false;
+  @state() private historyMessage = "";
 
   // Create form state
   @state() private newName = "";
@@ -184,6 +245,15 @@ export class JobList extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    try {
+      const fromSwarm = sessionStorage.getItem("undoable_selected_run_id");
+      if (fromSwarm) {
+        this.selectedRunId = fromSwarm;
+        sessionStorage.removeItem("undoable_selected_run_id");
+      }
+    } catch {
+      // best effort only
+    }
     this.loadAll();
     this.refreshTimer = setInterval(() => this.loadAll(), 15_000);
   }
@@ -194,7 +264,7 @@ export class JobList extends LitElement {
   }
 
   private async loadAll() {
-    await Promise.all([this.loadJobs(), this.loadStatus(), this.loadAgents()]);
+    await Promise.all([this.loadJobs(), this.loadStatus(), this.loadAgents(), this.loadHistoryStatus()]);
   }
 
   private async loadJobs() {
@@ -214,6 +284,46 @@ export class JobList extends LitElement {
     try {
       this.schedulerStatus = await api.jobs.status();
     } catch { /* ignore */ }
+  }
+
+  private async loadHistoryStatus() {
+    try {
+      this.historyStatus = await api.jobs.historyStatus();
+    } catch {
+      this.historyStatus = { undoCount: 0, redoCount: 0 };
+    }
+  }
+
+  private async undoJobMutation() {
+    if (this.historyBusy || this.historyStatus.undoCount <= 0) return;
+    this.historyBusy = true;
+    this.historyMessage = "";
+    try {
+      const res = await api.jobs.undo();
+      this.historyStatus = res.status;
+      this.historyMessage = `Undid: ${res.result.label}`;
+      await this.loadJobs();
+      await this.loadStatus();
+    } catch (e) {
+      this.error = String(e);
+    }
+    this.historyBusy = false;
+  }
+
+  private async redoJobMutation() {
+    if (this.historyBusy || this.historyStatus.redoCount <= 0) return;
+    this.historyBusy = true;
+    this.historyMessage = "";
+    try {
+      const res = await api.jobs.redo();
+      this.historyStatus = res.status;
+      this.historyMessage = `Redid: ${res.result.label}`;
+      await this.loadJobs();
+      await this.loadStatus();
+    } catch (e) {
+      this.error = String(e);
+    }
+    this.historyBusy = false;
   }
 
   private buildSchedule(): Record<string, unknown> {
@@ -247,6 +357,7 @@ export class JobList extends LitElement {
         enabled: true,
         schedule: this.buildSchedule(),
         payload: this.buildPayload(),
+        deleteAfterRun: this.newDeleteAfterRun || undefined,
       });
       this.resetForm();
       await this.loadAll();
@@ -273,7 +384,7 @@ export class JobList extends LitElement {
   private async toggleJob(job: JobItem) {
     try {
       await api.jobs.update(job.id, { enabled: !job.enabled });
-      await this.loadJobs();
+      await this.loadAll();
     } catch (e) {
       this.error = String(e);
     }
@@ -289,14 +400,30 @@ export class JobList extends LitElement {
   }
 
   private viewRun(runId: string) {
-    window.history.pushState(null, "", `/runs/${runId}`);
-    window.dispatchEvent(new PopStateEvent("popstate"));
+    this.selectedRunId = runId;
+  }
+
+  private backToJobs() {
+    this.selectedRunId = null;
+  }
+
+  private async toggleHistory(jobId: string) {
+    if (this.expandedJobId === jobId) {
+      this.expandedJobId = null;
+      return;
+    }
+    this.expandedJobId = jobId;
+    try {
+      const runs = await api.runs.listByJobId(jobId);
+      runs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      this.jobRunsCache = new Map(this.jobRunsCache).set(jobId, runs);
+    } catch { /* ignore */ }
   }
 
   private async deleteJob(job: JobItem) {
     try {
       await api.jobs.remove(job.id);
-      await this.loadJobs();
+      await this.loadAll();
     } catch (e) {
       this.error = String(e);
     }
@@ -351,6 +478,12 @@ export class JobList extends LitElement {
         <span class="sched-meta">${st.jobCount} jobs</span>
         <span class="sched-meta">Next wake: ${nextWake}</span>
         <span class="sched-spacer"></span>
+        <div class="undo-toolbar">
+          <span class="undo-meta">undo ${this.historyStatus.undoCount}</span>
+          <span class="undo-meta">redo ${this.historyStatus.redoCount}</span>
+          <button class="btn-secondary btn-small" @click=${this.undoJobMutation} ?disabled=${this.historyBusy || this.historyStatus.undoCount <= 0}>Undo</button>
+          <button class="btn-secondary btn-small" @click=${this.redoJobMutation} ?disabled=${this.historyBusy || this.historyStatus.redoCount <= 0}>Redo</button>
+        </div>
         <button class="btn-primary btn-small" @click=${() => { this.showCreate = !this.showCreate; }}>+ New Job</button>
       </div>
     `;
@@ -442,6 +575,17 @@ export class JobList extends LitElement {
               .value=${this.newPayload}
               @input=${(e: Event) => this.newPayload = (e.target as HTMLTextAreaElement).value}></textarea>
           </div>
+
+          <div class="form-group form-full">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary)">
+              <input
+                type="checkbox"
+                .checked=${this.newDeleteAfterRun}
+                @change=${(e: Event) => { this.newDeleteAfterRun = (e.target as HTMLInputElement).checked; }}
+              >
+              Delete this job after first successful run
+            </label>
+          </div>
         </div>
 
         <div class="form-actions">
@@ -463,6 +607,8 @@ export class JobList extends LitElement {
 
   private renderJobRow(job: JobItem) {
     const isRunning = typeof job.state.runningAtMs === "number";
+    const isExpanded = this.expandedJobId === job.id;
+    const runs = this.jobRunsCache.get(job.id) ?? [];
     return html`
       <tr>
         <td>
@@ -489,6 +635,9 @@ export class JobList extends LitElement {
               : "—"}
           ${job.state.lastDurationMs ? html`<div class="status-detail">${this.fmtDuration(job.state.lastDurationMs)}</div>` : nothing}
           ${job.state.lastRunId ? html`<button class="btn-view-run" @click=${() => this.viewRun(job.state.lastRunId!)}>View Run</button>` : nothing}
+          <button class="btn-history" @click=${() => this.toggleHistory(job.id)}>
+            ${isExpanded ? "Hide History" : "History"}
+          </button>
           ${job.state.lastError ? html`<div class="status-error">${job.state.lastError}</div>` : nothing}
           ${(job.state.consecutiveErrors ?? 0) > 1 ? html`<div class="consecutive-errors">${job.state.consecutiveErrors} consecutive errors</div>` : nothing}
         </td>
@@ -512,12 +661,36 @@ export class JobList extends LitElement {
           </div>
         </td>
       </tr>
+      ${isExpanded ? html`
+        <tr class="history-row">
+          <td colspan="7">
+            <div class="history-panel">
+              <div class="history-title">Run History</div>
+              <div class="history-context">Session: cron-${job.id} (persistent across runs)</div>
+              ${runs.length === 0
+                ? html`<div class="history-empty">No runs recorded yet</div>`
+                : runs.map(r => html`
+                  <div class="history-item" @click=${() => this.viewRun(r.id)}>
+                    <span class="badge badge-${r.status === "completed" ? "ok" : r.status === "failed" ? "error" : "running"}">${r.status}</span>
+                    <span class="history-time">${new Date(r.createdAt).toLocaleString()}</span>
+                    <span class="history-instruction">${r.instruction}</span>
+                  </div>
+                `)}
+            </div>
+          </td>
+        </tr>
+      ` : nothing}
     `;
   }
 
   render() {
+    if (this.selectedRunId) {
+      return html`<run-detail .runId=${this.selectedRunId} @back=${this.backToJobs}></run-detail>`;
+    }
+
     return html`
       ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
+      ${this.historyMessage ? html`<div class="history-feedback">${this.historyMessage}</div>` : nothing}
 
       ${this.renderSchedulerStatus()}
 
@@ -525,6 +698,10 @@ export class JobList extends LitElement {
         <div class="status-bar">
           <span class="status-chip">${this.jobs.length} jobs</span>
           <span class="status-chip">${this.jobs.filter(j => j.enabled).length} enabled</span>
+          <span class="status-chip">Undo ${this.historyStatus.undoCount}</span>
+          <span class="status-chip">Redo ${this.historyStatus.redoCount}</span>
+          <button class="btn-secondary btn-small" @click=${this.undoJobMutation} ?disabled=${this.historyBusy || this.historyStatus.undoCount <= 0}>Undo</button>
+          <button class="btn-secondary btn-small" @click=${this.redoJobMutation} ?disabled=${this.historyBusy || this.historyStatus.redoCount <= 0}>Redo</button>
           <span style="margin-left:auto"><button class="btn-primary btn-small" @click=${() => { this.showCreate = !this.showCreate; }}>+ New Job</button></span>
         </div>
       ` : nothing}

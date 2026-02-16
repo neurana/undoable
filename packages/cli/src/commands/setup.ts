@@ -3,6 +3,7 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { runOnboard } from "./onboard.js";
 
 const HOME = os.homedir();
 const TCC_DIRS = ["Downloads", "Desktop", "Documents", "Movies", "Music", "Pictures"];
@@ -51,9 +52,15 @@ function openSystemSettings() {
 
 export function setupCommand(): Command {
   return new Command("setup")
-    .description("Initialize Undoable and check macOS permissions")
+    .description("Initialize Undoable, workspace, and macOS permissions")
+    .option("--workspace <dir>", "Agent workspace directory")
+    .option("--wizard", "Run onboarding wizard after setup checks", false)
+    .option("--non-interactive", "Run onboarding wizard without prompts", false)
+    .option("--mode <mode>", "Wizard mode: local|remote", "local")
+    .option("--remote-url <url>", "Remote gateway URL (for mode remote)")
+    .option("--remote-token <token>", "Remote gateway token (optional)")
     .option("--fix", "Automatically open System Settings to fix permissions")
-    .action((opts) => {
+    .action(async (opts) => {
       console.log("");
       console.log(`${BOLD}  Undoable — Setup${NC}`);
       console.log("");
@@ -102,11 +109,37 @@ export function setupCommand(): Command {
       console.log(`     ${GREEN}✓ ${configDir}${NC}`);
       console.log("");
 
+      const hasWizardFlags =
+        opts.wizard ||
+        opts.nonInteractive ||
+        opts.mode !== "local" ||
+        Boolean(opts.remoteUrl) ||
+        Boolean(opts.remoteToken);
+
+      if (hasWizardFlags) {
+        try {
+          await runOnboard({
+            workspace: opts.workspace as string | undefined,
+            nonInteractive: Boolean(opts.nonInteractive),
+            mode: opts.mode as string | undefined,
+            remoteUrl: opts.remoteUrl as string | undefined,
+            remoteToken: opts.remoteToken as string | undefined,
+          });
+        } catch (err) {
+          console.log(`  ${RED}${BOLD}✗ Onboarding failed:${NC} ${String(err)}`);
+          process.exitCode = 1;
+          return;
+        }
+      }
+
       if (fda.ok) {
         console.log(`  ${GREEN}${BOLD}✓ Setup complete! Run: nrn start${NC}`);
       } else {
         console.log(`  ${YELLOW}${BOLD}⚠ Setup incomplete — Full Disk Access needed.${NC}`);
         console.log(`  ${YELLOW}  Fix permissions, restart terminal, then run: nrn setup${NC}`);
+      }
+      if (!hasWizardFlags) {
+        console.log(`  ${YELLOW}Tip:${NC} run ${BOLD}nrn setup --wizard${NC} for guided onboarding.`);
       }
       console.log("");
 

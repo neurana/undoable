@@ -18,6 +18,7 @@ import {
   createBrowsePageTool,
   createBrowserTool,
 } from "./web-tools.js";
+import { createWebSearchTool } from "./search-tool.js";
 import {
   createProjectInfoTool,
   createFileInfoTool,
@@ -38,6 +39,8 @@ import type { SandboxExecService } from "../services/sandbox-exec.js";
 import { createCanvasTool } from "./canvas-tools.js";
 import type { CanvasService } from "../services/canvas-service.js";
 import { createNodeTools } from "./node-tools.js";
+import type { SwarmService } from "../services/swarm-service.js";
+import { createSwarmTools } from "./swarm/index.js";
 
 export type { AgentTool, ToolDefinition, ToolExecutor, ToolResult } from "./types.js";
 
@@ -58,6 +61,7 @@ export function createToolRegistry(deps: {
   connectorRegistry?: ConnectorRegistry;
   memoryService?: MemoryService;
   canvasService?: CanvasService;
+  swarmService?: SwarmService;
   sandboxExec?: SandboxExecService;
   sandboxSessionId?: string;
   approvalMode?: ApprovalMode;
@@ -83,6 +87,7 @@ export function createToolRegistry(deps: {
     createCodebaseSearchTool(),
 
     /* Web & browser */
+    createWebSearchTool(),
     createWebFetchTool(),
     createBrowsePageTool(deps.browserSvc),
     createBrowserTool(deps.browserSvc),
@@ -94,6 +99,9 @@ export function createToolRegistry(deps: {
 
     /* Workflow & scheduling */
     ...createWorkflowTools(deps.runManager, deps.scheduler),
+
+    /* SWARM workflows */
+    ...(deps.swarmService ? createSwarmTools(deps.swarmService, deps.runManager) : []),
 
     /* Connectors */
     ...createConnectorTools(connectorRegistry),

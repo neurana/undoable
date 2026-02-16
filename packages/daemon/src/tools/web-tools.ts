@@ -121,6 +121,8 @@ const BROWSER_ACTIONS = [
   "upload",
   "wait",
   "scroll",
+  "set_headless",
+  "get_headless",
 ] as const;
 
 export function createBrowserTool(browserSvc: BrowserService): AgentTool {
@@ -149,6 +151,8 @@ export function createBrowserTool(browserSvc: BrowserService): AgentTool {
           "  upload — upload files to file input",
           "  wait — wait for CSS selector to appear",
           "  scroll — scroll to (x, y) position",
+          "  set_headless — switch headless mode (headless: bool). Closes current browser, next action reopens it.",
+          "  get_headless — returns current headless mode",
         ].join("\n"),
         parameters: {
           type: "object",
@@ -175,6 +179,7 @@ export function createBrowserTool(browserSvc: BrowserService): AgentTool {
             y: { type: "number", description: "Y coordinate for scroll" },
             timeout: { type: "number", description: "Timeout in ms for wait (default: 10000)" },
             outputPath: { type: "string", description: "Output file path for PDF" },
+            headless: { type: "boolean", description: "Headless mode for set_headless" },
           },
           required: ["action"],
         },
@@ -249,6 +254,15 @@ export function createBrowserTool(browserSvc: BrowserService): AgentTool {
             const y = (args.y as number) ?? 0;
             return { result: await browserSvc.scroll(x, y) };
           }
+
+          case "set_headless": {
+            const value = args.headless as boolean ?? true;
+            await browserSvc.setHeadless(value);
+            return { result: `Headless mode set to ${value}. Browser will relaunch on next action.` };
+          }
+
+          case "get_headless":
+            return { headless: browserSvc.isHeadless() };
 
           default:
             return { error: `Unknown browser action: ${action}` };

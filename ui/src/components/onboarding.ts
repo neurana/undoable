@@ -78,6 +78,12 @@ export class UndoableOnboarding extends LitElement {
     }
 
     .field { margin-bottom: 20px; }
+    .field-hint {
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--text-tertiary, #666);
+      line-height: 1.4;
+    }
 
     .field label {
       display: block; font-size: 12px; font-weight: 500;
@@ -185,6 +191,17 @@ export class UndoableOnboarding extends LitElement {
     }
     .preview-box strong { color: var(--text-primary, #eee); }
 
+    .save-error {
+      margin-top: 14px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(192, 57, 43, 0.35);
+      background: rgba(192, 57, 43, 0.1);
+      color: #f1b7ae;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
     @media (max-width: 560px) {
       .card { margin: 16px; padding: 28px 20px; border-radius: 16px; }
       .step-title { font-size: 20px; }
@@ -196,9 +213,11 @@ export class UndoableOnboarding extends LitElement {
   @state() private botName = "Undoable";
   @state() private timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   @state() private personality = "";
+  @state() private instructions = "";
   @state() private saving = false;
   @state() private loaded = false;
   @state() private tzFilter = "";
+  @state() private saveError = "";
 
   private allTimezones: string[] = (() => {
     try { return Intl.supportedValuesOf("timeZone"); } catch { return []; }
@@ -232,6 +251,7 @@ export class UndoableOnboarding extends LitElement {
         this.botName = p.botName || "Undoable";
         this.timezone = p.timezone || this.timezone;
         this.personality = p.personality || "";
+        this.instructions = p.instructions || "";
       }
     } catch { }
     this.loaded = true;
@@ -239,8 +259,9 @@ export class UndoableOnboarding extends LitElement {
 
   private async saveProfile() {
     this.saving = true;
+    this.saveError = "";
     try {
-      await fetch("/api/chat/onboarding", {
+      const response = await fetch("/api/chat/onboarding", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -248,11 +269,15 @@ export class UndoableOnboarding extends LitElement {
           botName: this.botName,
           timezone: this.timezone,
           personality: this.personality || undefined,
+          instructions: this.instructions || undefined,
         }),
       });
+      if (!response.ok) {
+        throw new Error(`Failed to save onboarding profile (${response.status})`);
+      }
       this.dispatchEvent(new CustomEvent("onboarding-complete", { bubbles: true, composed: true }));
     } catch (e) {
-      console.error("Onboarding save failed:", e);
+      this.saveError = `Could not save profile. ${(e as Error).message}`;
     }
     this.saving = false;
   }
@@ -321,6 +346,7 @@ export class UndoableOnboarding extends LitElement {
         <label>Bot Name</label>
         <input type="text" placeholder="e.g. Atlas, Nova, Undoable" .value=${this.botName}
           @input=${(e: Event) => this.botName = (e.target as HTMLInputElement).value} />
+        <div class="field-hint">Used as the assistant identity shown in prompts and metadata.</div>
       </div>
 
       <div class="field">
@@ -328,17 +354,27 @@ export class UndoableOnboarding extends LitElement {
         <textarea placeholder="Describe the AI's personality, tone, and behavior. Leave blank for the default helpful assistant."
           .value=${this.personality}
           @input=${(e: Event) => this.personality = (e.target as HTMLTextAreaElement).value}></textarea>
+        <div class="field-hint">Saved to SOUL.md to guide response tone.</div>
+      </div>
+
+      <div class="field">
+        <label>Permanent Instructions (IDENTITY.md)</label>
+        <textarea placeholder="e.g. Always ask before destructive changes. Prefer concise answers."
+          .value=${this.instructions}
+          @input=${(e: Event) => this.instructions = (e.target as HTMLTextAreaElement).value}></textarea>
+        <div class="field-hint">Saved as long-term assistant instructions in IDENTITY.md.</div>
       </div>
 
       <div class="actions">
         <button class="btn btn-secondary" @click=${this.back}>Back</button>
-        <button class="btn btn-primary" @click=${this.next}>Continue</button>
+        <button class="btn btn-primary" @click=${this.next} ?disabled=${!this.botName.trim()}>Continue</button>
       </div>
     `;
   }
 
   private renderStep2() {
     const soul = this.personality.trim() || "Default helpful, concise assistant";
+    const instructions = this.instructions.trim() || "Personal AI assistant";
     return html`
       ${this.renderDots()}
       <h2 class="step-title">Confirm Setup</h2>
@@ -348,7 +384,8 @@ export class UndoableOnboarding extends LitElement {
         <strong>You:</strong> ${this.userName || "—"}<br/>
         <strong>Bot:</strong> ${this.botName || "Undoable"}<br/>
         <strong>Timezone:</strong> ${this.timezone}<br/>
-        <strong>Personality:</strong> ${soul.length > 100 ? soul.slice(0, 100) + "…" : soul}
+        <strong>Personality:</strong> ${soul.length > 100 ? soul.slice(0, 100) + "…" : soul}<br/>
+        <strong>Instructions:</strong> ${instructions.length > 100 ? instructions.slice(0, 100) + "…" : instructions}
       </div>
 
       <div class="actions">
@@ -357,6 +394,7 @@ export class UndoableOnboarding extends LitElement {
           ${this.saving ? "Saving…" : "Save & Start"}
         </button>
       </div>
+      ${this.saveError ? html`<div class="save-error">${this.saveError}</div>` : ""}
     `;
   }
 

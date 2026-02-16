@@ -36,6 +36,7 @@ export type SseEvent = {
   maxIterations?: number;
   mode?: string;
   approvalMode?: string;
+  dangerouslySkipPermissions?: boolean;
   sessionId?: string;
   thinking?: string;
   reasoningVisibility?: string;

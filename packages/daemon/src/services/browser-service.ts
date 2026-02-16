@@ -1,4 +1,5 @@
 import { chromium, type Browser, type BrowserContext, type Page, type Dialog } from "playwright";
+import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
@@ -48,26 +49,70 @@ export type BrowserService = {
   waitForSelector(selector: string, timeout?: number): Promise<string>;
   scroll(x: number, y: number): Promise<string>;
 
+  /* Headless mode */
+  setHeadless(value: boolean): Promise<void>;
+  isHeadless(): boolean;
+
   /* Lifecycle */
   close(): Promise<void>;
 };
 
-export async function createBrowserService(): Promise<BrowserService> {
+export type BrowserLaunchOptions = {
+  headless?: boolean;
+  viewport?: { width: number; height: number };
+  userAgent?: string;
+  persistSession?: boolean;
+  launchArgs?: string[];
+  proxy?: { server: string; username?: string; password?: string };
+};
+
+const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
+const DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const STORAGE_STATE_PATH = path.join(os.homedir(), ".undoable", "browser-state.json");
+
+export async function createBrowserService(opts?: BrowserLaunchOptions): Promise<BrowserService> {
+  let headless = opts?.headless ?? true;
+  const viewport = opts?.viewport ?? DEFAULT_VIEWPORT;
+  const userAgent = opts?.userAgent ?? DEFAULT_USER_AGENT;
+  const persistSession = opts?.persistSession ?? false;
+  const launchArgs = opts?.launchArgs ?? [];
+  const proxyOpts = opts?.proxy;
   let browser: Browser | null = null;
   let context: BrowserContext | null = null;
   let activePage: Page | null = null;
   let pendingDialogHandler: ((dialog: Dialog) => void) | null = null;
 
+  async function saveStorageState(): Promise<void> {
+    if (!persistSession || !context) return;
+    try {
+      const dir = path.dirname(STORAGE_STATE_PATH);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      await context.storageState({ path: STORAGE_STATE_PATH });
+    } catch { }
+  }
+
+  async function closeBrowser(): Promise<void> {
+    if (browser) {
+      await saveStorageState();
+      await browser.close().catch(() => {});
+      browser = null;
+      context = null;
+      activePage = null;
+      pendingDialogHandler = null;
+    }
+  }
+
   async function ensureContext(): Promise<BrowserContext> {
     if (!browser) {
-      browser = await chromium.launch({ headless: true });
+      browser = await chromium.launch({
+        headless,
+        args: launchArgs.length > 0 ? launchArgs : undefined,
+        proxy: proxyOpts ? { server: proxyOpts.server, username: proxyOpts.username, password: proxyOpts.password } : undefined,
+      });
     }
     if (!context) {
-      context = await browser.newContext({
-        userAgent:
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        viewport: { width: 1280, height: 720 },
-      });
+      const storageState = persistSession && fs.existsSync(STORAGE_STATE_PATH) ? STORAGE_STATE_PATH : undefined;
+      context = await browser.newContext({ userAgent, viewport, storageState });
     }
     return context;
   }
@@ -291,16 +336,22 @@ export async function createBrowserService(): Promise<BrowserService> {
       return `Scrolled to (${x}, ${y})`;
     },
 
+    /* ── Headless mode ── */
+
+    async setHeadless(value: boolean) {
+      if (value === headless) return;
+      headless = value;
+      await closeBrowser();
+    },
+
+    isHeadless() {
+      return headless;
+    },
+
     /* ── Lifecycle ── */
 
     async close() {
-      if (browser) {
-        await browser.close().catch(() => {});
-        browser = null;
-        context = null;
-        activePage = null;
-        pendingDialogHandler = null;
-      }
+      await closeBrowser();
     },
   };
 }

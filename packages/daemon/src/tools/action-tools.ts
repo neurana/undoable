@@ -121,14 +121,14 @@ function createUndoTool(undoService: UndoService): AgentTool {
       function: {
         name: "undo",
         description:
-          "Undo previous actions. Restores files to their state before the AI modified them. Lists undoable actions or performs undo.",
+          "Undo or redo previous actions. Restores files to their state before/after the AI modified them.",
         parameters: {
           type: "object",
           properties: {
             action: {
               type: "string",
-              enum: ["list", "one", "last", "all"],
-              description: "list: show undoable actions. one: undo specific action by id. last: undo last N actions. all: undo everything.",
+              enum: ["list", "one", "last", "all", "redo_one", "redo_last", "redo_all"],
+              description: "list: show undoable/redoable actions. one/last/all: undo. redo_one/redo_last/redo_all: redo previously undone actions.",
             },
             id: { type: "string", description: "Action ID to undo (for action=one)" },
             count: { type: "number", description: "Number of recent actions to undo (for action=last, default: 1)" },
@@ -143,9 +143,17 @@ function createUndoTool(undoService: UndoService): AgentTool {
       switch (action) {
         case "list": {
           const undoable = undoService.listUndoable();
+          const redoable = undoService.listRedoable();
           return {
-            count: undoable.length,
-            actions: undoable.map((r) => ({
+            undoableCount: undoable.length,
+            redoableCount: redoable.length,
+            undoable: undoable.map((r) => ({
+              id: r.id,
+              tool: r.toolName,
+              args: r.args,
+              startedAt: r.startedAt,
+            })),
+            redoable: redoable.map((r) => ({
               id: r.id,
               tool: r.toolName,
               args: r.args,
@@ -169,6 +177,23 @@ function createUndoTool(undoService: UndoService): AgentTool {
         case "all": {
           const results = await undoService.undoAll();
           return { undone: results.length, results };
+        }
+
+        case "redo_one": {
+          if (!args.id) return { error: "id is required" };
+          const result = await undoService.redoAction(args.id as string);
+          return result;
+        }
+
+        case "redo_last": {
+          const count = (args.count as number) ?? 1;
+          const results = await undoService.redoLastN(count);
+          return { redone: results.length, results };
+        }
+
+        case "redo_all": {
+          const results = await undoService.redoAll();
+          return { redone: results.length, results };
         }
 
         default:

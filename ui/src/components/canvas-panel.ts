@@ -1,5 +1,5 @@
 import { LitElement, html, css } from "lit";
-import { customElement, state } from "lit/decorators.js";
+import { customElement, property } from "lit/decorators.js";
 
 @customElement("undoable-canvas-panel")
 export class UndoableCanvasPanel extends LitElement {
@@ -104,9 +104,9 @@ export class UndoableCanvasPanel extends LitElement {
     }
   `;
 
-  @state() private url = "";
-  @state() private frames: string[] = [];
-  @state() private visible = true;
+  @property({ type: String }) url = "";
+  @property({ type: Array, attribute: false }) frames: string[] = [];
+  @property({ type: Boolean }) visible = true;
 
   show(opts?: { url?: string }) {
     this.visible = true;

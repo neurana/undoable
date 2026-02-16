@@ -6,6 +6,11 @@ import "./chat-sidebar.js";
 import "./chat-input.js";
 import "./chat-messages.js";
 import "./chat-settings.js";
+import "./canvas-panel.js";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 @customElement("undoable-chat")
 export class UndoableChat extends LitElement {
@@ -40,6 +45,7 @@ export class UndoableChat extends LitElement {
     .badge-off { background: var(--bg-deep); color: var(--text-tertiary); border-color: var(--border-strong); }
     .badge-mutate { background: var(--warning-subtle); color: var(--warning); border-color: rgba(184,134,11,0.15); }
     .badge-always { background: var(--danger-subtle); color: var(--danger); border-color: rgba(192,57,43,0.15); }
+    .badge-danger-skip { background: var(--danger-subtle); color: var(--danger); border-color: rgba(192,57,43,0.2); }
     .usage-label {
       font-family: var(--mono); font-size: 10px; color: var(--text-tertiary);
       background: var(--wash); padding: 2px 8px; border-radius: var(--radius-pill);
@@ -76,10 +82,19 @@ export class UndoableChat extends LitElement {
     .agent-option.active { background: var(--accent-subtle); }
     .agent-option-name { font-size: 12px; font-weight: 500; color: var(--text-primary); }
     .agent-option-model { font-size: 10px; color: var(--text-tertiary); font-family: var(--mono); }
+    .canvas-shell {
+      height: 280px;
+      padding: 10px 16px 8px;
+      box-sizing: border-box;
+      border-bottom: 1px solid var(--border-divider);
+      background: var(--bg-base);
+      flex-shrink: 0;
+    }
     @media (max-width: 768px) {
       .sidebar-backdrop.visible { display: block; }
       .empty-title { font-size: 18px; }
       .ant-logo { width: 100px; height: 100px; }
+      .canvas-shell { height: 220px; padding: 8px 10px 6px; }
     }
   `];
 
@@ -91,9 +106,11 @@ export class UndoableChat extends LitElement {
   @state() private error = "";
   @state() private runMode = "";
   @state() private approvalModeLabel = "";
+  @state() private dangerouslySkipPermissions = false;
   @state() private maxIter = 0;
   @state() private currentIter = 0;
   @state() private hasUndoable = false;
+  @state() private hasRedoable = false;
   @state() private thinkingLevel = "";
   @state() private canThink = false;
   @state() private currentModel = "";
@@ -106,6 +123,9 @@ export class UndoableChat extends LitElement {
   @state() private activeRunId = "";
   @state() private usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   @state() private showOnboarding = false;
+  @state() private canvasOpen = false;
+  @state() private canvasUrl = "";
+  @state() private canvasFrames: string[] = [];
 
 
   // ── Lifecycle ──
@@ -114,6 +134,7 @@ export class UndoableChat extends LitElement {
     super.connectedCallback();
     if (window.innerWidth <= 768) this.sidebarOpen = false;
     this.loadSessions().then(() => this.restoreFromUrl());
+    void this.refreshUndoState();
     this.fetchRunConfig();
     this.fetchAgents();
     this.checkOnboarding();
@@ -189,10 +210,21 @@ export class UndoableChat extends LitElement {
     try {
       const res = await fetch("/api/chat/run-config");
       if (res.ok) {
-        const data = await res.json() as { mode: string; maxIterations: number; approvalMode: string; thinking?: string; reasoningVisibility?: string; model?: string; provider?: string; canThink?: boolean };
+        const data = await res.json() as {
+          mode: string;
+          maxIterations: number;
+          approvalMode: string;
+          dangerouslySkipPermissions?: boolean;
+          thinking?: string;
+          reasoningVisibility?: string;
+          model?: string;
+          provider?: string;
+          canThink?: boolean;
+        };
         this.runMode = data.mode;
         this.maxIter = data.maxIterations;
         this.approvalModeLabel = data.approvalMode;
+        this.dangerouslySkipPermissions = data.dangerouslySkipPermissions === true;
         this.thinkingLevel = data.thinking ?? "";
         this.reasoningVis = data.reasoningVisibility ?? "";
         this.currentModel = data.model ?? "";
@@ -219,11 +251,97 @@ export class UndoableChat extends LitElement {
     this.agentDropdownOpen = false;
   }
 
+  private applyCanvasFromToolCall(name: string, args: Record<string, unknown>) {
+    if (name !== "canvas") return;
+    const action = typeof args.action === "string" ? args.action : "";
+    if (action === "present") {
+      this.canvasOpen = true;
+      return;
+    }
+    if (action === "hide") {
+      this.canvasOpen = false;
+      return;
+    }
+    if (action === "navigate") {
+      if (typeof args.url === "string" && args.url.trim()) {
+        this.canvasUrl = args.url.trim();
+      }
+      this.canvasOpen = true;
+      return;
+    }
+    if (action === "a2ui_reset") {
+      this.canvasFrames = [];
+      this.canvasOpen = true;
+      return;
+    }
+    if (action === "a2ui_push") {
+      const jsonl = typeof args.jsonl === "string" ? args.jsonl : "";
+      if (jsonl.trim()) {
+        const lines = jsonl.split("\n").map((line) => line.trim()).filter(Boolean);
+        if (lines.length > 0) {
+          this.canvasFrames = [...this.canvasFrames, ...lines];
+        }
+      }
+      this.canvasOpen = true;
+    }
+  }
+
+  private applyCanvasFromToolResult(result: unknown) {
+    if (!isRecord(result)) return;
+
+    const canvas = isRecord(result.canvas) ? result.canvas : null;
+    if (canvas) {
+      if (typeof canvas.visible === "boolean") this.canvasOpen = canvas.visible;
+      if (typeof canvas.url === "string" && canvas.url.trim()) this.canvasUrl = canvas.url.trim();
+      if (Array.isArray(canvas.frames)) {
+        this.canvasFrames = canvas.frames.filter((line): line is string => typeof line === "string");
+      }
+    }
+
+    const action = typeof result.canvasAction === "string" ? result.canvasAction : "";
+    if (action === "hide") this.canvasOpen = false;
+    if (action === "a2ui_reset") this.canvasFrames = [];
+    if (action === "present" || action === "navigate" || action === "a2ui_push") this.canvasOpen = true;
+
+    const textResult = typeof result.result === "string" ? result.result : "";
+    if (textResult === "Canvas shown") this.canvasOpen = true;
+    if (textResult === "Canvas hidden") this.canvasOpen = false;
+    const navPrefix = "Canvas navigated to ";
+    if (textResult.startsWith(navPrefix)) {
+      const url = textResult.slice(navPrefix.length).trim();
+      if (url) this.canvasUrl = url;
+      this.canvasOpen = true;
+    }
+  }
+
+  private toggleCanvas = () => {
+    this.canvasOpen = !this.canvasOpen;
+  };
+
   private async loadSessions() {
     try {
       const res = await fetch("/api/chat/sessions");
       if (res.ok) this.sessions = await res.json() as SessionItem[];
     } catch { }
+  }
+
+  private async refreshUndoState() {
+    try {
+      const res = await fetch("/api/chat/undo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "list" }),
+      });
+      if (!res.ok) return;
+      const data = await res.json() as {
+        undoable?: Array<{ id: string }>;
+        redoable?: Array<{ id: string }>;
+      };
+      this.hasUndoable = (data.undoable?.length ?? 0) > 0;
+      this.hasRedoable = (data.redoable?.length ?? 0) > 0;
+    } catch {
+      // ignore state refresh errors
+    }
   }
 
   private async newChat() {
@@ -234,9 +352,11 @@ export class UndoableChat extends LitElement {
       this.activeSessionId = data.id;
       this.entries = [];
       this.hasUndoable = false;
+      this.hasRedoable = false;
       this.error = "";
       this.pushChatUrl(data.id);
       await this.loadSessions();
+      await this.refreshUndoState();
     } catch { }
   }
 
@@ -245,6 +365,7 @@ export class UndoableChat extends LitElement {
     this.activeSessionId = id;
     this.entries = [];
     this.hasUndoable = false;
+    this.hasRedoable = false;
     this.error = "";
     this.pushChatUrl(id);
     try {
@@ -256,6 +377,7 @@ export class UndoableChat extends LitElement {
       if (data.agentId && this.agents.some((a) => a.id === data.agentId)) {
         this.currentAgentId = data.agentId;
       }
+      await this.refreshUndoState();
     } catch { }
   }
 
@@ -280,8 +402,13 @@ export class UndoableChat extends LitElement {
   private async resetSession(id: string) {
     try {
       await fetch(`/api/chat/sessions/${id}/reset`, { method: "POST" });
-      if (this.activeSessionId === id) { this.entries = []; this.hasUndoable = false; }
+      if (this.activeSessionId === id) {
+        this.entries = [];
+        this.hasUndoable = false;
+        this.hasRedoable = false;
+      }
       await this.loadSessions();
+      await this.refreshUndoState();
     } catch { }
   }
 
@@ -296,11 +423,13 @@ export class UndoableChat extends LitElement {
         for (const tc of msg.tool_calls) {
           let args: Record<string, unknown> = {};
           try { args = JSON.parse(tc.function.arguments); } catch { }
+          this.applyCanvasFromToolCall(tc.function.name, args);
           entries.push({ kind: "tool_call", name: tc.function.name, args });
         }
       } else if (msg.role === "tool" && msg.content) {
         let result: unknown;
         try { result = JSON.parse(msg.content); } catch { result = msg.content; }
+        this.applyCanvasFromToolResult(result);
         entries.push({ kind: "tool_result", name: "", result });
       }
     }
@@ -333,15 +462,40 @@ export class UndoableChat extends LitElement {
     } catch { /* ignore */ }
   }
 
-  private async handleUndo(action: string) {
+  private async performUndoAction(action: string) {
     try {
       const res = await fetch("/api/chat/undo", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
       });
-      const data = await res.json() as Record<string, unknown>;
-      this.entries = [...this.entries, { kind: "assistant", content: `Undo (${action}): ${JSON.stringify(data)}` }];
-    } catch (err) { this.error = `Undo failed: ${err}`; }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      }
+      const data = await res.json() as { result?: { success?: boolean; error?: string }; results?: Array<{ success?: boolean }> };
+      const results = data.results ?? (data.result ? [data.result] : []);
+      const successCount = results.filter((r) => r.success).length;
+      const total = results.length;
+      const label = action.startsWith("redo") ? "Redo" : "Undo";
+      const op = action.endsWith("all") ? "all" : "last";
+      this.entries = [...this.entries, {
+        kind: "assistant",
+        content: total > 0
+          ? `${label}: ${successCount}/${total} ${op} operation${total > 1 ? "s" : ""} applied.`
+          : `${label}: operation requested.`,
+      }];
+      await this.refreshUndoState();
+    } catch (err) { this.error = `History operation failed: ${err}`; }
+  }
+
+  private async handleUndo(action: string) {
+    const routeAction = action === "all" ? "undo_all" : "undo_last";
+    await this.performUndoAction(routeAction);
+  }
+
+  private async handleRedo(action: string) {
+    const routeAction = action === "all" ? "redo_all" : "redo_last";
+    await this.performUndoAction(routeAction);
   }
 
   // ── Send + SSE streaming ──
@@ -402,6 +556,7 @@ export class UndoableChat extends LitElement {
             } else if (evt.type === "session_info") {
               this.runMode = evt.mode ?? "";
               this.approvalModeLabel = evt.approvalMode ?? "";
+              this.dangerouslySkipPermissions = evt.dangerouslySkipPermissions === true;
               this.maxIter = evt.maxIterations ?? 0;
               this.thinkingLevel = evt.thinking ?? "";
               this.reasoningVis = evt.reasoningVisibility ?? "";
@@ -429,13 +584,16 @@ export class UndoableChat extends LitElement {
                 aiAdded = false;
                 aiEntry.content = "";
               }
+              this.applyCanvasFromToolCall(evt.name ?? "", evt.args ?? {});
               this.entries = [...this.entries, {
                 kind: "tool_call", name: evt.name ?? "?", args: evt.args ?? {},
                 iteration: evt.iteration, maxIterations: evt.maxIterations,
               }];
             } else if (evt.type === "tool_result") {
+              this.applyCanvasFromToolResult(evt.result);
               this.entries = [...this.entries, { kind: "tool_result", name: evt.name ?? "?", result: evt.result }];
               this.hasUndoable = true;
+              void this.refreshUndoState();
             } else if (evt.type === "approval_pending") {
               this.entries = [...this.entries, {
                 kind: "approval", id: evt.id ?? "", tool: evt.tool ?? "?",
@@ -480,6 +638,10 @@ export class UndoableChat extends LitElement {
   // ── Config cycling ──
 
   private async cycleRunMode() {
+    if (this.dangerouslySkipPermissions) {
+      this.runMode = "autonomous";
+      return;
+    }
     const cycle: Record<string, string> = { interactive: "supervised", supervised: "autonomous", autonomous: "interactive" };
     const next = cycle[this.runMode || "interactive"] ?? "interactive";
     try {
@@ -488,15 +650,25 @@ export class UndoableChat extends LitElement {
         body: JSON.stringify({ mode: next }),
       });
       if (res.ok) {
-        const data = await res.json() as { mode: string; maxIterations: number; approvalMode: string };
+        const data = await res.json() as {
+          mode: string;
+          maxIterations: number;
+          approvalMode: string;
+          dangerouslySkipPermissions?: boolean;
+        };
         this.runMode = data.mode;
         this.maxIter = data.maxIterations;
         this.approvalModeLabel = data.approvalMode;
+        this.dangerouslySkipPermissions = data.dangerouslySkipPermissions === true;
       }
     } catch { }
   }
 
   private async cycleApprovalMode() {
+    if (this.dangerouslySkipPermissions) {
+      this.approvalModeLabel = "off";
+      return;
+    }
     const cycle: Record<string, string> = { off: "mutate", mutate: "always", always: "off" };
     const next = cycle[this.approvalModeLabel || "off"] ?? "off";
     try {
@@ -504,7 +676,11 @@ export class UndoableChat extends LitElement {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: next }),
       });
-      if (res.ok) this.approvalModeLabel = next;
+      if (res.ok) {
+        const data = await res.json() as { mode: string; dangerouslySkipPermissions?: boolean };
+        this.approvalModeLabel = data.mode;
+        this.dangerouslySkipPermissions = data.dangerouslySkipPermissions === true;
+      }
     } catch { }
   }
 
@@ -537,8 +713,16 @@ export class UndoableChat extends LitElement {
         body: JSON.stringify({ maxIterations: n }),
       });
       if (res.ok) {
-        const data = await res.json() as { maxIterations: number };
+        const data = await res.json() as {
+          maxIterations: number;
+          mode?: string;
+          approvalMode?: string;
+          dangerouslySkipPermissions?: boolean;
+        };
         this.maxIter = data.maxIterations;
+        if (data.mode) this.runMode = data.mode;
+        if (data.approvalMode) this.approvalModeLabel = data.approvalMode;
+        this.dangerouslySkipPermissions = data.dangerouslySkipPermissions === true;
       }
     } catch { }
   }
@@ -573,11 +757,13 @@ export class UndoableChat extends LitElement {
         ?collapsed=${!this.sidebarOpen}
         .sessions=${this.sessions}
         .activeSessionId=${this.activeSessionId}
+        .canvasOpen=${this.canvasOpen}
         @new-chat=${() => this.newChat()}
         @select-session=${(e: CustomEvent) => this.selectSession(e.detail)}
         @delete-session=${(e: CustomEvent) => this.deleteSession(e.detail)}
         @rename-session=${(e: CustomEvent) => this.renameSession(e.detail)}
         @reset-session=${(e: CustomEvent) => this.resetSession(e.detail)}
+        @toggle-canvas=${this.toggleCanvas}
         @navigate=${(e: CustomEvent) => this.emitNavigate(e.detail)}
         @open-settings=${() => { this.settingsOpen = true; }}
       ></chat-sidebar>
@@ -613,15 +799,27 @@ export class UndoableChat extends LitElement {
           <button class="btn-header-icon" @click=${() => { this.showOnboarding = true; }} title="Profile & Onboarding">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
           </button>
-          ${this.runMode && this.entries.length > 0 ? html`
+          ${this.runMode ? html`
             <div class="status-info">
-              <span>Mode: <span class="status-badge ${this.badgeClass(this.runMode)}" style="cursor:pointer;" title="Click to cycle" @click=${this.cycleRunMode}>${this.runMode}</span></span>
-              <span>Approval: <span class="status-badge ${this.badgeClass(this.approvalModeLabel)}" style="cursor:pointer;" title="Click to cycle" @click=${this.cycleApprovalMode}>${this.approvalModeLabel || "off"}</span></span>
+              <span>Mode: <span class="status-badge ${this.badgeClass(this.runMode)}" style=${this.dangerouslySkipPermissions ? "cursor:not-allowed;" : "cursor:pointer;"} title=${this.dangerouslySkipPermissions ? "Locked while --dangerously-skip-permissions is active" : "Click to cycle"} @click=${this.cycleRunMode}>${this.runMode}</span></span>
+              <span>Approval: <span class="status-badge ${this.badgeClass(this.approvalModeLabel)}" style=${this.dangerouslySkipPermissions ? "cursor:not-allowed;" : "cursor:pointer;"} title=${this.dangerouslySkipPermissions ? "Locked while --dangerously-skip-permissions is active" : "Click to cycle"} @click=${this.cycleApprovalMode}>${this.approvalModeLabel || "off"}</span></span>
+              ${this.dangerouslySkipPermissions ? html`<span class="status-badge badge-danger-skip" title="Danger mode: all permission checks are bypassed">skip-perms</span>` : nothing}
               ${this.maxIter ? html`<span style="cursor:pointer;" title="Click to change" @click=${this.editMaxIter}>Max: <b>${this.maxIter}</b></span>` : nothing}
               ${this.usage.totalTokens > 0 ? html`<span class="usage-label" title="Prompt: ${this.usage.promptTokens} | Completion: ${this.usage.completionTokens}">${this.fmtTokens(this.usage.totalTokens)} tokens</span>` : nothing}
             </div>
           ` : nothing}
         </div>
+
+        ${this.canvasOpen ? html`
+          <div class="canvas-shell">
+            <undoable-canvas-panel
+              .visible=${this.canvasOpen}
+              .url=${this.canvasUrl}
+              .frames=${this.canvasFrames}
+              @canvas-close=${() => { this.canvasOpen = false; }}
+            ></undoable-canvas-panel>
+          </div>
+        ` : nothing}
 
         ${this.entries.length === 0 ? html`
           <div class="empty">
@@ -645,11 +843,13 @@ export class UndoableChat extends LitElement {
         <chat-input
           ?loading=${this.loading}
           ?hasUndoable=${this.hasUndoable}
+          ?hasRedoable=${this.hasRedoable}
           .thinkingLevel=${this.canThink ? this.thinkingLevel : ""}
           ?canThink=${this.canThink}
           @send-message=${(e: CustomEvent) => this.handleSendMessage(e.detail)}
           @abort-chat=${() => this.handleAbort()}
           @undo=${(e: CustomEvent) => this.handleUndo(e.detail)}
+          @redo=${(e: CustomEvent) => this.handleRedo(e.detail)}
           @cycle-thinking=${this.cycleThinkingLevel}
           @chat-error=${(e: CustomEvent) => { this.error = e.detail; }}
         ></chat-input>

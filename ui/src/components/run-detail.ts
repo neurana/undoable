@@ -252,7 +252,7 @@ export class RunDetail extends LitElement {
 
     return html`
       <div class="header">
-        <button class="back" @click=${this.back}>← Back</button>
+        <button class="back" @click=${this.back}>← Back to Jobs</button>
         <h2>${r.instruction}</h2>
         <span class="status status-${r.status}">${r.status}</span>
       </div>

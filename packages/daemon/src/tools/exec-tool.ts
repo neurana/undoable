@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import type { AgentTool } from "./types.js";
 import { validateEnv, isDestructiveCommand } from "./exec-security.js";
 import { type ExecAllowlistConfig, loadAllowlistConfig, evaluateCommand } from "./exec-allowlist.js";
@@ -20,6 +22,19 @@ const DEFAULT_TIMEOUT_SEC = 120;
 const DEFAULT_YIELD_MS = 10_000;
 const HOME = os.homedir();
 const SHELL_CANDIDATES = ["/bin/zsh", "/bin/bash", "/bin/sh"];
+
+type ExecIsolationMode = "off" | "prefer" | "require";
+
+function resolveExecIsolationMode(): ExecIsolationMode {
+  const raw = (process.env.UNDOABLE_EXEC_ISOLATION ?? "prefer").trim().toLowerCase();
+  if (raw === "off" || raw === "prefer" || raw === "require") return raw;
+  return "prefer";
+}
+
+function buildSandboxSessionId(baseSessionId: string, cwd: string): string {
+  const digest = createHash("sha256").update(cwd).digest("hex").slice(0, 12);
+  return `${baseSessionId}:${digest}`;
+}
 
 function getShell(): { shell: string; args: string[] } {
   if (process.platform === "win32") return { shell: "cmd.exe", args: ["/c"] };
@@ -72,6 +87,8 @@ export function createExecTool(opts?: {
   sandboxSessionId?: string;
 }): AgentTool {
   const allowlistConfig = opts?.allowlistConfig ?? loadAllowlistConfig();
+  const isolationMode = resolveExecIsolationMode();
+  const sandboxBaseSessionId = (opts?.sandboxSessionId ?? "global").trim() || "global";
   return {
     name: "exec",
     definition: {
@@ -111,7 +128,8 @@ export function createExecTool(opts?: {
       const command = args.command as string;
       if (!command?.trim()) throw new Error("command is required");
 
-      const cwd = (args.cwd as string) || HOME;
+      const rawCwd = (args.cwd as string) || HOME;
+      const cwd = path.resolve(rawCwd);
       const timeoutSec = (args.timeout as number) || DEFAULT_TIMEOUT_SEC;
       const backgroundRequested = args.background === true;
       const usePty = args.pty === true;
@@ -142,13 +160,40 @@ export function createExecTool(opts?: {
         }
       }
 
+      if (!existsSync(cwd)) {
+        return {
+          error: `Working directory does not exist: ${cwd}`,
+          command,
+          hint: "Create the directory first or use a different cwd.",
+        };
+      }
+
+      const sandboxAvailable = Boolean(opts?.sandboxExec?.available);
+      if (isolationMode === "require" && !sandboxAvailable) {
+        return {
+          error: "Blocked by exec isolation policy: sandbox is required but unavailable.",
+          command,
+          hint: "Install/start Docker or set UNDOABLE_EXEC_ISOLATION=prefer to allow host fallback.",
+        };
+      }
+
+      const requiresInteractiveHost = usePty || backgroundRequested;
+      if (isolationMode === "require" && requiresInteractiveHost) {
+        return {
+          error: "Blocked by exec isolation policy: interactive/background exec is not supported in sandbox mode.",
+          command,
+          hint: "Run a foreground non-PTY command or set UNDOABLE_EXEC_ISOLATION=prefer for host fallback.",
+        };
+      }
+
       /* ── Sandbox path ── */
-      if (opts?.sandboxExec?.available && opts.sandboxSessionId) {
+      if (opts?.sandboxExec && sandboxAvailable && isolationMode !== "off" && !requiresInteractiveHost) {
+        const sandboxSessionId = buildSandboxSessionId(sandboxBaseSessionId, cwd);
         try {
-          await opts.sandboxExec.ensureSandbox(opts.sandboxSessionId);
-          const result = await opts.sandboxExec.exec(opts.sandboxSessionId, {
+          await opts.sandboxExec.ensureSandbox(sandboxSessionId, cwd);
+          const result = await opts.sandboxExec.exec(sandboxSessionId, {
             command,
-            cwd: cwd !== HOME ? cwd : undefined,
+            cwd: "/workspace",
             timeout: timeoutSec * 1000,
             env: Object.keys(extraEnv).length > 0 ? extraEnv : undefined,
           });
@@ -162,14 +207,6 @@ export function createExecTool(opts?: {
         } catch (err) {
           return { error: `Sandbox exec failed: ${(err as Error).message}`, command };
         }
-      }
-
-      if (!existsSync(cwd)) {
-        return {
-          error: `Working directory does not exist: ${cwd}`,
-          command,
-          hint: "Create the directory first or use a different cwd.",
-        };
       }
 
       /* ── PTY path ── */

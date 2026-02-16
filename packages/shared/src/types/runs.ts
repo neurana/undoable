@@ -31,6 +31,7 @@ export type RunSummary = {
   engineVersion: string;
   createdAt: string;
   updatedAt: string;
+  jobId?: string;
 };
 
 export type PlanStep = {

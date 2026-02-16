@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { EventBus } from "@undoable/core";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { RunManager } from "./run-manager.js";
 
 let eventBus: EventBus;
@@ -121,6 +124,48 @@ describe("RunManager", () => {
     });
   });
 
+  describe("jobId", () => {
+    it("stores jobId on run when provided", () => {
+      const run = manager.create({
+        userId: "scheduler",
+        agentId: "default",
+        instruction: "backup",
+        jobId: "job-123",
+      });
+      expect(run.jobId).toBe("job-123");
+    });
+
+    it("jobId is undefined when not provided", () => {
+      const run = manager.create({
+        userId: "u1",
+        agentId: "default",
+        instruction: "test",
+      });
+      expect(run.jobId).toBeUndefined();
+    });
+  });
+
+  describe("listByJobId", () => {
+    it("returns runs matching the jobId", () => {
+      manager.create({ userId: "scheduler", agentId: "default", instruction: "a", jobId: "job-1" });
+      manager.create({ userId: "scheduler", agentId: "default", instruction: "b", jobId: "job-1" });
+      manager.create({ userId: "scheduler", agentId: "default", instruction: "c", jobId: "job-2" });
+      expect(manager.listByJobId("job-1")).toHaveLength(2);
+      expect(manager.listByJobId("job-2")).toHaveLength(1);
+    });
+
+    it("returns empty array for unknown jobId", () => {
+      manager.create({ userId: "u1", agentId: "default", instruction: "test" });
+      expect(manager.listByJobId("nonexistent")).toEqual([]);
+    });
+
+    it("excludes runs without jobId", () => {
+      manager.create({ userId: "u1", agentId: "default", instruction: "manual" });
+      manager.create({ userId: "scheduler", agentId: "default", instruction: "auto", jobId: "job-1" });
+      expect(manager.listByJobId("job-1")).toHaveLength(1);
+    });
+  });
+
   describe("count", () => {
     it("tracks run count", () => {
       expect(manager.count()).toBe(0);
@@ -174,6 +219,56 @@ describe("RunManager", () => {
       const events = manager.getEvents(run.id);
       expect(events.length).toBeGreaterThanOrEqual(1);
       expect(events[0]!.type).toBe("RUN_CREATED");
+    });
+  });
+
+  describe("persistence", () => {
+    it("restores persisted runs and events after restart", async () => {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "undoable-run-state-"));
+      const stateFile = path.join(tmpDir, "runs-state.json");
+
+      try {
+        const busA = new EventBus();
+        const managerA = new RunManager(busA, { persistence: "on", stateFilePath: stateFile });
+        busA.onAll((event) => managerA.appendEvent(event.runId, event));
+
+        const run = managerA.create({ userId: "u1", agentId: "default", instruction: "persist me" });
+        managerA.updateStatus(run.id, "completed", "u1");
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+
+        const busB = new EventBus();
+        const managerB = new RunManager(busB, { persistence: "on", stateFilePath: stateFile });
+        const restored = managerB.getById(run.id);
+
+        expect(restored).toBeTruthy();
+        expect(restored?.status).toBe("completed");
+        expect(managerB.getEvents(run.id).length).toBeGreaterThan(0);
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("marks in-progress runs as failed during recovery", async () => {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "undoable-run-recover-"));
+      const stateFile = path.join(tmpDir, "runs-state.json");
+
+      try {
+        const busA = new EventBus();
+        const managerA = new RunManager(busA, { persistence: "on", stateFilePath: stateFile });
+        const run = managerA.create({ userId: "u1", agentId: "default", instruction: "resume me" });
+        managerA.updateStatus(run.id, "planning", "u1");
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+
+        const busB = new EventBus();
+        const managerB = new RunManager(busB, { persistence: "on", stateFilePath: stateFile });
+        const recovered = managerB.getById(run.id);
+
+        expect(recovered?.status).toBe("failed");
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 });

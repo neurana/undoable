@@ -142,16 +142,20 @@ export function loadAllSkills(opts?: {
   workspaceDir?: string;
   bundledDir?: string;
   userDir?: string;
+  includeBundled?: boolean;
 }): LoadedSkill[] {
   const bundledDir = opts?.bundledDir ?? path.join(path.resolve(import.meta.dirname, "../.."), "skills");
   const userDir = opts?.userDir ?? path.join(UNDOABLE_DIR, "skills");
   const workspaceDir = opts?.workspaceDir;
+  const includeBundled = opts?.includeBundled === true;
 
   const merged = new Map<string, LoadedSkill>();
 
   // Precedence: bundled < user < workspace
-  for (const skill of loadSkillsFromDir(bundledDir, "bundled")) {
-    merged.set(skill.name, skill);
+  if (includeBundled) {
+    for (const skill of loadSkillsFromDir(bundledDir, "bundled")) {
+      merged.set(skill.name, skill);
+    }
   }
   for (const skill of loadSkillsFromDir(userDir, "user")) {
     merged.set(skill.name, skill);

@@ -44,10 +44,10 @@ function buildToolingSection(toolDefs?: ToolDefinition[]): string[] {
   if (!toolDefs || toolDefs.length === 0) return [];
 
   const TOOL_CATEGORIES: Record<string, string[]> = {
-    "Understanding (use FIRST)": ["project_info", "file_info", "browse_page", "codebase_search", "system_info"],
+    "Understanding (use FIRST)": ["project_info", "file_info", "codebase_search", "system_info"],
     "File Operations": ["read_file", "write_file", "edit_file", "list_dir", "find_files", "grep"],
     "Execution": ["exec", "process"],
-    "Web": ["web_fetch", "browser"],
+    "Web (search → browse → fetch → browser)": ["web_search", "browse_page", "web_fetch", "browser"],
     "Action History & Undo": ["actions", "undo"],
     "Memory": ["memory_search", "memory_save", "memory_remove"],
     "Subagents": ["subagent_spawn", "subagent_list"],
@@ -138,7 +138,7 @@ function buildBehaviorSection(): string[] {
   return [
     "## Behavior Rules",
     "1. **Act, don't describe.** Call tools immediately when the user asks for something.",
-    "2. **Start with high-level tools.** Use project_info before exploring files. Use browse_page before raw web_fetch.",
+    "2. **Start with high-level tools.** Use project_info before exploring files. Use web_search before browse_page. Use browse_page before raw web_fetch.",
     "3. **Use edit_file for targeted code changes.** Use write_file only for new files or full rewrites.",
     "4. **Chain tools when needed.** e.g., project_info → file_info → codebase_search → edit_file.",
     "5. **Confirm before destructive actions** (rm, overwrite, etc.).",

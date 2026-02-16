@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createGatewayAuthHook } from "./middleware.js";
+import { authorizeGatewayHeaders, createGatewayAuthHook } from "./middleware.js";
 
 function mockReq(authorization?: string) {
   return { headers: { authorization } } as unknown as import("fastify").FastifyRequest;
@@ -42,5 +42,22 @@ describe("createGatewayAuthHook", () => {
     const reply = mockReply();
     await hook(req, reply);
     expect(reply.code).toHaveBeenCalledWith(401);
+  });
+});
+
+describe("authorizeGatewayHeaders", () => {
+  it("returns local identity when token is not configured", () => {
+    const identity = authorizeGatewayHeaders({}, undefined);
+    expect(identity).toEqual({ id: "local", method: "local" });
+  });
+
+  it("returns token identity when bearer token matches", () => {
+    const identity = authorizeGatewayHeaders({ authorization: "Bearer secret-token" }, "secret-token");
+    expect(identity).toEqual({ id: "token", method: "token" });
+  });
+
+  it("returns null when bearer token does not match", () => {
+    const identity = authorizeGatewayHeaders({ authorization: "Bearer wrong-token" }, "secret-token");
+    expect(identity).toBeNull();
   });
 });
