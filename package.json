@@ -8,10 +8,8 @@
   "private": true,
   "scripts": {
     "build": "tsdown",
-    "check": "pnpm format:check && pnpm lint",
+    "check": "pnpm lint",
     "dev": "node --import tsx packages/daemon/src/index.ts",
-    "format": "oxfmt --write",
-    "format:check": "oxfmt --check",
     "lint": "oxlint",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -19,6 +17,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.2.3",
+    "oxlint": "^0.16.10",
     "tsdown": "^0.20.3",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
