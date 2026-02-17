@@ -5,8 +5,11 @@ import type { EventBus } from "@undoable/core";
 import type { ChatService } from "../services/chat-service.js";
 import type { ToolRegistry } from "../tools/index.js";
 import type { CallLLMFn } from "../services/run-executor.js";
+import type { MediaService } from "../services/media-service.js";
+import type { MediaUnderstandingService } from "../services/media-understanding.js";
 import type { Channel, ChannelConfig, ChannelId, ChannelMessage, ChannelStatus } from "./types.js";
 import { RateLimiter, shouldAcceptMessage, isMediaWithinLimit, MessageQueue } from "./channel-utils.js";
+import { parseDirectives } from "../services/directive-parser.js";
 
 const CONFIG_PATH = path.join(os.homedir(), ".undoable", "channels.json");
 
@@ -22,6 +25,9 @@ const CHANNEL_SYSTEM_PROMPT = [
   "- exec: Run shell commands on the user's system.",
   "- read_file / write_file / edit_file: File operations.",
   "- project_info / file_info / codebase_search: Understand codebases.",
+  "- telegram_actions / discord_actions / slack_actions / whatsapp_actions: Perform actions on messaging platforms.",
+  "- sessions_list / sessions_history / sessions_send / sessions_spawn: Interact with other sessions.",
+  "- media: Download, inspect, resize, describe (image→text), transcribe (audio→text) media files.",
   "",
   "Act immediately when asked. Do not ask clarifying questions unless truly ambiguous.",
 ].join("\n");
@@ -31,6 +37,8 @@ export type ChannelManagerDeps = {
   eventBus: EventBus;
   callLLM: CallLLMFn;
   registry: ToolRegistry;
+  mediaService?: MediaService;
+  mediaUnderstanding?: MediaUnderstandingService;
 };
 
 export class ChannelManager {
@@ -57,6 +65,10 @@ export class ChannelManager {
 
   register(channel: Channel): void {
     this.channels.set(channel.id, channel);
+  }
+
+  getChannel(id: ChannelId): Channel | undefined {
+    return this.channels.get(id);
   }
 
   async loadConfigs(): Promise<void> {
@@ -172,7 +184,43 @@ export class ChannelManager {
 
     try {
       await this.deps.chatService.getOrCreate(sessionId, { systemPrompt: CHANNEL_SYSTEM_PROMPT });
-      await this.deps.chatService.addUserMessage(sessionId, msg.text);
+
+      // Parse inline directives from channel messages
+      const { directives, cleanMessage } = parseDirectives(msg.text);
+      for (const d of directives) {
+        if (d.type === "reset") {
+          await this.deps.chatService.resetSession(sessionId);
+          const channel = this.channels.get(msg.channelId);
+          if (channel) await channel.send(msg.to, "Session reset.", { threadId: msg.threadId });
+          return;
+        }
+      }
+
+      let userText = cleanMessage || msg.text;
+      if (msg.mediaUrl && this.deps.mediaService) {
+        try {
+          const stored = await this.deps.mediaService.download(msg.mediaUrl);
+          userText += `\n[Media downloaded: ${stored.contentType}, ${stored.size} bytes, saved to ${stored.filePath}]`;
+
+          if (this.deps.mediaUnderstanding) {
+            try {
+              if (this.deps.mediaUnderstanding.isImage(stored.filePath)) {
+                const { description } = await this.deps.mediaUnderstanding.describeImage(stored.filePath);
+                userText += `\n[Image description: ${description}]`;
+              } else if (this.deps.mediaUnderstanding.isAudio(stored.filePath)) {
+                const { text } = await this.deps.mediaUnderstanding.transcribeAudio(stored.filePath);
+                userText += `\n[Audio transcription: ${text}]`;
+              }
+            } catch {
+              // Media understanding failed — continue with basic info
+            }
+          }
+        } catch {
+          userText += `\n[Media download failed for: ${msg.mediaUrl}]`;
+        }
+      }
+
+      await this.deps.chatService.addUserMessage(sessionId, userText);
 
       const messages = await this.deps.chatService.buildApiMessages(sessionId);
       const response = await this.deps.callLLM(messages, this.deps.registry.definitions, false);

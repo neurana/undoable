@@ -134,5 +134,9 @@ export function createWhatsAppChannel(): Channel {
         reconnectAttempts: backoff.attempt, startedAt, lastConnectedAt, lastDisconnectedAt, lastErrorAt,
       };
     },
+
+    getClient() {
+      return sock;
+    },
   };
 }

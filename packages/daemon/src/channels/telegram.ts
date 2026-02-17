@@ -100,5 +100,9 @@ export function createTelegramChannel(): Channel {
         reconnectAttempts: backoff.attempt, startedAt, lastConnectedAt, lastDisconnectedAt, lastErrorAt,
       };
     },
+
+    getClient() {
+      return bot;
+    },
   };
 }

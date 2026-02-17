@@ -166,13 +166,14 @@ export class ChatSettings extends LitElement {
   @property({ type: String }) currentModel = "";
   @property({ type: String }) currentProvider = "";
 
-  @state() private tab: "models" | "providers" | "voice" = "models";
+  @state() private tab: "models" | "providers" | "voice" | "browser" = "models";
   @state() private models: ModelInfo[] = [];
   @state() private providers: ProviderInfo[] = [];
   @state() private localServers: LocalServerInfo[] = [];
   @state() private refreshingLocal = false;
   @state() private tts: TtsStatus = { enabled: false, provider: "system", providers: ["system"] };
   @state() private customVoiceProvider = "";
+  @state() private browserHeadless = false;
 
   private emit(name: string, detail?: unknown) {
     this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true }));
@@ -191,12 +192,13 @@ export class ChatSettings extends LitElement {
 
   private async loadData() {
     try {
-      const [modelsRes, providersRes, serversRes, ttsStatus, ttsProviders] = await Promise.all([
+      const [modelsRes, providersRes, serversRes, ttsStatus, ttsProviders, browserStatus] = await Promise.all([
         fetch("/api/chat/models"),
         fetch("/api/chat/providers"),
         fetch("/api/chat/local-servers").catch(() => null),
         api.gateway.tts.status().catch(() => null),
         api.gateway.tts.providers().catch(() => null),
+        api.gateway.browser.isHeadless().catch(() => null),
       ]);
       if (modelsRes.ok) {
         const data = await modelsRes.json() as { models: ModelInfo[] };
@@ -219,6 +221,9 @@ export class ChatSettings extends LitElement {
           provider: ttsProviders.active,
           providers: ttsProviders.providers,
         };
+      }
+      if (browserStatus !== null) {
+        this.browserHeadless = browserStatus.headless ?? false;
       }
     } catch { /* ignore */ }
   }
@@ -247,6 +252,28 @@ export class ChatSettings extends LitElement {
       };
       this.customVoiceProvider = "";
     } catch { /* ignore */ }
+  }
+
+  private async toggleBrowserHeadless(headless: boolean) {
+    try {
+      const result = await api.gateway.browser.setHeadless(headless);
+      this.browserHeadless = result.headless ?? headless;
+    } catch { /* ignore */ }
+  }
+
+  private renderBrowser() {
+    return html`
+      <div class="provider-row">
+        <div class="provider-info">
+          <div class="provider-label">Browser Mode</div>
+          <div class="provider-url">${this.browserHeadless ? "Headless (invisible)" : "Headful (visible window)"}</div>
+        </div>
+        <span class="key-status ${this.browserHeadless ? "key-missing" : "key-set"}">${this.browserHeadless ? "Headless" : "Visible"}</span>
+        <button class="btn-key" @click=${() => this.toggleBrowserHeadless(!this.browserHeadless)}>
+          ${this.browserHeadless ? "Show Browser" : "Hide Browser"}
+        </button>
+      </div>
+    `;
   }
 
   private renderVoice() {
@@ -444,13 +471,16 @@ export class ChatSettings extends LitElement {
             <button class="tab" ?data-active=${this.tab === "models"} @click=${() => this.tab = "models"}>Models</button>
             <button class="tab" ?data-active=${this.tab === "providers"} @click=${() => this.tab = "providers"}>API Keys</button>
             <button class="tab" ?data-active=${this.tab === "voice"} @click=${() => this.tab = "voice"}>Voice</button>
+            <button class="tab" ?data-active=${this.tab === "browser"} @click=${() => this.tab = "browser"}>Browser</button>
           </div>
           <div class="panel-body">
             ${this.tab === "models"
               ? this.renderModels()
               : this.tab === "providers"
                 ? this.renderProviders()
-                : this.renderVoice()}
+                : this.tab === "voice"
+                  ? this.renderVoice()
+                  : this.renderBrowser()}
           </div>
         </div>
       </div>

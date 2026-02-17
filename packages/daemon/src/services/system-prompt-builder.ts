@@ -67,6 +67,9 @@ function buildToolingSection(toolDefs?: ToolDefinition[]): string[] {
       "swarm_run_node",
     ],
     "Canvas": ["canvas"],
+    "Channel Actions": ["telegram_actions", "discord_actions", "slack_actions", "whatsapp_actions"],
+    "Sessions": ["sessions_list", "sessions_history", "sessions_send", "sessions_spawn", "session_status"],
+    "Media (download, describe, transcribe, resize)": ["media"],
   };
 
   const toolMap = new Map<string, ToolDefinition>();

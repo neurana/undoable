@@ -33,12 +33,13 @@ describe("buildProgram", () => {
     expect(commandNames).toContain("agent");
     expect(commandNames).toContain("chat");
     expect(commandNames).toContain("config");
+    expect(commandNames).toContain("plugin");
     expect(commandNames).toContain("doctor");
   });
 
-  it("has exactly 18 commands", () => {
+  it("has exactly 19 commands", () => {
     const program = buildProgram();
-    expect(program.commands).toHaveLength(18);
+    expect(program.commands).toHaveLength(19);
   });
 
   it("daemon command has start/stop/status subcommands", () => {

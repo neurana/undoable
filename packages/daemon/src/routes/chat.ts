@@ -33,9 +33,24 @@ import {
   extractThinkingFromStream,
   stripThinkingTags,
 } from "../services/thinking.js";
+import { parseDirectives, DIRECTIVE_HELP } from "../services/directive-parser.js";
 
 const MAX_TOOL_RESULT_CHARS = 30_000;
 const DEFAULT_MAX_ITERATIONS = 10;
+
+function isRetryableError(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+class LLMApiError extends Error {
+  constructor(public status: number, public body: string) {
+    super(`LLM API error: ${status} ${body}`);
+    this.name = "LLMApiError";
+  }
+  get retryable(): boolean {
+    return isRetryableError(this.status);
+  }
+}
 
 type ActiveChatRun = {
   controller: AbortController;
@@ -117,7 +132,7 @@ export async function callLLM(
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(`LLM API error: ${res.status} ${errText}`);
+    throw new LLMApiError(res.status, errText);
   }
   if (!stream) {
     const data = await res.json() as { choices: Array<{ message: { content: string | null; tool_calls?: ToolCall[] } }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } };
@@ -141,6 +156,7 @@ export function chatRoutes(
   sandboxExec?: import("../services/sandbox-exec.js").SandboxExecService,
   heartbeatService?: HeartbeatService,
   swarmService?: SwarmService,
+  usageService?: import("../services/usage-service.js").UsageService,
 ) {
   let runModeConfig = config.runMode ?? resolveRunMode();
   const approvalMode = shouldAutoApprove(runModeConfig) ? "off" as const : undefined;
@@ -429,8 +445,8 @@ export function chatRoutes(
     };
   });
 
-  app.post<{ Body: { message: string; sessionId?: string; agentId?: string; attachments?: ChatAttachment[] } }>("/chat", async (req, reply) => {
-    const { message, sessionId = "default", agentId, attachments } = req.body;
+  app.post<{ Body: { message: string; sessionId?: string; agentId?: string; model?: string; attachments?: ChatAttachment[] } }>("/chat", async (req, reply) => {
+    const { message, sessionId = "default", agentId, model: requestModel, attachments } = req.body;
     if (!message?.trim() && (!attachments || attachments.length === 0)) {
       return reply.code(400).send({ error: "message or attachments required" });
     }
@@ -441,6 +457,15 @@ export function chatRoutes(
     let agentInstructions: string | undefined;
     let agentWorkspace: string | undefined;
     let agentToolDefs = registry.definitions;
+
+    // Per-request model override via body.model
+    if (requestModel && providerService) {
+      const resolved = providerService.resolveModelAlias(requestModel);
+      if (resolved) {
+        agentModelOverride = resolved.modelId;
+      }
+    }
+
     if (agentId && agentRegistry) {
       const agent = agentRegistry.get(agentId);
       if (agent?.model) agentModelOverride = agent.model;
@@ -452,6 +477,19 @@ export function chatRoutes(
         agentInstructions = (await instructionsStore.getCurrent(agentId)) ?? undefined;
       }
     }
+
+    // Parse inline directives from the message
+    const { directives, cleanMessage } = parseDirectives(message ?? "");
+    let directiveModelOverride: string | undefined;
+    for (const d of directives) {
+      if (d.type === "think") {
+        thinkingConfig.level = d.level;
+      } else if (d.type === "model" && providerService) {
+        const resolved = providerService.resolveModelAlias(d.value);
+        if (resolved) directiveModelOverride = resolved.modelId;
+      }
+    }
+    if (directiveModelOverride) agentModelOverride = directiveModelOverride;
 
     const activeConf = getActiveConfig();
     const workspaceDir = agentWorkspace || os.homedir();
@@ -472,11 +510,13 @@ export function chatRoutes(
       },
     });
 
+    // Store the clean message (directives stripped) in chat history
+    const messageToStore = cleanMessage || message;
     if (attachments && attachments.length > 0) {
       const parsed = parseAttachments(attachments);
-      await chatService.addUserMessageWithImages(sessionId, message ?? "", parsed.images, parsed.textBlocks);
+      await chatService.addUserMessageWithImages(sessionId, messageToStore ?? "", parsed.images, parsed.textBlocks);
     } else {
-      await chatService.addUserMessage(sessionId, message);
+      await chatService.addUserMessage(sessionId, messageToStore);
     }
 
     const session = await chatService.getOrCreate(sessionId, { systemPrompt: dynamicSystemPrompt, agentId });
@@ -515,6 +555,39 @@ export function chatRoutes(
       thinking: thinkingConfig.level, reasoningVisibility: thinkingConfig.visibility,
       model: activeConf.model, provider: activeConf.provider, canThink: canThink(),
     });
+
+    // Handle directive-only messages (no LLM call needed)
+    if (directives.length > 0 && !cleanMessage) {
+      let handled = false;
+      for (const d of directives) {
+        if (d.type === "reset") {
+          await chatService.resetSession(sessionId);
+          sse({ type: "reset", sessionId });
+          handled = true;
+        } else if (d.type === "status") {
+          const ac = getActiveConfig();
+          sse({ type: "status", model: ac.model, provider: ac.provider, thinking: thinkingConfig.level, visibility: thinkingConfig.visibility, mode: runModeConfig.mode });
+          handled = true;
+        } else if (d.type === "help") {
+          sse({ type: "help", content: DIRECTIVE_HELP });
+          handled = true;
+        } else if (d.type === "think") {
+          sse({ type: "directive_applied", directive: "think", level: d.level });
+          handled = true;
+        } else if (d.type === "model" && directiveModelOverride) {
+          sse({ type: "directive_applied", directive: "model", model: directiveModelOverride });
+          handled = true;
+        }
+      }
+      if (handled) {
+        sse({ type: "done", content: "", iterations: 0, maxIterations, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } });
+        activeChatRuns.delete(runId);
+        activeSse = null;
+        if (heartbeatService) heartbeatService.unregister(sessionId);
+        try { reply.raw.write("data: [DONE]\n\n"); reply.raw.end(); } catch { }
+        return;
+      }
+    }
 
     if (driftScore.exceeds) {
       const reinforcement = buildStabilizer(driftScore);
@@ -561,8 +634,10 @@ export function chatRoutes(
               nonStreamRes = await callLLM({ ...baseConf, model }, messages, agentToolDefs, false, activeThinkLevel, abortController.signal) as typeof nonStreamRes;
               break;
             } catch (err) {
+              const isLast = model === modelsToTry[modelsToTry.length - 1];
+              const canRetry = err instanceof LLMApiError && err.retryable;
+              if (isLast || !canRetry) throw err;
               sse({ type: "fallback", failedModel: model, error: String(err) });
-              if (model === modelsToTry[modelsToTry.length - 1]) throw err;
             }
           }
           if (!nonStreamRes) { sse({ type: "error", content: "All models failed" }); break; }
@@ -589,8 +664,10 @@ export function chatRoutes(
               res = await callLLM({ ...baseConf, model }, messages, agentToolDefs, true, activeThinkLevel, abortController.signal) as Response;
               break;
             } catch (err) {
+              const isLast = model === modelsToTry[modelsToTry.length - 1];
+              const canRetry = err instanceof LLMApiError && err.retryable;
+              if (isLast || !canRetry) throw err;
               sse({ type: "fallback", failedModel: model, error: String(err) });
-              if (model === modelsToTry[modelsToTry.length - 1]) throw err;
             }
           }
           if (!res) { sse({ type: "error", content: "All models failed" }); break; }
@@ -666,6 +743,18 @@ export function chatRoutes(
           totalUsage.completionTokens += iterUsage.completionTokens;
           totalUsage.totalTokens += iterUsage.totalTokens;
           sse({ type: "usage", usage: { ...totalUsage } });
+
+          if (usageService) {
+            const ac = getActiveConfig();
+            usageService.record({
+              sessionId,
+              model: agentModelOverride ?? ac.model,
+              provider: ac.provider,
+              promptTokens: iterUsage.promptTokens,
+              completionTokens: iterUsage.completionTokens,
+              totalTokens: iterUsage.totalTokens,
+            });
+          }
         }
 
         if (!hasToolCalls) {
@@ -768,9 +857,11 @@ export function chatRoutes(
     return chatService.getHistory(sessionId);
   });
 
+  const INTERNAL_SESSION_PREFIXES = ["run-", "cron-", "channel-", "send-", "agent-", "test-"];
+
   app.get("/chat/sessions", async () => {
     const all = await chatService.listSessions();
-    return all.filter((s) => !s.id.startsWith("run-"));
+    return all.filter((s) => !INTERNAL_SESSION_PREFIXES.some((p) => s.id.startsWith(p)));
   });
 
   app.post<{ Body: { title?: string; agentId?: string } }>("/chat/sessions", async (req) => {
@@ -801,6 +892,16 @@ export function chatRoutes(
     const reset = await chatService.resetSession(req.params.id);
     if (!reset) return reply.code(404).send({ error: "Session not found" });
     return { ok: true };
+  });
+
+  app.post<{ Body: { ids: string[] } }>("/chat/sessions/batch-delete", async (req, reply) => {
+    const ids = req.body?.ids;
+    if (!Array.isArray(ids) || ids.length === 0) return reply.code(400).send({ error: "ids array required" });
+    let deleted = 0;
+    for (const id of ids) {
+      if (await chatService.deleteSession(id)) deleted++;
+    }
+    return { deleted };
   });
 
   const onboardingSvc = new OnboardingService();

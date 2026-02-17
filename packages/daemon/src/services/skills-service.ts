@@ -180,6 +180,10 @@ export class SkillsService {
   private skills: SkillStatus[] = [];
   private config: SkillsConfig = { disabled: [] };
   private workspaceDir?: string;
+  private discoverCache: SkillsSearchResult[] = [];
+  private discoverCacheTime = 0;
+  private searchCache = new Map<string, { results: SkillsSearchResult[]; time: number }>();
+  private static readonly CACHE_TTL = 300_000;
 
   constructor(opts?: { workspaceDir?: string }) {
     this.workspaceDir = opts?.workspaceDir;
@@ -326,17 +330,21 @@ export class SkillsService {
   async searchRegistry(query?: string): Promise<SkillsSearchResponse> {
     const normalizedQuery = query?.trim() || "find skills";
     const warning = this.getDangerWarning();
+    const cacheKey = normalizedQuery.toLowerCase();
+    const now = Date.now();
+
+    const cached = this.searchCache.get(cacheKey);
+    if (cached && now - cached.time < SkillsService.CACHE_TTL) {
+      return { ok: true, query: normalizedQuery, warning, results: cached.results };
+    }
+
     try {
       const { stdout, stderr } = await execFileAsync(
         "npx",
         ["-y", "skills", "find", normalizedQuery],
         {
           timeout: 120_000,
-          env: {
-            ...process.env,
-            DISABLE_TELEMETRY: "1",
-            DO_NOT_TRACK: "1",
-          },
+          env: { ...process.env, DISABLE_TELEMETRY: "1", DO_NOT_TRACK: "1" },
           maxBuffer: 1024 * 1024,
         },
       );
@@ -345,13 +353,14 @@ export class SkillsService {
       const recommendation = defaultFindSkillsSuggestion();
       const hasRecommendation = parsed.some((item) => item.reference === recommendation.reference);
       const results = hasRecommendation ? parsed : [recommendation, ...parsed];
-      return {
-        ok: true,
-        query: normalizedQuery,
-        warning,
-        results,
-      };
+
+      this.searchCache.set(cacheKey, { results, time: now });
+
+      return { ok: true, query: normalizedQuery, warning, results };
     } catch (err) {
+      if (cached) {
+        return { ok: true, query: normalizedQuery, warning, results: cached.results };
+      }
       const recommendation = defaultFindSkillsSuggestion();
       return {
         ok: false,
@@ -361,6 +370,60 @@ export class SkillsService {
         error: err instanceof Error ? err.message : String(err),
       };
     }
+  }
+
+  async discoverSkills(page: number, limit: number): Promise<{
+    ok: boolean;
+    warning: SkillsDangerWarning;
+    results: SkillsSearchResult[];
+    hasMore: boolean;
+    error?: string;
+  }> {
+    const warning = this.getDangerWarning();
+    const now = Date.now();
+
+    if (this.discoverCache.length === 0 || now - this.discoverCacheTime > SkillsService.CACHE_TTL) {
+      try {
+        const { stdout, stderr } = await execFileAsync(
+          "npx",
+          ["-y", "skills", "find", "popular skills"],
+          {
+            timeout: 120_000,
+            env: { ...process.env, DISABLE_TELEMETRY: "1", DO_NOT_TRACK: "1" },
+            maxBuffer: 1024 * 1024,
+          },
+        );
+
+        const parsed = parseSkillsShUrls(`${stdout}\n${stderr}`);
+        const recommendation = defaultFindSkillsSuggestion();
+        const hasRecommendation = parsed.some((item) => item.reference === recommendation.reference);
+        this.discoverCache = hasRecommendation ? parsed : [recommendation, ...parsed];
+        this.discoverCacheTime = now;
+      } catch (err) {
+        if (this.discoverCache.length === 0) {
+          const recommendation = defaultFindSkillsSuggestion();
+          return {
+            ok: false,
+            warning,
+            results: [recommendation],
+            hasMore: false,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+    }
+
+    const start = page * limit;
+    const end = start + limit;
+    const results = this.discoverCache.slice(start, end);
+    const hasMore = end < this.discoverCache.length;
+
+    return {
+      ok: true,
+      warning,
+      results,
+      hasMore,
+    };
   }
 
   async installFromRegistry(reference: string, opts?: { global?: boolean; agents?: string[] }): Promise<SkillsInstallResponse> {

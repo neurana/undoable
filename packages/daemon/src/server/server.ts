@@ -31,6 +31,7 @@ import { fileRoutes } from "../routes/files.js";
 import { channelRoutes } from "../routes/channels.js";
 import { gatewayRoutes } from "../routes/gateway.js";
 import { ChannelManager, createTelegramChannel, createDiscordChannel, createSlackChannel, createWhatsAppChannel } from "../channels/index.js";
+import { sessionRoutes } from "../routes/sessions.js";
 import { WizardService } from "../services/wizard-service.js";
 import { CronRunLogService } from "../services/cron-run-log-service.js";
 import { ExecApprovalService } from "../services/exec-approval-service.js";
@@ -39,6 +40,14 @@ import { ConnectorRegistry } from "../connectors/index.js";
 import { CANVAS_HOST_PATH, CANVAS_WS_PATH, createCanvasHostHandler } from "../services/canvas-host.js";
 import { recoverExecRegistryState } from "../tools/exec-registry.js";
 import { SwarmService } from "../services/swarm-service.js";
+import { MediaService } from "../services/media-service.js";
+import { TtsService } from "../services/tts-service.js";
+import { SttService } from "../services/stt-service.js";
+import { MediaUnderstandingService } from "../services/media-understanding.js";
+import { UsageService } from "../services/usage-service.js";
+import { PluginRegistry } from "../plugins/registry.js";
+import { pluginRoutes } from "../routes/plugins.js";
+import type { PluginContext } from "../plugins/types.js";
 
 export type ServerOptions = {
   port: number;
@@ -94,7 +103,7 @@ export async function createServer(opts: ServerOptions) {
     "IMPORTANT RULES:",
     "1. Execute the instruction immediately using your tools. Do NOT ask clarifying questions.",
     "2. Do NOT greet the user or ask what they need. The instruction below is the complete task.",
-    "3. Use your tools (exec, web_search, browser, browse_page, web_fetch, read_file, write_file, edit_file, etc.) to accomplish the task.",
+    "3. Use your tools (exec, web_search, browser, browse_page, web_fetch, read_file, write_file, edit_file, media, sessions_*, channel actions, etc.) to accomplish the task.",
     "4. When done, return a concise summary of what you did and the results.",
     "5. If the task cannot be completed, explain why in your response.",
     "",
@@ -226,7 +235,7 @@ export async function createServer(opts: ServerOptions) {
   heartbeatSvc.start({
     onSessionDead: (id) => app.log.info({ sessionId: id }, "session marked dead by heartbeat"),
   });
-  const browserHeadless = process.env.UNDOABLE_BROWSER_HEADLESS !== "false";
+  const browserHeadless = process.env.UNDOABLE_BROWSER_HEADLESS === "true";
   const browserViewport = process.env.UNDOABLE_BROWSER_VIEWPORT
     ? (() => { const [w, h] = process.env.UNDOABLE_BROWSER_VIEWPORT!.split("x").map(Number); return w && h ? { width: w, height: h } : undefined; })()
     : undefined;
@@ -238,6 +247,24 @@ export async function createServer(opts: ServerOptions) {
     launchArgs: process.env.UNDOABLE_BROWSER_ARGS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
   });
   const canvasService = new CanvasService();
+
+  const ttsService = new TtsService();
+  const sttService = new SttService();
+  if (initialApiKey) {
+    ttsService.setApiKey("openai", initialApiKey);
+    ttsService.setBaseUrl("openai", initialBaseUrl);
+    sttService.setApiKey("openai", initialApiKey);
+    sttService.setBaseUrl("openai", initialBaseUrl);
+  }
+  if (process.env.ELEVENLABS_API_KEY) {
+    ttsService.setApiKey("elevenlabs", process.env.ELEVENLABS_API_KEY);
+  }
+  if (process.env.DEEPGRAM_API_KEY) {
+    sttService.setApiKey("deepgram", process.env.DEEPGRAM_API_KEY);
+  }
+
+  const usageService = new UsageService();
+  await usageService.init();
 
   const { createToolRegistry } = await import("../tools/index.js");
   const { callLLM } = await import("../routes/chat.js");
@@ -273,16 +300,56 @@ export async function createServer(opts: ServerOptions) {
     },
   };
 
+  const mediaService = new MediaService();
+  const mediaUnderstanding = new MediaUnderstandingService({
+    callLLM: boundCallLLM,
+    sttService,
+  });
+
   const channelManager = new ChannelManager({
     chatService,
     eventBus,
     callLLM: boundCallLLM,
     registry: runRegistry,
+    mediaService,
+    mediaUnderstanding,
   });
   channelManager.register(createTelegramChannel());
   channelManager.register(createDiscordChannel());
   channelManager.register(createSlackChannel());
   channelManager.register(createWhatsAppChannel());
+
+  const { createChannelTools } = await import("../tools/channel-tools.js");
+  runRegistry.registerTools(createChannelTools(channelManager));
+
+  const { createSessionTools } = await import("../tools/session-tools.js");
+  runRegistry.registerTools(createSessionTools({
+    chatService,
+    runManager,
+    eventBus,
+    callLLM: boundCallLLM,
+    registry: runRegistry,
+  }));
+
+  const { createMediaTool } = await import("../tools/media-tools.js");
+  runRegistry.registerTools([createMediaTool(mediaService, mediaUnderstanding)]);
+
+  const mediaCleanupInterval = setInterval(() => mediaService.cleanup().catch(() => {}), 60 * 60 * 1000);
+
+  const pluginRegistry = new PluginRegistry();
+  await pluginRegistry.loadAll();
+  const pluginCtx: PluginContext = {
+    registerTool: (tool) => runRegistry.registerTools([tool]),
+    getService: <T,>(name: string): T | undefined => {
+      const services: Record<string, unknown> = {
+        chat: chatService, media: mediaService, memory: memorySvc,
+        provider: providerSvc, usage: usageService, tts: ttsService, stt: sttService,
+      };
+      return services[name] as T | undefined;
+    },
+    log: { info: (msg) => app.log.info({ plugin: true }, msg), error: (msg) => app.log.error({ plugin: true }, msg) },
+  };
+  await pluginRegistry.activateAll(pluginCtx);
 
   await app.register(healthRoutes);
   runRoutes(app, runManager, auditService, {
@@ -300,12 +367,16 @@ export async function createServer(opts: ServerOptions) {
   swarmRoutes(app, swarmService, runManager);
   agentRoutes(app, agentRegistry, instructionsStore);
   instructionsRoutes(app, instructionsStore);
-  voiceRoutes(app, { apiKey: chatConfig.apiKey, baseUrl: chatConfig.baseUrl });
+  voiceRoutes(app, ttsService, sttService);
   skillsRoutes(app, skillsService);
   heartbeatRoutes(app, heartbeatSvc);
-  chatRoutes(app, chatService, chatConfig, runManager, scheduler, browserSvc, skillsService, providerSvc, agentRegistry, instructionsStore, memorySvc, sandboxExec, heartbeatSvc, swarmService);
+  chatRoutes(app, chatService, chatConfig, runManager, scheduler, browserSvc, skillsService, providerSvc, agentRegistry, instructionsStore, memorySvc, sandboxExec, heartbeatSvc, swarmService, usageService);
   fileRoutes(app);
   channelRoutes(app, channelManager);
+  sessionRoutes(app, chatService);
+  const { usageRoutes } = await import("../routes/usage.js");
+  usageRoutes(app, usageService);
+  pluginRoutes(app, pluginRegistry, pluginCtx);
   gatewayRoutes(app, {
     scheduler,
     cronRuns,
@@ -321,6 +392,8 @@ export async function createServer(opts: ServerOptions) {
     connectorRegistry,
     agentRegistry,
     instructionsStore,
+    ttsService,
+    usageService,
   });
 
   return {
@@ -331,8 +404,13 @@ export async function createServer(opts: ServerOptions) {
       await app.listen({ port: opts.port, host });
     },
     stop: async () => {
+      clearInterval(mediaCleanupInterval);
       scheduler.stop();
       heartbeatSvc.stop();
+      await usageService.destroy();
+      for (const p of pluginRegistry.list().filter((x) => x.active)) {
+        await pluginRegistry.deactivate(p.name).catch(() => {});
+      }
       await channelManager.stopAll();
       await providerSvc.destroy();
       await canvasHost.close();

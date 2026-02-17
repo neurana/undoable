@@ -17,6 +17,7 @@ import { configCommand } from "./commands/config.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { swarmCommand } from "./commands/swarm.js";
 import { chatCommand } from "./commands/chat.js";
+import { pluginCommand } from "./commands/plugin.js";
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -43,6 +44,7 @@ export function buildProgram(): Command {
   program.addCommand(agentCommand());
   program.addCommand(chatCommand());
   program.addCommand(configCommand());
+  program.addCommand(pluginCommand());
   program.addCommand(doctorCommand());
 
   return program;

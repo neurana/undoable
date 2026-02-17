@@ -54,6 +54,24 @@ export const api = {
     start: (id: string) => request<{ started: boolean }>(`/channels/${id}/start`, { method: "POST" }),
     stop: (id: string) => request<{ stopped: boolean }>(`/channels/${id}/stop`, { method: "POST" }),
   },
+  sessions: {
+    list: (opts?: { limit?: number; active_minutes?: number; include_internal?: boolean }) => {
+      const params = new URLSearchParams();
+      if (opts?.limit) params.set("limit", String(opts.limit));
+      if (opts?.active_minutes) params.set("active_minutes", String(opts.active_minutes));
+      if (opts?.include_internal) params.set("include_internal", "true");
+      const qs = params.toString();
+      return request<SessionListItem[]>(`/sessions${qs ? `?${qs}` : ""}`);
+    },
+    get: (id: string) => request<SessionDetailItem>(`/sessions/${id}`),
+    history: (id: string, opts?: { limit?: number; include_tools?: boolean }) => {
+      const params = new URLSearchParams();
+      if (opts?.limit) params.set("limit", String(opts.limit));
+      if (opts?.include_tools) params.set("include_tools", "true");
+      const qs = params.toString();
+      return request<{ messages: unknown[]; count: number }>(`/sessions/${id}/history${qs ? `?${qs}` : ""}`);
+    },
+  },
   jobs: {
     list: () => request<JobItem[]>("/jobs"),
     create: (job: JobCreateInput) => request<JobItem>("/jobs", { method: "POST", body: JSON.stringify(job) }),
@@ -96,6 +114,10 @@ export const api = {
       enable: () => gatewayRequest<{ enabled: boolean; provider: string }>("tts.enable"),
       disable: () => gatewayRequest<{ enabled: boolean; provider: string }>("tts.disable"),
       setProvider: (provider: string) => gatewayRequest<{ provider: string; providers: string[] }>("tts.setProvider", { provider }),
+    },
+    browser: {
+      isHeadless: () => gatewayRequest<{ headless: boolean }>("browser.request", { action: "isHeadless" }),
+      setHeadless: (value: boolean) => gatewayRequest<{ headless: boolean }>("browser.request", { action: "setHeadless", value }),
     },
     agentsFiles: {
       list: (agentId: string) => gatewayRequest<GatewayAgentFilesListResult>("agents.files.list", { agentId }),
@@ -361,4 +383,23 @@ export type GatewayAgentFileSetResult = {
   agentId: string;
   path: string;
   version: number;
+};
+
+export type SessionListItem = {
+  id: string;
+  title: string;
+  agentId?: string;
+  messageCount: number;
+  preview?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type SessionDetailItem = {
+  id: string;
+  title: string;
+  agentId?: string;
+  messageCount: number;
+  createdAt: number;
+  updatedAt: number;
 };

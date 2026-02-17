@@ -8,6 +8,8 @@ import "./chat-messages.js";
 import "./chat-settings.js";
 import "./canvas-panel.js";
 import "./swarm-panel.js";
+import "./terminal-panel.js";
+import type { TerminalEntry } from "./terminal-panel.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -151,6 +153,39 @@ export class UndoableChat extends LitElement {
       stroke-width: 1.7;
       fill: none;
     }
+    .btn-terminal {
+      height: 30px;
+      padding: 0 10px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-strong);
+      background: var(--surface-1);
+      color: var(--text-secondary);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
+      flex-shrink: 0;
+    }
+    .btn-terminal:hover {
+      background: var(--wash);
+      color: var(--text-primary);
+      border-color: var(--mint-strong);
+    }
+    .btn-terminal.active {
+      background: var(--accent-subtle);
+      color: var(--dark);
+      border-color: var(--mint-strong);
+    }
+    .btn-terminal svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      fill: none;
+    }
     .chat-content {
       flex: 1;
       min-height: 0;
@@ -280,6 +315,39 @@ export class UndoableChat extends LitElement {
       overflow: hidden;
       box-shadow: 0 10px 28px rgba(17,26,23,0.08);
     }
+    .terminal-shell {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 0;
+      min-height: 0;
+      opacity: 0;
+      transform: translateY(20px);
+      transform-origin: bottom center;
+      border-top: 1px solid transparent;
+      background: var(--bg-deep);
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 5;
+      transition:
+        height 280ms cubic-bezier(0.2,0.8,0.2,1),
+        opacity 240ms ease,
+        transform 280ms cubic-bezier(0.2,0.8,0.2,1),
+        border-color 180ms ease;
+    }
+    .terminal-shell.open {
+      height: 280px;
+      opacity: 1;
+      transform: translateY(0);
+      border-top-color: var(--border-divider);
+      pointer-events: auto;
+    }
+    .terminal-shell-frame {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+    }
     @media (max-width: 768px) {
       .sidebar-backdrop.visible { display: block; }
       .empty-title { font-size: 18px; }
@@ -288,6 +356,9 @@ export class UndoableChat extends LitElement {
       .btn-swarm-nav { width: 32px; height: 32px; justify-content: center; padding: 0; border-radius: 8px; }
       .btn-canvas span { display: none; }
       .btn-canvas { width: 32px; height: 32px; justify-content: center; padding: 0; border-radius: 8px; }
+      .btn-terminal span { display: none; }
+      .btn-terminal { width: 32px; height: 32px; justify-content: center; padding: 0; border-radius: 8px; }
+      .terminal-shell.open { height: 200px; }
       .chat-content {
         position: relative;
       }
@@ -334,6 +405,59 @@ export class UndoableChat extends LitElement {
       }
       .swarm-shell-frame { box-shadow: 0 14px 30px rgba(17,26,23,0.18); }
     }
+    .iter-dialog-overlay {
+      position: fixed; inset: 0; z-index: 100;
+      background: rgba(0,0,0,0.4);
+      display: flex; align-items: center; justify-content: center;
+      animation: iter-fade-in 120ms ease;
+    }
+    @keyframes iter-fade-in { from { opacity: 0; } to { opacity: 1; } }
+    .iter-dialog {
+      background: var(--surface-1);
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      box-shadow: var(--shadow-raised);
+      padding: 20px;
+      width: 320px; max-width: 90vw;
+      animation: iter-dialog-pop 150ms cubic-bezier(0.2,0.8,0.2,1);
+    }
+    @keyframes iter-dialog-pop {
+      from { opacity: 0; transform: scale(0.95); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .iter-dialog-title {
+      font-size: 15px; font-weight: 600; color: var(--text-primary);
+      margin-bottom: 14px;
+    }
+    .iter-options {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+      margin-bottom: 16px;
+    }
+    .iter-option {
+      padding: 10px 8px; border-radius: 8px;
+      border: 1px solid var(--border-strong);
+      background: var(--surface-1); color: var(--text-secondary);
+      font-size: 13px; font-weight: 500; font-family: inherit;
+      cursor: pointer; transition: all 120ms ease;
+      text-align: center;
+    }
+    .iter-option:hover { background: var(--wash); border-color: var(--mint-strong); color: var(--text-primary); }
+    .iter-option.active { background: var(--accent-subtle); border-color: var(--mint-strong); color: var(--dark); }
+    .iter-option.unlimited { grid-column: span 3; background: var(--wash); }
+    .iter-option.unlimited:hover { background: var(--accent-subtle); }
+    .iter-dialog-actions {
+      display: flex; gap: 8px; justify-content: flex-end;
+    }
+    .iter-dialog-btn {
+      padding: 7px 16px; border-radius: 8px; border: none;
+      font-size: 12px; font-weight: 600; font-family: inherit;
+      cursor: pointer; transition: all 120ms ease;
+    }
+    .iter-dialog-btn-cancel {
+      background: var(--surface-1); color: var(--text-secondary);
+      border: 1px solid var(--border-strong);
+    }
+    .iter-dialog-btn-cancel:hover { background: var(--wash); }
   `];
 
   @state() private sidebarOpen = true;
@@ -365,7 +489,10 @@ export class UndoableChat extends LitElement {
   @state() private canvasUrl = "";
   @state() private canvasFrames: string[] = [];
   @state() private swarmOpen = false;
+  @state() private terminalOpen = false;
+  @state() private terminalEntries: TerminalEntry[] = [];
   @state() private panelWidth = 0;
+  @state() private showMaxIterDialog = false;
   private resizing = false;
   private resizePointerId = -1;
 
@@ -376,7 +503,7 @@ export class UndoableChat extends LitElement {
     super.connectedCallback();
     if (window.innerWidth <= 768) this.sidebarOpen = false;
     this.loadSessions().then(() => this.restoreFromUrl());
-    void this.refreshUndoState();
+    this.refreshUndoState();
     this.fetchRunConfig();
     this.fetchAgents();
     this.checkOnboarding();
@@ -600,6 +727,19 @@ export class UndoableChat extends LitElement {
     if (this.swarmOpen) this.ensureSwarmPanelWidth();
   };
 
+  private toggleTerminal = () => {
+    this.terminalOpen = !this.terminalOpen;
+  };
+
+  private addTerminalEntry(entry: TerminalEntry) {
+    this.terminalEntries = [...this.terminalEntries, entry];
+  }
+
+  private handleTerminalCommand(cmd: string) {
+    this.addTerminalEntry({ type: "command", content: cmd, timestamp: Date.now() });
+    this.addTerminalEntry({ type: "info", content: "Command execution via UI not implemented yet", timestamp: Date.now() });
+  }
+
   private onResizePointerDown = (e: PointerEvent) => {
     e.preventDefault();
     this.resizing = true;
@@ -635,39 +775,29 @@ export class UndoableChat extends LitElement {
     } catch { }
   }
 
-  private async refreshUndoState() {
-    try {
-      const res = await fetch("/api/chat/undo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "list" }),
-      });
-      if (!res.ok) return;
-      const data = await res.json() as {
-        undoable?: Array<{ id: string }>;
-        redoable?: Array<{ id: string }>;
-      };
-      this.hasUndoable = (data.undoable?.length ?? 0) > 0;
-      this.hasRedoable = (data.redoable?.length ?? 0) > 0;
-    } catch {
-      // ignore state refresh errors
-    }
+  private refreshUndoState() {
+    const hasToolCalls = this.entries.some((e) => e.kind === "tool_call" || e.kind === "tool_result");
+    this.hasUndoable = hasToolCalls;
+    this.hasRedoable = hasToolCalls;
   }
 
   private async newChat() {
-    try {
-      const res = await fetch("/api/chat/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
-      if (!res.ok) return;
-      const data = await res.json() as { id: string };
-      this.activeSessionId = data.id;
-      this.entries = [];
-      this.hasUndoable = false;
-      this.hasRedoable = false;
-      this.error = "";
-      this.pushChatUrl(data.id);
-      await this.loadSessions();
-      await this.refreshUndoState();
-    } catch { }
+    this.activeSessionId = "";
+    this.entries = [];
+    this.hasUndoable = false;
+    this.hasRedoable = false;
+    this.error = "";
+    this.pushChatUrl("");
+  }
+
+  private async ensureSession(): Promise<string> {
+    if (this.activeSessionId) return this.activeSessionId;
+    const res = await fetch("/api/chat/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    if (!res.ok) throw new Error("Failed to create session");
+    const data = await res.json() as { id: string };
+    this.activeSessionId = data.id;
+    this.pushChatUrl(data.id);
+    return data.id;
   }
 
   private async selectSession(id: string) {
@@ -687,7 +817,7 @@ export class UndoableChat extends LitElement {
       if (data.agentId && this.agents.some((a) => a.id === data.agentId)) {
         this.currentAgentId = data.agentId;
       }
-      await this.refreshUndoState();
+      this.refreshUndoState();
     } catch { }
   }
 
@@ -695,6 +825,17 @@ export class UndoableChat extends LitElement {
     try {
       await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
       if (this.activeSessionId === id) { this.activeSessionId = ""; this.entries = []; this.pushChatUrl(""); }
+      await this.loadSessions();
+    } catch { }
+  }
+
+  private async batchDeleteSessions(ids: string[]) {
+    try {
+      await fetch("/api/chat/sessions/batch-delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (ids.includes(this.activeSessionId)) { this.activeSessionId = ""; this.entries = []; this.pushChatUrl(""); }
       await this.loadSessions();
     } catch { }
   }
@@ -718,7 +859,7 @@ export class UndoableChat extends LitElement {
         this.hasRedoable = false;
       }
       await this.loadSessions();
-      await this.refreshUndoState();
+      this.refreshUndoState();
     } catch { }
   }
 
@@ -773,40 +914,18 @@ export class UndoableChat extends LitElement {
     } catch { /* ignore */ }
   }
 
-  private async performUndoAction(action: string) {
-    try {
-      const res = await fetch("/api/chat/undo", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
-      }
-      const data = await res.json() as { result?: { success?: boolean; error?: string }; results?: Array<{ success?: boolean }> };
-      const results = data.results ?? (data.result ? [data.result] : []);
-      const successCount = results.filter((r) => r.success).length;
-      const total = results.length;
-      const label = action.startsWith("redo") ? "Redo" : "Undo";
-      const op = action.endsWith("all") ? "all" : "last";
-      this.entries = [...this.entries, {
-        kind: "assistant",
-        content: total > 0
-          ? `${label}: ${successCount}/${total} ${op} operation${total > 1 ? "s" : ""} applied.`
-          : `${label}: operation requested.`,
-      }];
-      await this.refreshUndoState();
-    } catch (err) { this.error = `History operation failed: ${err}`; }
-  }
-
   private async handleUndo(action: string) {
-    const routeAction = action === "all" ? "undo_all" : "undo_last";
-    await this.performUndoAction(routeAction);
+    const prompt = action === "all"
+      ? "Please UNDO ALL the file changes you made in this conversation. Delete any files you created, restore any files you modified to their original content, and recreate any files you deleted. List each action you undo."
+      : "Please UNDO the LAST file change you made. If you created a file, delete it. If you modified a file, restore it to its previous content. If you deleted a file, recreate it. Confirm what you undid.";
+    await this.handleSendMessage({ text: prompt });
   }
 
   private async handleRedo(action: string) {
-    const routeAction = action === "all" ? "redo_all" : "redo_last";
-    await this.performUndoAction(routeAction);
+    const prompt = action === "all"
+      ? "Please REDO ALL the file changes that were previously undone. Recreate deleted files, reapply modifications, etc. List each action you redo."
+      : "Please REDO the LAST file change that was undone. Reapply the change that was reverted. Confirm what you redid.";
+    await this.handleSendMessage({ text: prompt });
   }
 
   // ── Send + SSE streaming ──
@@ -816,7 +935,7 @@ export class UndoableChat extends LitElement {
     if (!text && !attachments?.length) return;
     if (this.loading) return;
 
-    if (!this.activeSessionId) await this.newChat();
+    await this.ensureSession();
 
     const hasFiles = !!attachments?.length;
     const displayText = hasFiles && text ? text : hasFiles ? `[${attachments!.length} file${attachments!.length > 1 ? "s" : ""}]` : text;
@@ -901,12 +1020,40 @@ export class UndoableChat extends LitElement {
                 kind: "tool_call", name: evt.name ?? "?", args: evt.args ?? {},
                 iteration: evt.iteration, maxIterations: evt.maxIterations,
               }];
+              const toolName = (evt.name ?? "").toLowerCase();
+              if (toolName === "bash" || toolName === "shell" || toolName === "execute" || toolName === "run_command") {
+                const args = evt.args ?? {};
+                const cmd = typeof args.command === "string" ? args.command : typeof args.cmd === "string" ? args.cmd : "";
+                if (cmd) {
+                  this.addTerminalEntry({ type: "command", content: cmd, timestamp: Date.now() });
+                }
+              }
             } else if (evt.type === "tool_result") {
               this.applySwarmFromToolName(evt.name ?? "");
               this.applyCanvasFromToolResult(evt.result);
               this.entries = [...this.entries, { kind: "tool_result", name: evt.name ?? "?", result: evt.result }];
               this.hasUndoable = true;
-              void this.refreshUndoState();
+              this.refreshUndoState();
+              const toolName = (evt.name ?? "").toLowerCase();
+              if (toolName === "bash" || toolName === "shell" || toolName === "execute" || toolName === "run_command") {
+                const result = evt.result;
+                if (typeof result === "string") {
+                  this.addTerminalEntry({ type: "output", content: result, timestamp: Date.now() });
+                } else if (isRecord(result)) {
+                  if (typeof result.stdout === "string" && result.stdout) {
+                    this.addTerminalEntry({ type: "output", content: result.stdout, timestamp: Date.now() });
+                  }
+                  if (typeof result.stderr === "string" && result.stderr) {
+                    this.addTerminalEntry({ type: "error", content: result.stderr, timestamp: Date.now() });
+                  }
+                  if (typeof result.output === "string" && result.output) {
+                    this.addTerminalEntry({ type: "output", content: result.output, timestamp: Date.now() });
+                  }
+                  if (typeof result.error === "string" && result.error) {
+                    this.addTerminalEntry({ type: "error", content: result.error, timestamp: Date.now() });
+                  }
+                }
+              }
             } else if (evt.type === "approval_pending") {
               this.entries = [...this.entries, {
                 kind: "approval", id: evt.id ?? "", tool: evt.tool ?? "?",
@@ -1015,11 +1162,12 @@ export class UndoableChat extends LitElement {
     } catch { }
   }
 
-  private async editMaxIter() {
-    const val = prompt("Max iterations:", String(this.maxIter));
-    if (val === null) return;
-    const n = parseInt(val, 10);
-    if (isNaN(n) || n < 1) return;
+  private openMaxIterDialog() {
+    this.showMaxIterDialog = true;
+  }
+
+  private async selectMaxIter(n: number) {
+    this.showMaxIterDialog = false;
     try {
       const res = await fetch("/api/chat/run-config", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -1073,6 +1221,7 @@ export class UndoableChat extends LitElement {
         @new-chat=${() => this.newChat()}
         @select-session=${(e: CustomEvent) => this.selectSession(e.detail)}
         @delete-session=${(e: CustomEvent) => this.deleteSession(e.detail)}
+        @batch-delete-sessions=${(e: CustomEvent) => this.batchDeleteSessions(e.detail)}
         @rename-session=${(e: CustomEvent) => this.renameSession(e.detail)}
         @reset-session=${(e: CustomEvent) => this.resetSession(e.detail)}
         @navigate=${(e: CustomEvent) => this.emitNavigate(e.detail)}
@@ -1114,6 +1263,10 @@ export class UndoableChat extends LitElement {
             <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
             <span>Canvas</span>
           </button>
+          <button class="btn-terminal ${this.terminalOpen ? "active" : ""}" @click=${this.toggleTerminal} title=${this.terminalOpen ? "Hide terminal" : "Show terminal"}>
+            <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 9l4 3-4 3"/><path d="M12 16h6"/></svg>
+            <span>CLI</span>
+          </button>
           <div class="chat-header-spacer"></div>
           <button class="btn-header-icon" @click=${() => { this.showOnboarding = true; }} title="Profile & Onboarding">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -1123,7 +1276,7 @@ export class UndoableChat extends LitElement {
               <span>Mode: <span class="status-badge ${this.badgeClass(this.runMode)}" style=${this.dangerouslySkipPermissions ? "cursor:not-allowed;" : "cursor:pointer;"} title=${this.dangerouslySkipPermissions ? "Locked while --dangerously-skip-permissions is active" : "Click to cycle"} @click=${this.cycleRunMode}>${this.runMode}</span></span>
               <span>Approval: <span class="status-badge ${this.badgeClass(this.approvalModeLabel)}" style=${this.dangerouslySkipPermissions ? "cursor:not-allowed;" : "cursor:pointer;"} title=${this.dangerouslySkipPermissions ? "Locked while --dangerously-skip-permissions is active" : "Click to cycle"} @click=${this.cycleApprovalMode}>${this.approvalModeLabel || "off"}</span></span>
               ${this.dangerouslySkipPermissions ? html`<span class="status-badge badge-danger-skip" title="Danger mode: all permission checks are bypassed">skip-perms</span>` : nothing}
-              ${this.maxIter ? html`<span style="cursor:pointer;" title="Click to change" @click=${this.editMaxIter}>Max: <b>${this.maxIter}</b></span>` : nothing}
+              ${this.maxIter ? html`<span style="cursor:pointer;" title="Click to change" @click=${() => this.openMaxIterDialog()}>Max: <b>${this.maxIter >= 9999 ? "∞" : this.maxIter}</b></span>` : nothing}
               ${this.usage.totalTokens > 0 ? html`<span class="usage-label" title="Prompt: ${this.usage.promptTokens} | Completion: ${this.usage.completionTokens}">${this.fmtTokens(this.usage.totalTokens)} tokens</span>` : nothing}
             </div>
           ` : nothing}
@@ -1163,6 +1316,17 @@ export class UndoableChat extends LitElement {
               @cycle-thinking=${this.cycleThinkingLevel}
               @chat-error=${(e: CustomEvent) => { this.error = e.detail; }}
             ></chat-input>
+
+            <aside class="terminal-shell ${this.terminalOpen ? "open" : ""}">
+              <div class="terminal-shell-frame">
+                <terminal-panel
+                  .visible=${this.terminalOpen}
+                  .entries=${this.terminalEntries}
+                  @terminal-close=${() => { this.terminalOpen = false; }}
+                  @terminal-command=${(e: CustomEvent) => this.handleTerminalCommand(e.detail)}
+                ></terminal-panel>
+              </div>
+            </aside>
           </div>
 
           <aside class="canvas-shell ${this.canvasOpen ? "open" : ""} ${this.resizing ? "resizing" : ""}" style=${this.canvasOpen ? `width:${this.panelWidth}px` : ""}>
@@ -1198,6 +1362,23 @@ export class UndoableChat extends LitElement {
       ></chat-settings>
 
       ${this.showOnboarding ? html`<undoable-onboarding></undoable-onboarding>` : nothing}
+
+      ${this.showMaxIterDialog ? html`
+        <div class="iter-dialog-overlay" @click=${() => { this.showMaxIterDialog = false; }}>
+          <div class="iter-dialog" @click=${(e: Event) => e.stopPropagation()}>
+            <div class="iter-dialog-title">Max Iterations</div>
+            <div class="iter-options">
+              ${[10, 25, 50, 100, 200, 500].map((n) => html`
+                <button class="iter-option ${this.maxIter === n ? "active" : ""}" @click=${() => this.selectMaxIter(n)}>${n}</button>
+              `)}
+              <button class="iter-option unlimited ${this.maxIter >= 9999 ? "active" : ""}" @click=${() => this.selectMaxIter(9999)}>∞ Unlimited (always running)</button>
+            </div>
+            <div class="iter-dialog-actions">
+              <button class="iter-dialog-btn iter-dialog-btn-cancel" @click=${() => { this.showMaxIterDialog = false; }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      ` : nothing}
     `;
   }
 

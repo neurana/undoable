@@ -111,5 +111,9 @@ export function createDiscordChannel(): Channel {
         reconnectAttempts: backoff.attempt, startedAt, lastConnectedAt, lastDisconnectedAt, lastErrorAt,
       };
     },
+
+    getClient() {
+      return client;
+    },
   };
 }

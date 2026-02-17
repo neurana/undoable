@@ -16,21 +16,59 @@ export type ExecAllowlistConfig = {
 };
 
 const DEFAULT_SAFE_BINS = [
+  // Core utilities
   "jq", "grep", "egrep", "fgrep", "cut", "sort", "uniq",
   "head", "tail", "tr", "wc", "cat", "less", "more",
   "echo", "printf", "date", "which", "whoami", "hostname",
   "pwd", "env", "true", "false", "test", "expr",
-  "ls", "find", "file", "stat", "du", "df",
-  "git", "node", "npm", "npx", "pnpm", "yarn", "bun",
-  "python", "python3", "pip", "pip3",
-  "tsc", "vitest", "eslint", "prettier",
-  "curl", "wget",
-  "sed", "awk", "xargs", "tee",
-  "mkdir", "touch", "cp", "mv", "ln",
-  "tar", "gzip", "gunzip", "zip", "unzip",
-  "diff", "patch",
-  "docker", "docker-compose",
-  "ssh", "scp", "rsync",
+  "ls", "find", "file", "stat", "du", "df", "basename", "dirname",
+  "sed", "awk", "xargs", "tee", "timeout", "time",
+  // File operations
+  "mkdir", "touch", "cp", "mv", "ln", "rm", "rmdir",
+  "tar", "gzip", "gunzip", "zip", "unzip", "bzip2", "xz",
+  "diff", "patch", "chmod", "chown",
+  // Git
+  "git", "gh",
+  // Package managers
+  "brew", "apt", "apt-get", "dpkg", "yum", "dnf", "pacman", "apk",
+  "snap", "flatpak", "nix",
+  // JavaScript/Node
+  "node", "npm", "npx", "pnpm", "yarn", "bun", "deno",
+  "tsc", "tsx", "vitest", "jest", "mocha",
+  "eslint", "prettier", "webpack", "vite", "esbuild", "rollup", "turbo",
+  // Python
+  "python", "python3", "pip", "pip3", "pipx", "uv", "poetry", "pdm", "conda",
+  "pytest", "mypy", "black", "ruff", "isort", "flake8",
+  // Rust
+  "cargo", "rustc", "rustup", "clippy",
+  // Go
+  "go", "gofmt",
+  // Ruby
+  "ruby", "gem", "bundle", "bundler", "rake", "rails",
+  // PHP
+  "php", "composer",
+  // Java/JVM
+  "java", "javac", "mvn", "gradle", "kotlin", "kotlinc",
+  // Swift/Apple
+  "swift", "swiftc", "xcodebuild", "xcrun",
+  // C/C++
+  "make", "cmake", "gcc", "g++", "clang", "clang++",
+  // Network
+  "curl", "wget", "http", "httpie",
+  "ssh", "scp", "rsync", "sftp",
+  // Containers
+  "docker", "docker-compose", "podman", "kubectl", "helm", "minikube",
+  // Document conversion
+  "pandoc", "wkhtmltopdf", "pdflatex", "xelatex", "lualatex",
+  // Media tools
+  "ffmpeg", "ffprobe", "convert", "magick", "exiftool", "imagemagick",
+  // Text processing & search
+  "rg", "ag", "fd", "bat", "tree", "exa", "eza", "fzf",
+  // System info
+  "uname", "uptime", "free", "top", "htop", "ps", "kill", "killall",
+  // Misc dev tools
+  "code", "subl", "open", "pbcopy", "pbpaste", "xclip",
+  "yq", "sqlite3", "psql", "mysql", "redis-cli", "mongosh",
 ];
 
 const CONFIG_PATH = path.join(os.homedir(), ".undoable", "exec-allowlist.json");

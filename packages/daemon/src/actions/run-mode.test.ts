@@ -2,10 +2,10 @@ import { describe, it, expect } from "vitest";
 import { resolveRunMode, shouldAutoApprove } from "./run-mode.js";
 
 describe("resolveRunMode", () => {
-  it("defaults to interactive with 10 iterations", () => {
+  it("defaults to supervised with 50 iterations", () => {
     const config = resolveRunMode();
-    expect(config.mode).toBe("interactive");
-    expect(config.maxIterations).toBe(10);
+    expect(config.mode).toBe("supervised");
+    expect(config.maxIterations).toBe(50);
     expect(config.dangerouslySkipPermissions).toBe(false);
   });
 

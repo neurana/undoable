@@ -41,6 +41,8 @@ import type { CanvasService } from "../services/canvas-service.js";
 import { createNodeTools } from "./node-tools.js";
 import type { SwarmService } from "../services/swarm-service.js";
 import { createSwarmTools } from "./swarm/index.js";
+import type { ChannelManager } from "../channels/channel-manager.js";
+import { createChannelTools } from "./channel-tools.js";
 
 export type { AgentTool, ToolDefinition, ToolExecutor, ToolResult } from "./types.js";
 
@@ -66,10 +68,11 @@ export function createToolRegistry(deps: {
   sandboxSessionId?: string;
   approvalMode?: ApprovalMode;
   runId?: string;
+  channelManager?: ChannelManager;
 }): ToolRegistry {
   const connectorRegistry = deps.connectorRegistry ?? new ConnectorRegistry();
   const actionLog = new ActionLog();
-  const approvalGate = new ApprovalGate(deps.approvalMode ?? "off");
+  const approvalGate = new ApprovalGate(deps.approvalMode ?? "always");
   const undoService = new UndoService(actionLog);
 
   const rawTools: AgentTool[] = [
@@ -117,6 +120,9 @@ export function createToolRegistry(deps: {
 
     /* Node/device tools */
     ...createNodeTools(connectorRegistry),
+
+    /* Channel action tools */
+    ...(deps.channelManager ? createChannelTools(deps.channelManager) : []),
   ];
 
   const tools = wrapAllTools(rawTools, { actionLog, approvalGate, runId: deps.runId });

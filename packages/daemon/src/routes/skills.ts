@@ -38,6 +38,12 @@ export function skillsRoutes(app: FastifyInstance, skillsService: SkillsService)
     return skillsService.searchRegistry(query);
   });
 
+  app.post<{ Body: { page?: number; limit?: number } }>("/skills/discover", async (req) => {
+    const page = typeof req.body?.page === "number" ? req.body.page : 0;
+    const limit = typeof req.body?.limit === "number" ? Math.min(req.body.limit, 50) : 10;
+    return skillsService.discoverSkills(page, limit);
+  });
+
   app.post<{ Body: { reference: string; global?: boolean; agents?: string[] } }>("/skills/install", async (req, reply) => {
     const reference = req.body?.reference;
     if (typeof reference !== "string" || !reference.trim()) {

@@ -76,6 +76,22 @@ Always prefer **high-level tools first** — they return structured, complete in
 - **connect**: Connect to any system — local machine, remote via SSH, Docker container, or WebSocket node. Returns a nodeId.
 - **nodes**: Manage connected systems. Actions: list, describe, disconnect, exec (run command on node), invoke (send command to node).
 
+### Channel Actions
+- **telegram_actions**: Send/edit/delete messages, react, pin/unpin on Telegram.
+- **discord_actions**: Send/edit/delete messages, react, read history, manage roles, kick/ban, list channels on Discord.
+- **slack_actions**: Send/edit/delete messages, react, pin/unpin, read history, member info on Slack.
+- **whatsapp_actions**: Send messages, react on WhatsApp.
+
+### Sessions
+- **sessions_list**: List all chat sessions with metadata.
+- **sessions_history**: Read messages from another session.
+- **sessions_send**: Inject a message into another session, optionally wait for AI reply.
+- **sessions_spawn**: Spawn a new sub-agent run with an instruction.
+- **session_status**: Get session metrics and message breakdown.
+
+### Media
+- **media**: Download, inspect, resize, describe, transcribe, and manage media files. Actions: download, info, resize, describe (image → text), transcribe (audio → text), list, cleanup.
+
 ### Workflow Management
 - **list_runs / create_run**: Manage AI agent runs
 - **list_jobs / create_job / delete_job / toggle_job / run_job**: Manage scheduled jobs
@@ -94,7 +110,54 @@ Guide the user: **System Settings → Privacy & Security → Full Disk Access �
 5. **Confirm before destructive actions** (rm, overwrite, etc.).
 6. Use markdown formatting for readability.
 7. **All paths default to the user's home directory.** Use absolute paths or ~/relative paths.
-8. **For long-running commands**, use exec with background=true, then poll with the process tool.`;
+8. **For long-running commands**, use exec with background=true, then poll with the process tool.
+
+## Channel Connection Guide
+The Channels page has a **step-by-step wizard** for each platform. When a user wants to connect a channel, direct them to the Channels page and explain what they'll see:
+
+### The Wizard Flow
+Each channel card shows a multi-step wizard:
+1. **Step 1**: Enter credentials (token for most, QR scan for WhatsApp)
+2. **Step 2**: Configure DM Policy (pairing, allowlist, open, or disabled)
+3. **Step 3**: Set Allowlist (if allowlist policy selected)
+4. **Step 4**: Review & Connect
+
+### Telegram
+Tell users to get their bot token first:
+1. Open Telegram → message **@BotFather**
+2. Send \`/newbot\` → follow prompts → copy the token (format: \`123456:ABC...\`)
+3. Go to **Channels page** → paste token → click Continue
+4. Choose DM policy (pairing recommended) → Connect
+
+### Discord
+1. Go to **discord.com/developers/applications** → New Application
+2. Bot section → Add Bot → Reset Token → copy it
+3. Enable **Message Content Intent** under Privileged Gateway Intents
+4. OAuth2 → URL Generator → 'bot' scope → use URL to invite bot
+5. **Channels page** → paste token → set DM policy → Connect
+
+### Slack (requires TWO tokens)
+1. **api.slack.com/apps** → Create New App
+2. Enable **Socket Mode** → generate **App-Level Token** (\`xapp-...\`)
+3. OAuth & Permissions → add scopes: chat:write, users:read, im:history, channels:history
+4. Install to Workspace → copy **Bot Token** (\`xoxb-...\`)
+5. **Channels page** → paste BOTH tokens → set DM policy → Connect
+
+### WhatsApp (QR code, no token needed)
+1. **Channels page** → click **Start** on WhatsApp card
+2. QR code appears → scan with phone
+3. Phone: WhatsApp → Settings → Linked Devices → Link a Device
+4. Once scanned, connection completes automatically
+
+### DM Policies Explained
+- **Pairing** (recommended): Unknown senders get a pairing code; you approve via CLI
+- **Allowlist**: Only specified users can message
+- **Open**: Anyone can message (use carefully)
+- **Disabled**: Ignore all DMs
+
+**Proactive behavior**: On first interaction with new users, offer: "Would you like to connect a messaging channel? Go to the **Channels** page — there's a step-by-step wizard for Telegram, Discord, Slack, and WhatsApp."
+
+Don't be pushy — offer once per session. If declined, move on.`;
 
 
 export class ChatService {
@@ -225,6 +288,20 @@ export class ChatService {
     return true;
   }
 
+  async cleanupEmptySessions(): Promise<number> {
+    const index = await this.loadIndex();
+    const toDelete = index.filter((s) => s.messageCount === 0 && s.title === "New conversation");
+    for (const s of toDelete) {
+      this.sessions.delete(s.id);
+      try { await fsp.unlink(this.sessionFile(s.id)); } catch { }
+    }
+    if (toDelete.length > 0) {
+      const remaining = index.filter((s) => !(s.messageCount === 0 && s.title === "New conversation"));
+      await this.saveIndex(remaining);
+    }
+    return toDelete.length;
+  }
+
   async renameSession(sessionId: string, title: string): Promise<boolean> {
     const session = await this.loadSession(sessionId);
     if (!session) return false;
@@ -301,7 +378,8 @@ export class ChatService {
   }
 
   async getHistory(sessionId: string): Promise<ChatMessage[]> {
-    const session = await this.getOrCreate(sessionId);
+    const session = await this.loadSession(sessionId);
+    if (!session) return [];
     return session.messages.filter((m) => m.role !== "system");
   }
 
@@ -313,7 +391,8 @@ export class ChatService {
   }
 
   async buildApiMessages(sessionId: string): Promise<ChatMessage[]> {
-    const session = await this.getOrCreate(sessionId);
+    const session = await this.loadSession(sessionId);
+    if (!session) return [];
     return [...session.messages];
   }
 }

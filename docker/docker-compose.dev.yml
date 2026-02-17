@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: undoable-postgres
+    container_name: undoable-postgres-dev
     environment:
       POSTGRES_DB: undoable
       POSTGRES_USER: undoable
@@ -9,53 +9,57 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata-dev:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U undoable"]
       interval: 5s
       timeout: 3s
       retries: 5
     networks:
-      - undoable-network
+      - undoable-network-dev
 
   daemon:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
-    container_name: undoable-daemon
+      dockerfile: docker/Dockerfile.dev
+    container_name: undoable-daemon-dev
     ports:
       - "7433:7433"
     environment:
-      NODE_ENV: production
+      NODE_ENV: development
       PORT: "7433"
       DATABASE_URL: "postgresql://undoable:undoable_dev@postgres:5432/undoable"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - ..:/app
+      - /app/node_modules
     depends_on:
       postgres:
         condition: service_healthy
     networks:
-      - undoable-network
-    restart: unless-stopped
+      - undoable-network-dev
 
   ui:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.ui
-    container_name: undoable-ui
+      dockerfile: docker/Dockerfile.ui.dev
+    container_name: undoable-ui-dev
     ports:
       - "5173:5173"
     environment:
-      VITE_API_URL: "http://daemon:7433"
+      VITE_API_URL: "http://localhost:7433"
+    volumes:
+      - ../ui:/app/ui
+      - /app/ui/node_modules
     depends_on:
       - daemon
     networks:
-      - undoable-network
-    restart: unless-stopped
+      - undoable-network-dev
 
 networks:
-  undoable-network:
+  undoable-network-dev:
     driver: bridge
 
 volumes:
-  pgdata:
+  pgdata-dev:

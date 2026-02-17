@@ -61,6 +61,21 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
   thinking: false, tagReasoning: false, vision: false, tools: true,
 };
 
+const MODEL_ALIASES: Record<string, string> = {
+  "gpt5": "gpt-5.2",
+  "gpt-5-latest": "gpt-5.2",
+  "claude": "claude-opus-4-6-20260204",
+  "opus": "claude-opus-4-6-20260204",
+  "sonnet": "claude-sonnet-4-5-20250514",
+  "haiku": "claude-haiku-3-5-20241022",
+  "deepseek": "deepseek-chat",
+  "gemini": "gemini-3-pro-preview",
+  "fast": "gpt-4.1-mini",
+  "cheap": "gpt-4.1-mini",
+  "smart": "gpt-5.2",
+  "best": "gpt-5.2-pro",
+};
+
 // Built-in model catalog (updated Feb 2026)
 const KNOWN_MODELS: ModelInfo[] = [
   // ── OpenAI (GPT-5 family) ──
@@ -262,6 +277,36 @@ export class ProviderService {
   shouldDisableStreaming(modelId: string): boolean {
     const provider = this.localDiscovery.resolveProvider(modelId);
     return provider === "ollama";
+  }
+
+  resolveModelAlias(input: string): { providerId: string; modelId: string } | null {
+    const normalized = input.trim().toLowerCase();
+    if (!normalized) return null;
+
+    // 1. Check alias map
+    const aliasTarget = MODEL_ALIASES[normalized];
+    if (aliasTarget) {
+      const info = KNOWN_MODELS.find((m) => m.id === aliasTarget);
+      if (info) return { providerId: info.provider, modelId: info.id };
+    }
+
+    // 2. Exact match in known models
+    const exact = KNOWN_MODELS.find((m) => m.id === normalized);
+    if (exact) return { providerId: exact.provider, modelId: exact.id };
+
+    // 3. Exact match in discovered models
+    const discovered = this.discoveredModels.find((m) => m.id === normalized);
+    if (discovered) return { providerId: discovered.provider, modelId: discovered.id };
+
+    // 4. Prefix match (e.g. "gpt-5" matches "gpt-5.2")
+    const prefixMatch = KNOWN_MODELS.find((m) => m.id.startsWith(normalized));
+    if (prefixMatch) return { providerId: prefixMatch.provider, modelId: prefixMatch.id };
+
+    // 5. Name match (case-insensitive)
+    const nameMatch = KNOWN_MODELS.find((m) => m.name.toLowerCase() === normalized);
+    if (nameMatch) return { providerId: nameMatch.provider, modelId: nameMatch.id };
+
+    return null;
   }
 
   async setActiveModel(providerId: string, modelId: string): Promise<ActiveModel | null> {

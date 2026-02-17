@@ -9,3 +9,4 @@ import "./components/canvas-panel.js";
 import "./components/nodes-panel.js";
 import "./components/channels.js";
 import "./components/swarm-page.js";
+import "./components/sessions.js";

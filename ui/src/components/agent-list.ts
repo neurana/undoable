@@ -146,7 +146,6 @@ export class AgentList extends LitElement {
   @state() private formInstructions = "";
   @state() private formSkills = "";
   @state() private availableModels: Array<{ provider: string; id: string; name: string }> = [];
-  @state() private modelsLoaded = false;
   @state() private formDocker = false;
   @state() private formNetwork = false;
   @state() private formBrowser = false;
@@ -170,7 +169,6 @@ export class AgentList extends LitElement {
         this.availableModels = data.models;
       }
     } catch { /* ignore */ }
-    this.modelsLoaded = true;
   }
 
   private async loadAgents() {

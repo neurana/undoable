@@ -16,6 +16,8 @@ import type { ExecApprovalService, ExecApprovalDecision } from "../services/exec
 import type { NodeGatewayService } from "../services/node-gateway-service.js";
 import type { ConnectorConfig } from "../connectors/types.js";
 import type { InstructionsStore } from "../services/instructions-store.js";
+import type { TtsService } from "../services/tts-service.js";
+import type { UsageService } from "../services/usage-service.js";
 
 type GatewayConnectorInfo = {
   nodeId: string;
@@ -131,6 +133,8 @@ type GatewayRouteDeps = {
     "list" | "get" | "getDefaultId" | "register" | "update" | "remove"
   >;
   instructionsStore: Pick<InstructionsStore, "getCurrent" | "save" | "deleteAll">;
+  ttsService?: TtsService;
+  usageService?: UsageService;
 };
 
 const CHANNEL_IDS: ChannelId[] = ["telegram", "discord", "slack", "whatsapp"];
@@ -221,11 +225,10 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
     allowlist: [] as string[],
   };
   const execApprovalNodePolicy = new Map<string, { mode: string; allowlist: string[] }>();
-  const ttsState = {
-    enabled: false,
-    provider: "system",
-    providers: ["system"],
-  };
+  const ttsService = deps.ttsService;
+  const ttsState = ttsService
+    ? null
+    : { enabled: false, provider: "system", providers: ["system"] };
   const voicewakeState: {
     enabled: boolean;
     phrase: string;
@@ -237,11 +240,10 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
     sensitivity: 0.5,
     updatedAtMs: Date.now(),
   };
-  const usageState = {
-    startedAtMs: Date.now(),
-    totalCalls: 0,
-    totalCostUsd: 0,
-  };
+  const usageSvc = deps.usageService;
+  const usageState = usageSvc
+    ? null
+    : { startedAtMs: Date.now(), totalCalls: 0, totalCostUsd: 0 };
 
   app.post<{ Body: GatewayRequestBody; Reply: GatewayResponse }>("/gateway", async (req) => {
     const body = req.body;
@@ -255,7 +257,7 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
       return fail({ code: "INVALID_REQUEST", message: "params must be an object" });
     }
     const params = (body.params ?? {}) as Record<string, unknown>;
-    usageState.totalCalls += 1;
+    if (usageState) usageState.totalCalls += 1;
     gatewayLogs.push({ ts: Date.now(), level: "info", message: `gateway.${method}` });
     if (gatewayLogs.length > 500) gatewayLogs.splice(0, gatewayLogs.length - 500);
 
@@ -283,46 +285,36 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
         }
 
         case "tts.status": {
-          return {
-            ok: true,
-            result: {
-              enabled: ttsState.enabled,
-              provider: ttsState.provider,
-              providers: ttsState.providers,
-            },
-          };
+          if (ttsService) {
+            return { ok: true, result: ttsService.getStatus() };
+          }
+          return { ok: true, result: ttsState };
         }
 
         case "tts.providers": {
-          return {
-            ok: true,
-            result: {
-              providers: ttsState.providers,
-              active: ttsState.provider,
-            },
-          };
+          if (ttsService) {
+            const st = ttsService.getStatus();
+            return { ok: true, result: { providers: st.providers, active: st.provider } };
+          }
+          return { ok: true, result: { providers: ttsState!.providers, active: ttsState!.provider } };
         }
 
         case "tts.enable": {
-          ttsState.enabled = true;
-          return {
-            ok: true,
-            result: {
-              enabled: ttsState.enabled,
-              provider: ttsState.provider,
-            },
-          };
+          if (ttsService) {
+            ttsService.setEnabled(true);
+            return { ok: true, result: ttsService.getStatus() };
+          }
+          ttsState!.enabled = true;
+          return { ok: true, result: { enabled: ttsState!.enabled, provider: ttsState!.provider } };
         }
 
         case "tts.disable": {
-          ttsState.enabled = false;
-          return {
-            ok: true,
-            result: {
-              enabled: ttsState.enabled,
-              provider: ttsState.provider,
-            },
-          };
+          if (ttsService) {
+            ttsService.setEnabled(false);
+            return { ok: true, result: ttsService.getStatus() };
+          }
+          ttsState!.enabled = false;
+          return { ok: true, result: { enabled: ttsState!.enabled, provider: ttsState!.provider } };
         }
 
         case "tts.setProvider": {
@@ -330,17 +322,13 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
           if (!provider) {
             return fail({ code: "INVALID_REQUEST", message: "tts.setProvider requires provider" });
           }
-          if (!ttsState.providers.includes(provider)) {
-            ttsState.providers.push(provider);
+          if (ttsService) {
+            ttsService.setProvider(provider as import("../services/tts-service.js").TtsProvider);
+            return { ok: true, result: ttsService.getStatus() };
           }
-          ttsState.provider = provider;
-          return {
-            ok: true,
-            result: {
-              provider: ttsState.provider,
-              providers: ttsState.providers,
-            },
-          };
+          if (!ttsState!.providers.includes(provider)) ttsState!.providers.push(provider);
+          ttsState!.provider = provider;
+          return { ok: true, result: { provider: ttsState!.provider, providers: ttsState!.providers } };
         }
 
         case "tts.convert": {
@@ -348,14 +336,20 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
           if (!text.trim()) {
             return fail({ code: "INVALID_REQUEST", message: "tts.convert requires text" });
           }
+          if (ttsService) {
+            const voice = typeof params.voice === "string" ? params.voice : undefined;
+            const fmt = typeof params.format === "string" ? (params.format as "mp3" | "wav" | "opus") : undefined;
+            const audioBuffer = await ttsService.convert(text, { voice, format: fmt });
+            const st = ttsService.getStatus();
+            return {
+              ok: true,
+              result: { provider: st.provider, format: fmt ?? "mp3", audioBase64: audioBuffer.toString("base64") },
+            };
+          }
           const format = typeof params.format === "string" && params.format.trim() ? params.format.trim() : "wav";
           return {
             ok: true,
-            result: {
-              provider: ttsState.provider,
-              format,
-              audioBase64: Buffer.from(text).toString("base64"),
-            },
+            result: { provider: ttsState!.provider, format, audioBase64: Buffer.from(text).toString("base64") },
           };
         }
 
@@ -615,13 +609,17 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
         }
 
         case "usage.status": {
+          if (usageSvc) {
+            const summary = usageSvc.getSummary();
+            return { ok: true, result: { ...summary, uptimeMs: process.uptime() * 1000 } };
+          }
           return {
             ok: true,
             result: {
-              startedAtMs: usageState.startedAtMs,
-              uptimeMs: Date.now() - usageState.startedAtMs,
-              totalCalls: usageState.totalCalls,
-              totalCostUsd: usageState.totalCostUsd,
+              startedAtMs: usageState!.startedAtMs,
+              uptimeMs: Date.now() - usageState!.startedAtMs,
+              totalCalls: usageState!.totalCalls,
+              totalCostUsd: usageState!.totalCostUsd,
             },
           };
         }
@@ -631,13 +629,10 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
           if (typeof params.days === "number" && (!Number.isFinite(params.days) || params.days <= 0)) {
             return fail({ code: "INVALID_REQUEST", message: "usage.cost days must be a positive number" });
           }
-          return {
-            ok: true,
-            result: {
-              days,
-              totalUsd: usageState.totalCostUsd,
-            },
-          };
+          if (usageSvc) {
+            return { ok: true, result: { days, totalUsd: usageSvc.getTotalCost(days * 86_400_000) } };
+          }
+          return { ok: true, result: { days, totalUsd: usageState!.totalCostUsd } };
         }
 
         case "config.get": {

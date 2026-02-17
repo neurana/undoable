@@ -40,497 +40,568 @@ type SkillsCliResult = {
 };
 
 type SkillFilter = "all" | "ready" | "needs-setup" | "disabled";
+type ViewMode = "installed" | "discover";
 
 @customElement("skill-list")
 export class SkillList extends LitElement {
   static styles = css`
+    /* Design tokens */
     :host {
-      display: block; width: 100%; box-sizing: border-box;
-      color: var(--text-primary);
+      --bg: #FDFEFD;
+      --wash: #E6F0EC;
+      --wash-strong: #D4E5DD;
+      --ink: #111A17;
+      --ink-soft: #2A3B35;
+      --muted: #6B7C76;
+      --mint: #AEE7C7;
+      --mint-soft: rgba(174, 231, 199, 0.25);
+      --mint-strong: #7DD3A8;
+      --border: rgba(17, 26, 23, 0.08);
+      --border-strong: rgba(17, 26, 23, 0.12);
+      --danger: #C0392B;
+      --danger-soft: rgba(192, 57, 43, 0.08);
+      --warning: #B8860B;
+      --warning-soft: rgba(184, 134, 11, 0.08);
+      --radius-sm: 12px;
+      --radius-md: 16px;
+      --radius-pill: 999px;
+      --shadow: 0 8px 24px rgba(17, 26, 23, 0.06);
+      --font-serif: "Instrument Serif", Georgia, serif;
+      --font-sans: system-ui, -apple-system, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
     }
 
-    .skills-header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-    .skills-header h2 {
-      margin: 0;
-      font-size: 22px;
-      font-weight: 400;
+    /* Page header */
+    .page-header { margin-bottom: 32px; }
+    .page-title {
       font-family: var(--font-serif);
-      letter-spacing: -0.02em;
-    }
-    .skills-header .count {
-      font-size: 13px;
-      color: var(--text-tertiary);
+      font-size: 32px;
       font-weight: 400;
+      color: var(--ink);
+      margin: 0 0 8px 0;
+      letter-spacing: -0.01em;
     }
-    .header-spacer { flex: 1; }
+    .page-subtitle {
+      font-family: var(--font-sans);
+      font-size: 15px;
+      color: var(--muted);
+      margin: 0;
+      line-height: 1.5;
+    }
 
-    .filter-bar {
+    /* Stats row */
+    .stats-row {
       display: flex;
-      gap: 6px;
-      margin-bottom: 16px;
+      gap: 24px;
+      margin-bottom: 32px;
     }
-    .filter-btn {
-      padding: 4px 12px;
-      border-radius: var(--radius-sm, 12px);
-      border: 1px solid var(--border-strong, #DCE6E3);
-      background: transparent;
-      color: var(--text-secondary);
+    .stat {
+      display: flex;
+      flex-direction: column;
+    }
+    .stat-value {
+      font-family: var(--font-serif);
+      font-size: 28px;
+      color: var(--ink);
+      line-height: 1;
+    }
+    .stat-label {
+      font-family: var(--font-sans);
       font-size: 12px;
-      cursor: pointer;
-      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
-    }
-    .filter-btn:hover { background: var(--wash, #E6F0EC); }
-    .filter-btn[data-active] {
-      background: var(--wash-strong, #D9F3E6);
-      color: var(--dark, #2E4539);
-      border-color: var(--mint-strong, #ABCCBA);
+      color: var(--muted);
+      margin-top: 4px;
     }
 
-    .btn-refresh {
-      padding: 4px 12px;
-      border-radius: var(--radius-sm, 12px);
-      border: 1px solid var(--border-strong, #DCE6E3);
+    /* View tabs */
+    .view-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0;
+    }
+    .view-tab {
+      padding: 12px 20px;
+      border: none;
       background: transparent;
-      color: var(--text-secondary);
-      font-size: 12px;
+      font-family: var(--font-sans);
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--muted);
       cursor: pointer;
-      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: all 150ms ease;
     }
-    .btn-refresh:hover { background: var(--wash, #E6F0EC); }
+    .view-tab:hover { color: var(--ink-soft); }
+    .view-tab.active {
+      color: var(--ink);
+      border-bottom-color: var(--mint-strong);
+    }
 
-    .danger-banner {
-      border: 1px solid rgba(180, 83, 9, 0.35);
-      background: var(--warning-subtle, rgba(180, 83, 9, 0.08));
-      border-radius: var(--radius-md, 16px);
-      padding: 12px 14px;
-      margin-bottom: 12px;
+    /* Warning banner */
+    .warning-banner {
+      padding: 16px 20px;
+      background: var(--warning-soft);
+      border: 1px solid rgba(184, 134, 11, 0.2);
+      border-radius: var(--radius-sm);
+      margin-bottom: 24px;
     }
-    .danger-title {
-      font-size: 12px;
-      font-weight: 700;
-      color: #92400e;
-      text-transform: uppercase;
-      letter-spacing: 0.3px;
-      margin-bottom: 6px;
+    .warning-title {
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--warning);
+      margin-bottom: 4px;
     }
-    .danger-msg {
-      font-size: 12px;
-      color: #7c2d12;
-      line-height: 1.4;
+    .warning-msg {
+      font-family: var(--font-sans);
+      font-size: 13px;
+      color: #7c5a00;
+      line-height: 1.5;
     }
-    .danger-links {
+    .warning-links {
       margin-top: 8px;
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 12px;
     }
-    .danger-links a {
-      font-size: 11px;
-      color: #7c2d12;
+    .warning-links a {
+      font-size: 12px;
+      color: var(--warning);
       text-decoration: underline;
     }
 
-    .search-panel {
-      border: 1px solid var(--border-strong, #DCE6E3);
-      border-radius: var(--radius-md, 16px);
-      padding: 12px;
-      background: var(--surface-1, #FDFEFD);
-      margin-bottom: 16px;
+    /* Discover panel */
+    .discover-panel {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: var(--shadow);
     }
-    .search-title {
-      margin: 0 0 8px;
+    .discover-title {
+      font-family: var(--font-serif);
+      font-size: 20px;
+      color: var(--ink);
+      margin: 0 0 4px 0;
+    }
+    .discover-subtitle {
+      font-family: var(--font-sans);
       font-size: 13px;
-      font-weight: 600;
-      color: var(--text-primary);
+      color: var(--muted);
+      margin: 0 0 20px 0;
+      line-height: 1.5;
     }
-    .search-subtitle {
-      margin: 0 0 10px;
-      font-size: 11px;
-      color: var(--text-tertiary);
-      line-height: 1.4;
-    }
-    .search-row {
+
+    /* Search form */
+    .search-form {
       display: flex;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 10px;
+      gap: 12px;
+      margin-bottom: 20px;
     }
     .search-input {
       flex: 1;
-      min-width: 0;
-      padding: 8px 10px;
-      border-radius: var(--radius-sm, 12px);
-      border: 1px solid var(--border-strong, #DCE6E3);
-      background: var(--surface-1, #FDFEFD);
-      color: var(--text-primary);
-      font-size: 12px;
+      padding: 14px 18px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      font-size: 14px;
       outline: none;
+      transition: border-color 150ms ease, box-shadow 150ms ease;
     }
+    .search-input::placeholder { color: var(--muted); opacity: 0.6; }
     .search-input:focus {
-      border-color: var(--mint-strong, #ABCCBA);
-      box-shadow: 0 0 0 3px var(--accent-glow, rgba(129, 205, 163, 0.16));
+      border-color: var(--mint);
+      box-shadow: 0 0 0 3px var(--mint-soft);
     }
-    .btn-search {
-      padding: 7px 12px;
-      border-radius: var(--radius-sm, 12px);
-      border: 1px solid var(--border-strong, #DCE6E3);
-      background: var(--dark, #2E4539);
-      color: #fff;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    .btn-search:disabled { opacity: 0.55; cursor: not-allowed; }
-    .search-error {
-      margin-top: 6px;
-      font-size: 11px;
-      color: var(--danger, #C0392B);
-    }
-    .search-results {
-      display: grid;
-      gap: 8px;
-    }
-    .search-card {
-      border: 1px solid var(--border-strong, #DCE6E3);
-      border-radius: var(--radius-sm, 12px);
-      padding: 10px;
-      background: var(--wash, #E6F0EC);
-    }
-    .search-card-top {
-      display: flex;
-      justify-content: space-between;
-      gap: 8px;
-      align-items: flex-start;
-    }
-    .search-ref {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--text-primary);
-      word-break: break-all;
-    }
-    .search-link {
-      font-size: 11px;
-      color: var(--text-secondary);
-      text-decoration: underline;
-      flex-shrink: 0;
-    }
-    .search-install-cmd {
-      margin-top: 6px;
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--text-tertiary);
-      word-break: break-word;
-    }
-    .search-actions {
-      margin-top: 8px;
-      display: flex;
-      justify-content: flex-end;
-    }
-    .btn-install {
-      padding: 5px 10px;
-      border-radius: var(--radius-sm, 12px);
-      border: 1px solid var(--mint-strong, #ABCCBA);
-      background: var(--surface-1, #FDFEFD);
-      color: var(--text-primary);
-      font-size: 11px;
-      cursor: pointer;
-    }
-    .btn-install:disabled { opacity: 0.55; cursor: not-allowed; }
 
-    .agent-panel {
-      margin-bottom: 12px;
-      padding: 10px;
-      border: 1px dashed var(--border-strong, #DCE6E3);
-      border-radius: var(--radius-sm, 12px);
-      background: var(--wash, #E6F0EC);
+    /* Buttons */
+    button {
+      padding: 14px 24px;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-family: var(--font-sans);
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 150ms ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
     }
-    .agent-title {
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-primary { background: var(--ink); color: var(--bg); }
+    .btn-primary:hover:not(:disabled) { background: var(--ink-soft); }
+    .btn-secondary {
+      background: var(--wash);
+      color: var(--ink-soft);
+      border: 1px solid var(--border-strong);
+      padding: 10px 16px;
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: var(--wash-strong);
+      color: var(--ink);
+    }
+    .btn-small {
+      padding: 8px 14px;
+      font-size: 13px;
+    }
+    .btn-danger {
+      background: var(--danger-soft);
+      color: var(--danger);
+      border: 1px solid rgba(192, 57, 43, 0.12);
+    }
+
+    /* Target selector */
+    .target-selector {
+      background: var(--wash);
+      border-radius: var(--radius-sm);
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+    .target-label {
+      font-family: var(--font-sans);
       font-size: 11px;
       font-weight: 600;
-      color: var(--text-secondary);
-      margin-bottom: 6px;
+      color: var(--muted);
       text-transform: uppercase;
-      letter-spacing: 0.3px;
+      letter-spacing: 0.08em;
+      margin-bottom: 10px;
     }
-    .agent-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-      gap: 6px;
-      margin-bottom: 8px;
-    }
-    .agent-opt {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      color: var(--text-secondary);
-    }
-    .scope-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 11px;
-      color: var(--text-tertiary);
-    }
-    .agent-warning {
-      margin-top: 6px;
-      font-size: 11px;
-      color: var(--danger, #C0392B);
-    }
-
-    .cli-panel {
-      border: 1px solid var(--border-strong, #DCE6E3);
-      border-radius: var(--radius-md, 16px);
-      padding: 12px;
-      background: var(--surface-1, #FDFEFD);
-      margin-bottom: 16px;
-    }
-    .cli-actions {
+    .target-grid {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .btn-cli {
-      padding: 6px 10px;
-      border-radius: var(--radius-sm, 12px);
-      border: 1px solid var(--border-strong, #DCE6E3);
-      background: var(--surface-1, #FDFEFD);
-      color: var(--text-secondary);
-      font-size: 12px;
-      cursor: pointer;
-    }
-    .btn-cli:disabled { opacity: 0.6; cursor: not-allowed; }
-    .btn-cli-danger {
-      border-color: rgba(192,57,43,0.25);
-      color: var(--danger, #C0392B);
-      background: var(--danger-subtle, rgba(192,57,43,0.08));
-    }
-    .remove-row {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-    .remove-input {
-      flex: 1;
-      min-width: 0;
-      padding: 8px 10px;
-      border-radius: var(--radius-sm, 12px);
-      border: 1px solid var(--border-strong, #DCE6E3);
-      background: var(--surface-1, #FDFEFD);
-      font-size: 12px;
-      color: var(--text-primary);
-    }
-    .entries-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-bottom: 8px;
-    }
-    .entry-chip {
-      padding: 3px 8px;
-      border-radius: var(--radius-pill, 999px);
-      border: 1px solid var(--border-strong, #DCE6E3);
-      background: var(--wash, #E6F0EC);
-      font-size: 10px;
-      font-family: var(--mono);
-      color: var(--text-secondary);
-    }
-    .cli-result {
-      margin-top: 8px;
-      border: 1px solid var(--border-strong, #DCE6E3);
-      border-radius: var(--radius-sm, 12px);
-      padding: 10px;
-      background: var(--wash, #E6F0EC);
-    }
-    .cli-result.ok { border-color: rgba(46,125,86,0.25); }
-    .cli-result.err { border-color: rgba(192,57,43,0.25); }
-    .cli-meta {
-      font-size: 11px;
-      color: var(--text-secondary);
-      margin-bottom: 6px;
-      word-break: break-word;
-    }
-    .cli-command {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--text-tertiary);
-      margin-bottom: 6px;
-      word-break: break-all;
-    }
-    .cli-output {
-      margin: 0;
-      white-space: pre-wrap;
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--text-tertiary);
-      max-height: 220px;
-      overflow: auto;
-    }
-
-    .skill-card {
-      border: 1px solid var(--border-strong, #DCE6E3);
-      border-radius: var(--radius-md, 16px);
-      padding: 14px 16px;
-      margin-bottom: 10px;
-      background: var(--surface-1, #FDFEFD);
-      transition: all 180ms cubic-bezier(0.2,0.8,0.2,1);
-      box-shadow: var(--shadow-sm);
-    }
-    .skill-card:hover { border-color: var(--mint-strong, #ABCCBA); box-shadow: var(--shadow-card); }
-    .skill-card.disabled { opacity: 0.5; }
-
-    .skill-top {
-      display: flex;
-      align-items: flex-start;
       gap: 12px;
     }
-    .skill-emoji {
-      font-size: 24px;
-      line-height: 1;
-      min-width: 28px;
-      text-align: center;
-    }
-    .skill-info { flex: 1; min-width: 0; }
-    .skill-name {
-      font-size: 14px;
-      font-weight: 600;
-      letter-spacing: -0.2px;
-    }
-    .skill-desc {
-      font-size: 12px;
-      color: var(--text-secondary);
-      margin-top: 2px;
-      line-height: 1.4;
-    }
-
-    .skill-meta {
+    .target-option {
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-top: 8px;
+      font-family: var(--font-sans);
+      font-size: 13px;
+      color: var(--ink-soft);
+      cursor: pointer;
+    }
+    .target-option input {
+      accent-color: var(--mint-strong);
+      width: 16px;
+      height: 16px;
+    }
+    .target-warning {
+      margin-top: 10px;
+      font-family: var(--font-sans);
+      font-size: 12px;
+      color: var(--danger);
+    }
+
+    /* Search results */
+    .search-results {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .search-error {
+      font-family: var(--font-sans);
+      font-size: 13px;
+      color: var(--danger);
+      margin-bottom: 12px;
+    }
+    .result-card {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 16px;
+      background: var(--wash);
+      border-radius: var(--radius-sm);
+    }
+    .result-info { flex: 1; min-width: 0; }
+    .result-name {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--ink);
+      word-break: break-all;
+    }
+    .result-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .result-badge {
+      padding: 3px 8px;
+      border-radius: var(--radius-pill);
+      font-family: var(--font-sans);
+      font-size: 10px;
+      font-weight: 500;
+      background: var(--mint-soft);
+      color: var(--mint-strong);
+    }
+    .result-link {
+      font-family: var(--font-sans);
+      font-size: 12px;
+      color: var(--muted);
+      text-decoration: underline;
+    }
+
+    /* Filter bar */
+    .filter-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .filter-btn {
+      padding: 8px 16px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-strong);
+      background: transparent;
+      color: var(--muted);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 150ms ease;
+    }
+    .filter-btn:hover { background: var(--wash); }
+    .filter-btn.active {
+      background: var(--mint-soft);
+      color: var(--mint-strong);
+      border-color: var(--mint);
+    }
+
+    /* Skill cards */
+    .skills-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .skill-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      padding: 20px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow);
+      transition: border-color 200ms ease;
+    }
+    .skill-card:hover { border-color: var(--border-strong); }
+    .skill-card.disabled { opacity: 0.5; }
+
+    .skill-emoji {
+      font-size: 28px;
+      line-height: 1;
+      min-width: 36px;
+      text-align: center;
+    }
+    .skill-content { flex: 1; min-width: 0; }
+    .skill-name {
+      font-family: var(--font-serif);
+      font-size: 18px;
+      color: var(--ink);
+      margin-bottom: 4px;
+    }
+    .skill-desc {
+      font-family: var(--font-sans);
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+      margin-bottom: 8px;
+    }
+    .skill-badges {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       flex-wrap: wrap;
     }
     .badge {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.3px;
-    }
-    .badge-source {
-      background: var(--wash, #E6F0EC);
-      color: var(--text-tertiary);
-    }
-    .badge-eligible {
-      background: var(--accent-subtle, rgba(174,231,199,0.22));
-      color: var(--success, #2E7D56);
-    }
-    .badge-missing {
-      background: var(--warning-subtle, rgba(184,134,11,0.08));
-      color: var(--warning, #B8860B);
-    }
-    .badge-disabled {
-      background: var(--danger-subtle, rgba(192,57,43,0.08));
-      color: var(--danger, #C0392B);
-    }
-
-    .missing-detail {
+      padding: 4px 10px;
+      border-radius: var(--radius-pill);
+      font-family: var(--font-sans);
       font-size: 11px;
-      color: var(--text-tertiary);
-      margin-top: 6px;
+      font-weight: 500;
     }
+    .badge-source { background: var(--wash); color: var(--muted); }
+    .badge-ready { background: var(--mint-soft); color: var(--mint-strong); }
+    .badge-setup { background: var(--warning-soft); color: var(--warning); }
+    .badge-disabled { background: var(--danger-soft); color: var(--danger); }
 
-    .skill-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
+    .skill-missing {
+      margin-top: 8px;
+      font-family: var(--font-sans);
+      font-size: 12px;
+      color: var(--muted);
     }
+    .skill-homepage {
+      font-family: var(--font-sans);
+      font-size: 12px;
+      color: var(--ink-soft);
+      text-decoration: none;
+    }
+    .skill-homepage:hover { text-decoration: underline; }
 
+    .skill-actions { flex-shrink: 0; }
     .toggle-btn {
-      width: 38px;
-      height: 20px;
-      border-radius: 10px;
+      width: 44px;
+      height: 24px;
+      border-radius: 12px;
       border: none;
       cursor: pointer;
       position: relative;
       transition: background 200ms ease;
       padding: 0;
     }
-    .toggle-btn.on { background: var(--dark, #2E4539); }
-    .toggle-btn.off { background: var(--border-strong, #DCE6E3); }
+    .toggle-btn.on { background: var(--ink); }
+    .toggle-btn.off { background: var(--wash-strong); }
     .toggle-btn::after {
       content: "";
       position: absolute;
-      top: 2px;
-      width: 16px;
-      height: 16px;
+      top: 3px;
+      width: 18px;
+      height: 18px;
       border-radius: 50%;
       background: white;
       transition: left 200ms ease;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
     }
-    .toggle-btn.on::after { left: 20px; }
-    .toggle-btn.off::after { left: 2px; }
+    .toggle-btn.on::after { left: 23px; }
+    .toggle-btn.off::after { left: 3px; }
 
-    .homepage-link {
+    /* CLI panel */
+    .cli-panel {
+      background: var(--wash);
+      border-radius: var(--radius-sm);
+      padding: 16px 20px;
+      margin-top: 24px;
+    }
+    .cli-title {
+      font-family: var(--font-sans);
       font-size: 11px;
-      color: var(--dark, #2E4539);
-      text-decoration: none;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 12px;
     }
-    .homepage-link:hover { text-decoration: underline; }
+    .cli-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .entries-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .entry-chip {
+      padding: 4px 10px;
+      border-radius: var(--radius-pill);
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ink-soft);
+    }
+    .cli-result {
+      margin-top: 12px;
+      padding: 12px;
+      background: var(--bg);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong);
+    }
+    .cli-result.ok { border-color: rgba(46, 125, 86, 0.3); }
+    .cli-result.err { border-color: rgba(192, 57, 43, 0.3); }
+    .cli-message {
+      font-family: var(--font-sans);
+      font-size: 13px;
+      color: var(--ink-soft);
+      margin-bottom: 8px;
+    }
+    .cli-output {
+      margin: 0;
+      white-space: pre-wrap;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+      max-height: 200px;
+      overflow: auto;
+    }
 
+    /* Load more */
+    .load-more-row {
+      display: flex;
+      justify-content: center;
+      margin-top: 20px;
+    }
+
+    /* Empty state */
     .empty {
       text-align: center;
-      padding: 40px 20px;
-      color: var(--text-tertiary);
+      padding: 60px 20px;
+    }
+    .empty-title {
+      font-family: var(--font-serif);
+      font-size: 20px;
+      color: var(--ink);
+      margin-bottom: 8px;
+    }
+    .empty-text {
+      font-family: var(--font-sans);
       font-size: 14px;
+      color: var(--muted);
     }
 
     .loading {
       text-align: center;
-      padding: 40px 20px;
-      color: var(--text-tertiary);
-      font-size: 13px;
+      padding: 60px 20px;
+      color: var(--muted);
+      font-family: var(--font-sans);
+      font-size: 14px;
     }
 
-    @media (max-width: 640px) {
-      .skills-header { flex-wrap: wrap; }
-      .skills-header h2 { font-size: 18px; }
-      .filter-bar { flex-wrap: wrap; }
-      .skill-top { flex-direction: column; gap: 8px; }
+    @media (max-width: 768px) {
+      .page-title { font-size: 26px; }
+      .stats-row { gap: 16px; }
+      .search-form { flex-direction: column; }
+      .skill-card { flex-direction: column; gap: 12px; }
       .skill-actions { align-self: flex-end; }
     }
   `;
 
   @state() private skills: SkillItem[] = [];
   @state() private filter: SkillFilter = "all";
+  @state() private viewMode: ViewMode = "discover";
   @state() private loading = true;
   @state() private warning: SkillsWarning | null = null;
   @state() private supportedAgents: string[] = [];
   @state() private selectedAgents = new Set<string>();
   @state() private globalScope = true;
-  @state() private query = "find skills";
+  @state() private query = "";
   @state() private searching = false;
   @state() private searchError = "";
   @state() private searchResults: SearchSkillItem[] = [];
   @state() private installInFlight = new Set<string>();
-  @state() private cliBusy: "" | "list" | "check" | "update" | "remove" = "";
+  @state() private discoverLoaded = false;
+  @state() private discoverPage = 0;
+  @state() private hasMore = true;
+  @state() private loadingMore = false;
+  @state() private cliBusy = "";
   @state() private cliResult: SkillsCliResult | null = null;
   @state() private installedEntries: string[] = [];
-  @state() private removeInput = "";
-  @state() private removeAll = false;
 
   connectedCallback() {
     super.connectedCallback();
     this.fetchSkills();
-    void this.searchSkills();
   }
 
   private async fetchSkills() {
@@ -562,81 +633,49 @@ export class SkillList extends LitElement {
     this.selectedAgents = next;
   }
 
-  private async refreshInstalledEntries() {
+  private async loadDiscoverSkills(reset = false) {
+    if (reset) {
+      this.discoverPage = 0;
+      this.searchResults = [];
+      this.hasMore = true;
+    }
+    if (!this.hasMore && !reset) return;
+
+    this.loadingMore = true;
+    this.searchError = "";
     try {
-      const res = await fetch("/api/skills/list", {
+      const res = await fetch("/api/skills/discover", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          global: this.globalScope,
-          agents: this.selectedAgentTargets,
-        }),
+        body: JSON.stringify({ page: this.discoverPage, limit: 10 }),
       });
-      const payload = await res.json() as SkillsCliResult;
-      if (Array.isArray(payload.entries)) {
-        this.installedEntries = payload.entries;
-      }
-    } catch {
-      // ignore passive refresh errors
-    }
-  }
-
-  private async runCli(action: "list" | "check" | "update" | "remove") {
-    this.cliBusy = action;
-    try {
-      let res: Response;
-      if (action === "list") {
-        res = await fetch("/api/skills/list", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            global: this.globalScope,
-            agents: this.selectedAgentTargets,
-          }),
-        });
-      } else if (action === "check") {
-        res = await fetch("/api/skills/check", { method: "POST" });
-      } else if (action === "update") {
-        res = await fetch("/api/skills/update", { method: "POST" });
-      } else {
-        const names = this.removeInput
-          .split(/[\s,]+/)
-          .map((row) => row.trim())
-          .filter(Boolean);
-        res = await fetch("/api/skills/remove", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            all: this.removeAll,
-            skills: names,
-            global: this.globalScope,
-            agents: this.selectedAgentTargets,
-          }),
-        });
-      }
-
-      const payload = await res.json() as SkillsCliResult;
-      this.cliResult = payload;
-      if (Array.isArray(payload.entries)) {
-        this.installedEntries = payload.entries;
-      }
-      if (action === "update" || action === "remove") {
-        await this.fetchSkills();
-        if (action === "remove") {
-          await this.refreshInstalledEntries();
-        }
+      const data = await res.json() as {
+        ok: boolean;
+        error?: string;
+        warning?: SkillsWarning;
+        results?: SearchSkillItem[];
+        hasMore?: boolean;
+      };
+      this.warning = data.warning ?? this.warning;
+      const newResults = data.results ?? [];
+      this.searchResults = reset ? newResults : [...this.searchResults, ...newResults];
+      this.hasMore = data.hasMore ?? newResults.length >= 10;
+      this.discoverPage++;
+      this.discoverLoaded = true;
+      if (!data.ok) {
+        this.searchError = data.error ?? "Failed to load skills";
       }
     } catch (err) {
-      this.cliResult = {
-        ok: false,
-        command: "",
-        message: String(err),
-      };
+      this.searchError = String(err);
     }
-    this.cliBusy = "";
+    this.loadingMore = false;
   }
 
   private async searchSkills() {
+    if (!this.query.trim()) {
+      await this.loadDiscoverSkills(true);
+      return;
+    }
     this.searching = true;
     this.searchError = "";
     try {
@@ -653,8 +692,9 @@ export class SkillList extends LitElement {
       };
       this.warning = data.warning ?? this.warning;
       this.searchResults = data.results ?? [];
+      this.hasMore = false;
       if (!data.ok) {
-        this.searchError = data.error ?? "skills search failed";
+        this.searchError = data.error ?? "Search failed";
       }
     } catch (err) {
       this.searchError = String(err);
@@ -662,7 +702,7 @@ export class SkillList extends LitElement {
     this.searching = false;
   }
 
-  private async installRegistrySkill(reference: string) {
+  private async installSkill(reference: string) {
     if (this.installInFlight.has(reference)) return;
     if (this.selectedAgentTargets.length === 0) {
       this.searchError = "Select at least one target agent before installing.";
@@ -679,14 +719,12 @@ export class SkillList extends LitElement {
           agents: this.selectedAgentTargets,
         }),
       });
-      const data = await res.json() as { ok?: boolean; message?: string; warning?: SkillsWarning };
-      this.warning = data.warning ?? this.warning;
+      const data = await res.json() as { ok?: boolean; message?: string };
       if (!res.ok || data.ok === false) {
-        this.searchError = data.message ?? `install failed (HTTP ${res.status})`;
+        this.searchError = data.message ?? "Install failed";
       } else {
         this.searchError = "";
         await this.fetchSkills();
-        void this.runCli("list");
       }
     } catch (err) {
       this.searchError = String(err);
@@ -714,210 +752,228 @@ export class SkillList extends LitElement {
     } catch { /* ignore */ }
   }
 
+  private async runCli(action: "list" | "check" | "update") {
+    this.cliBusy = action;
+    try {
+      let res: Response;
+      if (action === "list") {
+        res = await fetch("/api/skills/list", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ global: this.globalScope, agents: this.selectedAgentTargets }),
+        });
+      } else if (action === "check") {
+        res = await fetch("/api/skills/check", { method: "POST" });
+      } else {
+        res = await fetch("/api/skills/update", { method: "POST" });
+      }
+      const payload = await res.json() as SkillsCliResult;
+      this.cliResult = payload;
+      if (Array.isArray(payload.entries)) {
+        this.installedEntries = payload.entries;
+      }
+      if (action === "update") {
+        await this.fetchSkills();
+      }
+    } catch (err) {
+      this.cliResult = { ok: false, command: "", message: String(err) };
+    }
+    this.cliBusy = "";
+  }
+
   private get filtered(): SkillItem[] {
     switch (this.filter) {
-      case "ready":
-        return this.skills.filter((s) => s.eligible && !s.disabled);
-      case "needs-setup":
-        return this.skills.filter((s) => !s.eligible && !s.disabled);
-      case "disabled":
-        return this.skills.filter((s) => s.disabled);
-      default:
-        return this.skills;
+      case "ready": return this.skills.filter((s) => s.eligible && !s.disabled);
+      case "needs-setup": return this.skills.filter((s) => !s.eligible && !s.disabled);
+      case "disabled": return this.skills.filter((s) => s.disabled);
+      default: return this.skills;
     }
   }
 
   private sourceLabel(source: string): string {
-    const m: Record<string, string> = { bundled: "Bundled", user: "User", workspace: "Workspace" };
-    return m[source] ?? source;
+    return { bundled: "Bundled", user: "User", workspace: "Workspace" }[source] ?? source;
   }
 
   render() {
-    const eligible = this.skills.filter((s) => s.eligible).length;
+    const ready = this.skills.filter((s) => s.eligible && !s.disabled).length;
+    const needsSetup = this.skills.filter((s) => !s.eligible && !s.disabled).length;
 
     return html`
-      <div class="skills-header">
-        <h2>Skills <span class="count">${eligible}/${this.skills.length} active</span></h2>
-        <div class="header-spacer"></div>
-        <button class="btn-refresh" @click=${this.refreshSkills}>Refresh</button>
+      <div class="page-header">
+        <h1 class="page-title">Skills</h1>
+        <p class="page-subtitle">Extend capabilities with installable skill packages</p>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat">
+          <span class="stat-value">${ready}</span>
+          <span class="stat-label">Ready</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value">${needsSetup}</span>
+          <span class="stat-label">Needs Setup</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value">${this.skills.length}</span>
+          <span class="stat-label">Total</span>
+        </div>
       </div>
 
       ${this.warning ? html`
-        <div class="danger-banner">
-          <div class="danger-title">${this.warning.title}</div>
-          <div class="danger-msg">${this.warning.message}</div>
-          <div class="danger-links">
-            ${this.warning.docs.map((doc) => html`<a href=${doc} target="_blank" rel="noopener">${doc}</a>`)}
-          </div>
+        <div class="warning-banner">
+          <div class="warning-title">${this.warning.title}</div>
+          <div class="warning-msg">${this.warning.message}</div>
+          ${this.warning.docs.length > 0 ? html`
+            <div class="warning-links">
+              ${this.warning.docs.map((doc) => html`<a href=${doc} target="_blank" rel="noopener">${doc}</a>`)}
+            </div>
+          ` : nothing}
         </div>
       ` : nothing}
 
-      <div class="search-panel">
-        <h3 class="search-title">Discover skills from skills.sh</h3>
-        <p class="search-subtitle">
-          Search the skills.sh registry and install skills into your environment. Recommended starter:
-          <strong>vercel-labs/skills@find-skills</strong>.
-        </p>
-        <div class="agent-panel">
-          <div class="agent-title">Target agents for install/list/remove</div>
-          <div class="agent-grid">
+      <div class="view-tabs">
+        <button class="view-tab ${this.viewMode === "installed" ? "active" : ""}" @click=${() => this.viewMode = "installed"}>
+          Installed Skills
+        </button>
+        <button class="view-tab ${this.viewMode === "discover" ? "active" : ""}" @click=${() => this.viewMode = "discover"}>
+          Discover
+        </button>
+      </div>
+
+      ${this.viewMode === "discover" ? this.renderDiscover() : this.renderInstalled()}
+    `;
+  }
+
+  private renderDiscover() {
+    if (!this.discoverLoaded && !this.loadingMore) {
+      this.loadDiscoverSkills(true);
+    }
+
+    return html`
+      <div class="discover-panel">
+        <h2 class="discover-title">Find Skills</h2>
+        <p class="discover-subtitle">Browse available skills or search the registry</p>
+
+        <div class="target-selector">
+          <div class="target-label">Install Target</div>
+          <div class="target-grid">
             ${this.supportedAgents.map((agent) => html`
-              <label class="agent-opt">
-                <input
-                  type="checkbox"
-                  .checked=${this.selectedAgents.has(agent)}
-                  @change=${(e: Event) => this.toggleAgentTarget(agent, (e.target as HTMLInputElement).checked)}
-                >
+              <label class="target-option">
+                <input type="checkbox" .checked=${this.selectedAgents.has(agent)}
+                  @change=${(e: Event) => this.toggleAgentTarget(agent, (e.target as HTMLInputElement).checked)}>
                 ${agent}
               </label>
             `)}
-          </div>
-          <div class="scope-row">
-            <label class="agent-opt" style="font-size:11px">
-              <input
-                type="checkbox"
-                .checked=${this.globalScope}
-                @change=${(e: Event) => { this.globalScope = (e.target as HTMLInputElement).checked; }}
-              >
-              Use global scope (-g)
+            <label class="target-option">
+              <input type="checkbox" .checked=${this.globalScope}
+                @change=${(e: Event) => { this.globalScope = (e.target as HTMLInputElement).checked; }}>
+              Global (-g)
             </label>
           </div>
           ${this.selectedAgentTargets.length === 0 ? html`
-            <div class="agent-warning">No target agents selected. Install will be blocked until you select at least one.</div>
+            <div class="target-warning">Select at least one target agent to install skills</div>
           ` : nothing}
         </div>
-        <div class="search-row">
-          <input
-            class="search-input"
-            placeholder="e.g. testing, deployment, changelog"
+
+        <div class="search-form">
+          <input class="search-input" type="text" placeholder="Search for skills (e.g. testing, deployment, changelog)"
             .value=${this.query}
             @input=${(e: Event) => { this.query = (e.target as HTMLInputElement).value; }}
-            @keydown=${(e: KeyboardEvent) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void this.searchSkills();
-              }
-            }}
-          >
-          <button class="btn-search" @click=${this.searchSkills} ?disabled=${this.searching}>
-            ${this.searching ? "Searching..." : "Search"}
+            @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") this.searchSkills(); }}>
+          <button class="btn-primary" @click=${this.searchSkills} ?disabled=${this.searching}>
+            ${this.searching ? "Searching..." : this.query.trim() ? "Search" : "Clear"}
           </button>
         </div>
+
         ${this.searchError ? html`<div class="search-error">${this.searchError}</div>` : nothing}
+
+        ${this.loadingMore && this.searchResults.length === 0 ? html`
+          <div class="loading">Loading skills...</div>
+        ` : nothing}
+
         ${this.searchResults.length > 0 ? html`
           <div class="search-results">
             ${this.searchResults.map((row) => html`
-              <div class="search-card">
-                <div class="search-card-top">
-                  <div>
-                    <div class="search-ref">${row.reference}</div>
-                    ${row.recommended ? html`<span class="badge badge-eligible" style="margin-top:4px">Recommended</span>` : nothing}
+              <div class="result-card">
+                <div class="result-info">
+                  <div class="result-name">${row.reference}</div>
+                  <div class="result-meta">
+                    ${row.recommended ? html`<span class="result-badge">Recommended</span>` : nothing}
+                    <a class="result-link" href=${row.url} target="_blank" rel="noopener">View source</a>
                   </div>
-                  <a class="search-link" href=${row.url} target="_blank" rel="noopener">View</a>
                 </div>
-                <div class="search-install-cmd">${row.installCommand}</div>
-                <div class="search-actions">
-                  <button
-                    class="btn-install"
-                    @click=${() => this.installRegistrySkill(row.reference)}
-                    ?disabled=${this.installInFlight.has(row.reference)}
-                  >
-                    ${this.installInFlight.has(row.reference) ? "Installing..." : "Install"}
-                  </button>
-                </div>
+                <button class="btn-secondary btn-small" @click=${() => this.installSkill(row.reference)}
+                  ?disabled=${this.installInFlight.has(row.reference) || this.selectedAgentTargets.length === 0}>
+                  ${this.installInFlight.has(row.reference) ? "Installing..." : "Install"}
+                </button>
               </div>
             `)}
           </div>
-        ` : nothing}
-      </div>
 
-      <div class="cli-panel">
-        <h3 class="search-title">Installed Skills (CLI)</h3>
-        <p class="search-subtitle">Run list/check/update/remove using the skills CLI directly.</p>
-        <div class="cli-actions">
-          <button class="btn-cli" @click=${() => this.runCli("list")} ?disabled=${this.cliBusy !== ""}>
-            ${this.cliBusy === "list" ? "Listing..." : "List"}
-          </button>
-          <button class="btn-cli" @click=${() => this.runCli("check")} ?disabled=${this.cliBusy !== ""}>
-            ${this.cliBusy === "check" ? "Checking..." : "Check"}
-          </button>
-          <button class="btn-cli" @click=${() => this.runCli("update")} ?disabled=${this.cliBusy !== ""}>
-            ${this.cliBusy === "update" ? "Updating..." : "Update"}
-          </button>
-        </div>
-
-        ${this.installedEntries.length > 0 ? html`
-          <div class="entries-list">
-            ${this.installedEntries.map((entry) => html`<span class="entry-chip">${entry}</span>`)}
-          </div>
+          ${this.hasMore && !this.query.trim() ? html`
+            <div class="load-more-row">
+              <button class="btn-secondary" @click=${() => this.loadDiscoverSkills()} ?disabled=${this.loadingMore}>
+                ${this.loadingMore ? "Loading..." : "Load More"}
+              </button>
+            </div>
+          ` : nothing}
         ` : nothing}
 
-        <div class="remove-row">
-          <input
-            class="remove-input"
-            placeholder="skills to remove (comma or space separated)"
-            .value=${this.removeInput}
-            @input=${(e: Event) => { this.removeInput = (e.target as HTMLInputElement).value; }}
-          >
-          <label class="agent-opt" style="font-size:11px;white-space:nowrap">
-            <input
-              type="checkbox"
-              .checked=${this.removeAll}
-              @change=${(e: Event) => { this.removeAll = (e.target as HTMLInputElement).checked; }}
-            >
-            Remove all
-          </label>
-          <button class="btn-cli btn-cli-danger" @click=${() => this.runCli("remove")} ?disabled=${this.cliBusy !== ""}>
-            ${this.cliBusy === "remove" ? "Removing..." : "Remove"}
-          </button>
-        </div>
-
-        ${this.cliResult ? html`
-          <div class="cli-result ${this.cliResult.ok ? "ok" : "err"}">
-            <div class="cli-meta">${this.cliResult.message}</div>
-            ${this.cliResult.command ? html`<div class="cli-command">${this.cliResult.command}</div>` : nothing}
-            ${(this.cliResult.stdout || this.cliResult.stderr) ? html`
-              <pre class="cli-output">${`${this.cliResult.stdout ?? ""}${this.cliResult.stderr ? `\n${this.cliResult.stderr}` : ""}`}</pre>
-            ` : nothing}
+        ${!this.loadingMore && this.searchResults.length === 0 && this.discoverLoaded ? html`
+          <div class="empty">
+            <div class="empty-title">No skills found</div>
+            <div class="empty-text">${this.query.trim() ? "Try a different search term" : "No skills available in the registry"}</div>
           </div>
         ` : nothing}
       </div>
 
+      ${this.renderCliPanel()}
+    `;
+  }
+
+  private renderInstalled() {
+    return html`
       <div class="filter-bar">
         ${(["all", "ready", "needs-setup", "disabled"] as SkillFilter[]).map((f) => html`
-          <button class="filter-btn" ?data-active=${this.filter === f}
-            @click=${() => this.filter = f}>${f === "needs-setup" ? "Needs Setup" : f.charAt(0).toUpperCase() + f.slice(1)}</button>
+          <button class="filter-btn ${this.filter === f ? "active" : ""}" @click=${() => this.filter = f}>
+            ${f === "needs-setup" ? "Needs Setup" : f.charAt(0).toUpperCase() + f.slice(1)}
+          </button>
         `)}
+        <div style="flex:1"></div>
+        <button class="btn-secondary btn-small" @click=${this.refreshSkills}>Refresh</button>
       </div>
 
       ${this.loading ? html`<div class="loading">Loading skills...</div>` : nothing}
 
       ${!this.loading && this.filtered.length === 0 ? html`
         <div class="empty">
-          ${this.skills.length === 0
-            ? "No skills found. Add SKILL.md files to ~/.undoable/skills/ or your workspace."
-            : "No skills match this filter."}
+          <div class="empty-title">${this.skills.length === 0 ? "No skills installed" : "No skills match this filter"}</div>
+          <div class="empty-text">
+            ${this.skills.length === 0
+              ? "Go to Discover to find and install skills from the registry"
+              : "Try selecting a different filter"}
+          </div>
         </div>
       ` : nothing}
 
-      ${this.filtered.map((s) => html`
-        <div class="skill-card ${s.disabled ? "disabled" : ""}">
-          <div class="skill-top">
+      <div class="skills-grid">
+        ${this.filtered.map((s) => html`
+          <div class="skill-card ${s.disabled ? "disabled" : ""}">
             <span class="skill-emoji">${s.emoji ?? "✨"}</span>
-            <div class="skill-info">
+            <div class="skill-content">
               <div class="skill-name">${s.name}</div>
               <div class="skill-desc">${s.description}</div>
-              <div class="skill-meta">
+              <div class="skill-badges">
                 <span class="badge badge-source">${this.sourceLabel(s.source)}</span>
                 ${s.disabled ? html`<span class="badge badge-disabled">Disabled</span>`
-                  : s.eligible ? html`<span class="badge badge-eligible">Ready</span>`
-                    : html`<span class="badge badge-missing">Needs Setup</span>`}
-                ${s.homepage ? html`<a class="homepage-link" href=${s.homepage} target="_blank" rel="noopener">Website</a>` : nothing}
+                  : s.eligible ? html`<span class="badge badge-ready">Ready</span>`
+                  : html`<span class="badge badge-setup">Needs Setup</span>`}
+                ${s.homepage ? html`<a class="skill-homepage" href=${s.homepage} target="_blank" rel="noopener">Website</a>` : nothing}
               </div>
               ${!s.eligible && !s.disabled && (s.missing.bins.length > 0 || s.missing.env.length > 0) ? html`
-                <div class="missing-detail">
-                  ${s.missing.bins.length > 0 ? html`Missing binaries: ${s.missing.bins.join(", ")}. ` : nothing}
-                  ${s.missing.env.length > 0 ? html`Missing env: ${s.missing.env.join(", ")}` : nothing}
+                <div class="skill-missing">
+                  ${s.missing.bins.length > 0 ? html`Missing: ${s.missing.bins.join(", ")}. ` : nothing}
+                  ${s.missing.env.length > 0 ? html`Env: ${s.missing.env.join(", ")}` : nothing}
                 </div>
               ` : nothing}
             </div>
@@ -927,8 +983,44 @@ export class SkillList extends LitElement {
                 title=${s.disabled ? "Enable" : "Disable"}></button>
             </div>
           </div>
+        `)}
+      </div>
+
+      ${this.renderCliPanel()}
+    `;
+  }
+
+  private renderCliPanel() {
+    return html`
+      <div class="cli-panel">
+        <div class="cli-title">CLI Operations</div>
+        <div class="cli-actions">
+          <button class="btn-secondary btn-small" @click=${() => this.runCli("list")} ?disabled=${this.cliBusy !== ""}>
+            ${this.cliBusy === "list" ? "Listing..." : "List"}
+          </button>
+          <button class="btn-secondary btn-small" @click=${() => this.runCli("check")} ?disabled=${this.cliBusy !== ""}>
+            ${this.cliBusy === "check" ? "Checking..." : "Check"}
+          </button>
+          <button class="btn-secondary btn-small" @click=${() => this.runCli("update")} ?disabled=${this.cliBusy !== ""}>
+            ${this.cliBusy === "update" ? "Updating..." : "Update All"}
+          </button>
         </div>
-      `)}
+
+        ${this.installedEntries.length > 0 ? html`
+          <div class="entries-list">
+            ${this.installedEntries.map((entry) => html`<span class="entry-chip">${entry}</span>`)}
+          </div>
+        ` : nothing}
+
+        ${this.cliResult ? html`
+          <div class="cli-result ${this.cliResult.ok ? "ok" : "err"}">
+            <div class="cli-message">${this.cliResult.message}</div>
+            ${(this.cliResult.stdout || this.cliResult.stderr) ? html`
+              <pre class="cli-output">${this.cliResult.stdout ?? ""}${this.cliResult.stderr ? `\n${this.cliResult.stderr}` : ""}</pre>
+            ` : nothing}
+          </div>
+        ` : nothing}
+      </div>
     `;
   }
 }

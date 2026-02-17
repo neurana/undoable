@@ -109,5 +109,9 @@ export function createSlackChannel(): Channel {
         reconnectAttempts: backoff.attempt, startedAt, lastConnectedAt, lastDisconnectedAt, lastErrorAt,
       };
     },
+
+    getClient() {
+      return app;
+    },
   };
 }

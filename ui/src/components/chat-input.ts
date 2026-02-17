@@ -9,16 +9,102 @@ export class ChatInput extends LitElement {
   static styles = [inputStyles, voiceStyles, css`
     :host { display: block; flex-shrink: 0; }
     .toolbar-spacer { flex: 1; }
-    .btn-undo {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 3px 10px; border-radius: var(--radius-pill);
-      background: none; color: var(--text-tertiary);
-      font-size: 11px; font-weight: 500;
-      border: 1px solid var(--border-divider); cursor: pointer;
+
+    /* Prominent Undo/Redo Action Bar */
+    .undo-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 16px;
+      margin: 0 auto 8px;
+      max-width: var(--content-w);
+      background: linear-gradient(135deg, color-mix(in srgb, var(--mint) 12%, var(--surface-1)), var(--surface-1));
+      border: 1px solid var(--mint-strong);
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(46, 69, 57, 0.08);
+    }
+    .undo-bar-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-right: 4px;
+    }
+    .undo-bar-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--border-strong);
+      margin: 0 4px;
+    }
+    .btn-undo-main {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: var(--radius-pill);
+      background: var(--mint);
+      color: var(--dark);
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+      box-shadow: 0 2px 6px rgba(46, 69, 57, 0.15);
+    }
+    .btn-undo-main:hover:not(:disabled) {
+      background: var(--mint-strong);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(46, 69, 57, 0.2);
+    }
+    .btn-undo-main:active:not(:disabled) {
+      transform: translateY(0);
+    }
+    .btn-undo-main:disabled {
+      background: var(--wash);
+      color: var(--text-tertiary);
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    .btn-undo-main svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+    }
+    .btn-undo-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 12px;
+      border-radius: var(--radius-pill);
+      background: var(--surface-1);
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 500;
+      border: 1px solid var(--border-strong);
+      cursor: pointer;
       transition: all 150ms ease;
     }
-    .btn-undo:hover { background: var(--wash); border-color: var(--mint-strong); color: var(--text-primary); }
-    .btn-undo svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: 2; fill: none; }
+    .btn-undo-secondary:hover:not(:disabled) {
+      background: var(--wash);
+      border-color: var(--mint-strong);
+      color: var(--text-primary);
+    }
+    .btn-undo-secondary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .btn-undo-secondary svg {
+      width: 12px;
+      height: 12px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+    }
+
     .btn-stop {
       display: inline-flex; align-items: center; justify-content: center;
       width: 32px; height: 32px; border-radius: 50%;
@@ -31,6 +117,9 @@ export class ChatInput extends LitElement {
     @media (max-width: 768px) {
       .input-area { padding: 0 12px 12px; }
       .input-box { padding: 10px; border-radius: 16px; }
+      .undo-bar { padding: 8px 12px; gap: 6px; }
+      .btn-undo-main { padding: 6px 12px; font-size: 11px; }
+      .btn-undo-secondary { padding: 5px 10px; font-size: 10px; }
     }
   `];
 
@@ -256,6 +345,27 @@ export class ChatInput extends LitElement {
     return html`
       <div class="input-area" @dragover=${this.handleDragOver} @dragleave=${this.handleDragLeave} @drop=${this.handleDrop} style="position:relative;">
         ${this.dragOver ? html`<div class="drop-overlay">Drop files here</div>` : nothing}
+
+        <!-- Prominent Undo/Redo Bar -->
+        ${!this.loading ? html`
+          <div class="undo-bar">
+            <span class="undo-bar-label">History</span>
+            <button class="btn-undo-main" ?disabled=${!this.hasUndoable} @click=${() => this.emit("undo", "last")} title="Undo last action">
+              <svg viewBox="0 0 24 24"><path d="M3 10h10a5 5 0 0 1 0 10H12"/><path d="M3 10l4-4M3 10l4 4"/></svg>
+              Undo
+            </button>
+            <button class="btn-undo-main" ?disabled=${!this.hasRedoable} @click=${() => this.emit("redo", "last")} title="Redo last undone action">
+              <svg viewBox="0 0 24 24"><path d="M21 10H11a5 5 0 0 0 0 10h1"/><path d="M21 10l-4-4M21 10l-4 4"/></svg>
+              Redo
+            </button>
+            <div class="undo-bar-divider"></div>
+            <button class="btn-undo-secondary" ?disabled=${!this.hasUndoable} @click=${() => this.emit("undo", "all")} title="Undo all actions">
+              <svg viewBox="0 0 24 24"><path d="M11 19l-7-7 7-7"/><path d="M18 19l-7-7 7-7"/></svg>
+              Undo All
+            </button>
+          </div>
+        ` : nothing}
+
         ${this.pendingFiles.length > 0 ? html`
           <div class="attachment-row" style="max-width: var(--content-w); width: 100%; margin: 0 auto; padding: 0 0 4px;">
             ${this.pendingFiles.map((f, i) => html`
@@ -316,21 +426,6 @@ export class ChatInput extends LitElement {
               <button class="btn-think ${this.thinkingLevel && this.thinkingLevel !== "off" ? "think-active" : ""}" @click=${() => this.emit("cycle-thinking")} title=${`Thinking: ${this.thinkingLevel || "off"}. Click to cycle.`}>
                 <svg class="think-icon" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7zM9 21h6M12 17v4"/></svg>
                 <span>${this.thinkingLevel && this.thinkingLevel !== "off" ? this.thinkingLevel : "Think"}</span>
-              </button>
-            ` : nothing}
-            ${(this.hasUndoable || this.hasRedoable) && !this.loading ? html`
-              <div class="toolbar-spacer"></div>
-              <button class="btn-undo" @click=${() => this.emit("undo", "last")} title="Undo last action">
-                <svg viewBox="0 0 24 24"><path d="M3 10h10a5 5 0 0 1 0 10H12"/><path d="M3 10l4-4M3 10l4 4"/></svg>
-                Undo
-              </button>
-              <button class="btn-undo" @click=${() => this.emit("redo", "last")} title="Redo last undone action" ?disabled=${!this.hasRedoable}>
-                <svg viewBox="0 0 24 24"><path d="M21 10H11a5 5 0 0 0 0 10h1"/><path d="M21 10l-4-4M21 10l-4 4"/></svg>
-                Redo
-              </button>
-              <button class="btn-undo" @click=${() => this.emit("undo", "all")} title="Undo all actions">
-                <svg viewBox="0 0 24 24"><path d="M3 10h10a5 5 0 0 1 0 10H12"/><path d="M3 10l4-4M3 10l4 4"/></svg>
-                All
               </button>
             ` : nothing}
           </div>

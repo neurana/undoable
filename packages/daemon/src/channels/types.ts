@@ -47,4 +47,5 @@ export interface Channel {
   stop(): Promise<void>;
   send(to: string, text: string, opts?: { threadId?: string }): Promise<void>;
   status(): ChannelStatus;
+  getClient(): unknown;
 }

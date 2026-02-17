@@ -1,7 +1,7 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
 
-type View = "chat" | "agents" | "jobs" | "skills" | "nodes" | "channels" | "swarm";
+type View = "chat" | "agents" | "jobs" | "skills" | "nodes" | "channels" | "swarm" | "sessions";
 
 @customElement("undoable-app")
 export class UndoableApp extends LitElement {
@@ -47,7 +47,7 @@ export class UndoableApp extends LitElement {
     }
   `;
 
-  private static VIEWS = new Set<View>(["chat", "agents", "jobs", "skills", "nodes", "channels", "swarm"]);
+  private static VIEWS = new Set<View>(["chat", "agents", "jobs", "skills", "nodes", "channels", "swarm", "sessions"]);
 
   @state() private view: View = "chat";
 
@@ -102,6 +102,7 @@ export class UndoableApp extends LitElement {
       nodes: "Nodes",
       channels: "Channels",
       swarm: "SWARM",
+      sessions: "Sessions",
     };
 
     return html`
@@ -120,6 +121,7 @@ export class UndoableApp extends LitElement {
           ${this.view === "nodes" ? html`<undoable-nodes-panel></undoable-nodes-panel>` : ""}
           ${this.view === "channels" ? html`<channel-list></channel-list>` : ""}
           ${this.view === "swarm" ? html`<swarm-page></swarm-page>` : ""}
+          ${this.view === "sessions" ? html`<session-list></session-list>` : ""}
         </div>
       </main>
     `;

@@ -18,7 +18,7 @@ export function resolveRunMode(params?: {
   dangerouslySkipPermissions?: boolean;
 }): RunModeConfig {
   const skipPerms = params?.dangerouslySkipPermissions === true;
-  const mode = skipPerms ? "autonomous" : (params?.mode ?? "interactive");
+  const mode = skipPerms ? "autonomous" : (params?.mode ?? "supervised");
   const defaults = MODE_DEFAULTS[mode];
   return {
     mode,
