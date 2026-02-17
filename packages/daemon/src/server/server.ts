@@ -18,8 +18,15 @@ import { SkillsService } from "../services/skills-service.js";
 import { skillsRoutes } from "../routes/skills.js";
 import { instructionsRoutes } from "../routes/instructions.js";
 import { InstructionsStore } from "../services/instructions-store.js";
-import { authorizeGatewayHeaders, createGatewayAuthHook } from "../auth/middleware.js";
-import { resolveRunMode, shouldAutoApprove, type RunMode } from "../actions/run-mode.js";
+import {
+  authorizeGatewayHeaders,
+  createGatewayAuthHook,
+} from "../auth/middleware.js";
+import {
+  resolveRunMode,
+  shouldAutoApprove,
+  type RunMode,
+} from "../actions/run-mode.js";
 import { ProviderService } from "../services/provider-service.js";
 import { MemoryService } from "../services/memory-service.js";
 import { SandboxExecService } from "../services/sandbox-exec.js";
@@ -30,14 +37,24 @@ import { CanvasService } from "../services/canvas-service.js";
 import { fileRoutes } from "../routes/files.js";
 import { channelRoutes } from "../routes/channels.js";
 import { gatewayRoutes } from "../routes/gateway.js";
-import { ChannelManager, createTelegramChannel, createDiscordChannel, createSlackChannel, createWhatsAppChannel } from "../channels/index.js";
+import {
+  ChannelManager,
+  createTelegramChannel,
+  createDiscordChannel,
+  createSlackChannel,
+  createWhatsAppChannel,
+} from "../channels/index.js";
 import { sessionRoutes } from "../routes/sessions.js";
 import { WizardService } from "../services/wizard-service.js";
 import { CronRunLogService } from "../services/cron-run-log-service.js";
 import { ExecApprovalService } from "../services/exec-approval-service.js";
 import { NodeGatewayService } from "../services/node-gateway-service.js";
 import { ConnectorRegistry } from "../connectors/index.js";
-import { CANVAS_HOST_PATH, CANVAS_WS_PATH, createCanvasHostHandler } from "../services/canvas-host.js";
+import {
+  CANVAS_HOST_PATH,
+  CANVAS_WS_PATH,
+  createCanvasHostHandler,
+} from "../services/canvas-host.js";
 import { recoverExecRegistryState } from "../tools/exec-registry.js";
 import { SwarmService } from "../services/swarm-service.js";
 import { MediaService } from "../services/media-service.js";
@@ -48,23 +65,45 @@ import { UsageService } from "../services/usage-service.js";
 import { PluginRegistry } from "../plugins/registry.js";
 import { pluginRoutes } from "../routes/plugins.js";
 import type { PluginContext } from "../plugins/types.js";
+import {
+  initDatabase,
+  isDatabaseEnabled,
+} from "../services/database-service.js";
 
 export type ServerOptions = {
   port: number;
   host?: string;
 };
 
-
 export async function createServer(opts: ServerOptions) {
   const app = Fastify({ logger: true });
+
+  if (isDatabaseEnabled()) {
+    try {
+      initDatabase();
+      app.log.info("Database connection initialized");
+    } catch (err) {
+      app.log.warn(
+        { err },
+        "Database initialization failed - running without persistence",
+      );
+    }
+  } else {
+    app.log.info("DATABASE_URL not set - running without database persistence");
+  }
 
   const eventBus = new EventBus();
   const runStatePath = process.env.UNDOABLE_RUN_STATE_FILE?.trim();
   const runManager = new RunManager(eventBus, {
-    stateFilePath: runStatePath && runStatePath.length > 0 ? runStatePath : undefined,
+    stateFilePath:
+      runStatePath && runStatePath.length > 0 ? runStatePath : undefined,
   });
   const execRecovery = recoverExecRegistryState();
-  if (execRecovery.runningRecovered > 0 || execRecovery.finishedRecovered > 0 || execRecovery.staleRunningDropped > 0) {
+  if (
+    execRecovery.runningRecovered > 0 ||
+    execRecovery.finishedRecovered > 0 ||
+    execRecovery.staleRunningDropped > 0
+  ) {
     app.log.info(execRecovery, "recovered persisted exec sessions");
   }
 
@@ -91,8 +130,16 @@ export async function createServer(opts: ServerOptions) {
     });
   }
 
-  // executorDepsRef will be set after tool registry is created, so scheduler can trigger run execution
-  let executorDepsRef: { deps: import("../services/run-executor.js").RunExecutorDeps } | null = null;
+  let executorDepsRef: {
+    deps: import("../services/run-executor.js").RunExecutorDeps;
+  } | null = null;
+  let schedulerRegistryRef:
+    | {
+        registry: ReturnType<
+          typeof import("../tools/index.js").createToolRegistry
+        >;
+      }
+    | undefined;
 
   const storePath = path.join(os.homedir(), ".undoable", "scheduler-jobs.json");
   const cronRuns = new CronRunLogService();
@@ -125,29 +172,48 @@ export async function createServer(opts: ServerOptions) {
           instruction: job.payload.instruction,
           jobId: job.id,
         });
-        app.log.info({ jobId: job.id, runId: run.id, agentId }, "scheduler: created run");
+        app.log.info(
+          { jobId: job.id, runId: run.id, agentId },
+          "scheduler: created run",
+        );
         if (executorDepsRef) {
           try {
             const { executeRun } = await import("../services/run-executor.js");
+            const registry =
+              schedulerRegistryRef?.registry ?? executorDepsRef.deps.registry;
             await executeRun(run.id, job.payload.instruction, {
               ...executorDepsRef.deps,
+              registry,
               systemPrompt: SCHEDULED_JOB_SYSTEM_PROMPT,
               sessionId: `cron-${job.id}`,
               maxIterations: 50,
             });
             const finalStatus = runManager.getById(run.id)?.status;
             if (finalStatus === "failed") {
-              return { status: "error", error: "Run finished with failed status", runId: run.id };
+              return {
+                status: "error",
+                error: "Run finished with failed status",
+                runId: run.id,
+              };
             }
             return { status: "ok", runId: run.id };
           } catch (err) {
-            app.log.error({ runId: run.id, err }, "scheduler: run execution failed");
+            app.log.error(
+              { runId: run.id, err },
+              "scheduler: run execution failed",
+            );
             return { status: "error", error: String(err), runId: run.id };
           }
         }
-        return { status: "error", error: "Executor dependencies not available" };
+        return {
+          status: "error",
+          error: "Executor dependencies not available",
+        };
       } else {
-        app.log.info({ jobId: job.id, text: job.payload.text }, "scheduler: system event");
+        app.log.info(
+          { jobId: job.id, text: job.payload.text },
+          "scheduler: system event",
+        );
         return { status: "ok" };
       }
     },
@@ -165,14 +231,21 @@ export async function createServer(opts: ServerOptions) {
   const canvasHost = await createCanvasHostHandler({
     rootDir: process.env.UNDOABLE_CANVAS_ROOT,
     basePath: CANVAS_HOST_PATH,
-    liveReload: process.env.UNDOABLE_CANVAS_LIVE_RELOAD === "false" ? false : true,
+    liveReload:
+      process.env.UNDOABLE_CANVAS_LIVE_RELOAD === "false" ? false : true,
     logError: (message) => app.log.error({ message }, "canvas host"),
   });
   if (canvasHost.rootDir) {
-    app.log.info({ path: `${CANVAS_HOST_PATH}/`, rootDir: canvasHost.rootDir }, "canvas host mounted");
+    app.log.info(
+      { path: `${CANVAS_HOST_PATH}/`, rootDir: canvasHost.rootDir },
+      "canvas host mounted",
+    );
   }
 
-  const handleCanvasRequest = async (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
+  const handleCanvasRequest = async (
+    req: import("fastify").FastifyRequest,
+    reply: import("fastify").FastifyReply,
+  ) => {
     const handled = await canvasHost.handleHttpRequest(req.raw, reply.raw);
     if (!handled) {
       reply.code(404).send({ error: "Not Found" });
@@ -207,12 +280,16 @@ export async function createServer(opts: ServerOptions) {
   const chatService = new ChatService();
   const runMode = resolveRunMode({
     mode: (process.env.UNDOABLE_RUN_MODE as RunMode | undefined) ?? undefined,
-    maxIterations: process.env.UNDOABLE_MAX_ITERATIONS ? Number(process.env.UNDOABLE_MAX_ITERATIONS) : undefined,
-    dangerouslySkipPermissions: process.env.UNDOABLE_DANGEROUSLY_SKIP_PERMISSIONS === "1",
+    maxIterations: process.env.UNDOABLE_MAX_ITERATIONS
+      ? Number(process.env.UNDOABLE_MAX_ITERATIONS)
+      : undefined,
+    dangerouslySkipPermissions:
+      process.env.UNDOABLE_DANGEROUSLY_SKIP_PERMISSIONS === "1",
   });
   const initialApiKey = process.env.OPENAI_API_KEY ?? "";
   const initialModel = process.env.UNDOABLE_MODEL ?? "gpt-4.1-mini";
-  const initialBaseUrl = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
+  const initialBaseUrl =
+    process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
   const chatConfig = {
     apiKey: initialApiKey,
     model: initialModel,
@@ -221,7 +298,15 @@ export async function createServer(opts: ServerOptions) {
   };
   const providerSvc = new ProviderService();
   await providerSvc.init(initialApiKey, initialModel, initialBaseUrl);
-  app.log.info({ runMode: runMode.mode, maxIterations: runMode.maxIterations, skipPerms: runMode.dangerouslySkipPermissions, model: initialModel }, "run mode configured");
+  app.log.info(
+    {
+      runMode: runMode.mode,
+      maxIterations: runMode.maxIterations,
+      skipPerms: runMode.dangerouslySkipPermissions,
+      model: initialModel,
+    },
+    "run mode configured",
+  );
 
   const skillsService = new SkillsService();
   const memorySvc = new MemoryService();
@@ -233,28 +318,41 @@ export async function createServer(opts: ServerOptions) {
   const sandboxExec = new SandboxExecService();
   const heartbeatSvc = new HeartbeatService();
   heartbeatSvc.start({
-    onSessionDead: (id) => app.log.info({ sessionId: id }, "session marked dead by heartbeat"),
+    onSessionDead: (id) =>
+      app.log.info({ sessionId: id }, "session marked dead by heartbeat"),
   });
   const browserHeadless = process.env.UNDOABLE_BROWSER_HEADLESS === "true";
   const browserViewport = process.env.UNDOABLE_BROWSER_VIEWPORT
-    ? (() => { const [w, h] = process.env.UNDOABLE_BROWSER_VIEWPORT!.split("x").map(Number); return w && h ? { width: w, height: h } : undefined; })()
+    ? (() => {
+        const [w, h] = process.env
+          .UNDOABLE_BROWSER_VIEWPORT!.split("x")
+          .map(Number);
+        return w && h ? { width: w, height: h } : undefined;
+      })()
     : undefined;
   const browserSvc = await createBrowserService({
     headless: browserHeadless,
     viewport: browserViewport,
     userAgent: process.env.UNDOABLE_BROWSER_USER_AGENT || undefined,
     persistSession: process.env.UNDOABLE_BROWSER_PERSIST_SESSION === "true",
-    launchArgs: process.env.UNDOABLE_BROWSER_ARGS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+    launchArgs:
+      process.env.UNDOABLE_BROWSER_ARGS?.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean) ?? [],
   });
   const canvasService = new CanvasService();
 
   const ttsService = new TtsService();
   const sttService = new SttService();
-  if (initialApiKey) {
-    ttsService.setApiKey("openai", initialApiKey);
-    ttsService.setBaseUrl("openai", initialBaseUrl);
-    sttService.setApiKey("openai", initialApiKey);
-    sttService.setBaseUrl("openai", initialBaseUrl);
+
+  const openaiConfig = providerSvc.getProviderConfig("openai");
+  const openaiKey = openaiConfig?.apiKey || initialApiKey;
+  const openaiBaseUrl = openaiConfig?.baseUrl || initialBaseUrl;
+  if (openaiKey) {
+    ttsService.setApiKey("openai", openaiKey);
+    ttsService.setBaseUrl("openai", openaiBaseUrl);
+    sttService.setApiKey("openai", openaiKey);
+    sttService.setBaseUrl("openai", openaiBaseUrl);
   }
   if (process.env.ELEVENLABS_API_KEY) {
     ttsService.setApiKey("elevenlabs", process.env.ELEVENLABS_API_KEY);
@@ -278,10 +376,15 @@ export async function createServer(opts: ServerOptions) {
     swarmService,
     sandboxExec,
     sandboxSessionId: "daemon",
-    approvalMode: shouldAutoApprove(runMode) ? "off" as const : undefined,
+    approvalMode: shouldAutoApprove(runMode) ? ("off" as const) : undefined,
+    execApprovalService,
   });
 
-  const boundCallLLM = (messages: unknown[], toolDefs: unknown[], stream: boolean) => {
+  const boundCallLLM = (
+    messages: unknown[],
+    toolDefs: unknown[],
+    stream: boolean,
+  ) => {
     const conf = providerSvc
       ? { ...chatConfig, ...providerSvc.getActiveConfig() }
       : chatConfig;
@@ -323,31 +426,46 @@ export async function createServer(opts: ServerOptions) {
   runRegistry.registerTools(createChannelTools(channelManager));
 
   const { createSessionTools } = await import("../tools/session-tools.js");
-  runRegistry.registerTools(createSessionTools({
-    chatService,
-    runManager,
-    eventBus,
-    callLLM: boundCallLLM,
-    registry: runRegistry,
-  }));
+  runRegistry.registerTools(
+    createSessionTools({
+      chatService,
+      runManager,
+      eventBus,
+      callLLM: boundCallLLM,
+      registry: runRegistry,
+    }),
+  );
 
   const { createMediaTool } = await import("../tools/media-tools.js");
-  runRegistry.registerTools([createMediaTool(mediaService, mediaUnderstanding)]);
+  runRegistry.registerTools([
+    createMediaTool(mediaService, mediaUnderstanding),
+  ]);
 
-  const mediaCleanupInterval = setInterval(() => mediaService.cleanup().catch(() => {}), 60 * 60 * 1000);
+  const mediaCleanupInterval = setInterval(
+    () => mediaService.cleanup().catch(() => {}),
+    60 * 60 * 1000,
+  );
 
   const pluginRegistry = new PluginRegistry();
   await pluginRegistry.loadAll();
   const pluginCtx: PluginContext = {
     registerTool: (tool) => runRegistry.registerTools([tool]),
-    getService: <T,>(name: string): T | undefined => {
+    getService: <T>(name: string): T | undefined => {
       const services: Record<string, unknown> = {
-        chat: chatService, media: mediaService, memory: memorySvc,
-        provider: providerSvc, usage: usageService, tts: ttsService, stt: sttService,
+        chat: chatService,
+        media: mediaService,
+        memory: memorySvc,
+        provider: providerSvc,
+        usage: usageService,
+        tts: ttsService,
+        stt: sttService,
       };
       return services[name] as T | undefined;
     },
-    log: { info: (msg) => app.log.info({ plugin: true }, msg), error: (msg) => app.log.error({ plugin: true }, msg) },
+    log: {
+      info: (msg) => app.log.info({ plugin: true }, msg),
+      error: (msg) => app.log.error({ plugin: true }, msg),
+    },
   };
   await pluginRegistry.activateAll(pluginCtx);
 
@@ -364,13 +482,84 @@ export async function createServer(opts: ServerOptions) {
   });
   eventRoutes(app, eventBus, runManager);
   jobRoutes(app, scheduler);
-  swarmRoutes(app, swarmService, runManager);
+  const swarmRegistry = createToolRegistry({
+    runManager,
+    scheduler,
+    browserSvc,
+    connectorRegistry,
+    memoryService: memorySvc,
+    canvasService,
+    swarmService,
+    sandboxExec,
+    sandboxSessionId: "daemon",
+    approvalMode: "off",
+    execSecurityBypass: true,
+  });
+  schedulerRegistryRef = { registry: swarmRegistry };
+  swarmRegistry.registerTools(createChannelTools(channelManager));
+  swarmRegistry.registerTools(
+    createSessionTools({
+      chatService,
+      runManager,
+      eventBus,
+      callLLM: boundCallLLM,
+      registry: swarmRegistry,
+    }),
+  );
+  swarmRegistry.registerTools([
+    createMediaTool(mediaService, mediaUnderstanding),
+  ]);
+
+  const SWARM_NODE_SYSTEM_PROMPT = [
+    "You are Undoable executing a SWARM WORKFLOW NODE. This is an automated task — not an interactive conversation.",
+    "",
+    "IMPORTANT RULES:",
+    "1. Execute the instruction immediately using your tools. Do NOT ask clarifying questions.",
+    "2. Do NOT greet the user or ask what they need. The instruction below is the complete task.",
+    "3. Use your tools (exec, web_search, browser, browse_page, web_fetch, read_file, write_file, edit_file, media, sessions_*, channel actions, etc.) to accomplish the task.",
+    "4. When done, return a concise summary of what you did and the results.",
+    "5. If the task cannot be completed, explain why in your response.",
+    "",
+    "You have full access to the system. Act autonomously and complete the task.",
+    "",
+    "CONTEXT: This session is persistent across runs of this SWARM node.",
+    "The conversation history above contains your previous executions.",
+    "Use that context to avoid repeating work, track progress, and build on prior results.",
+  ].join("\n");
+
+  swarmRoutes(app, swarmService, runManager, {
+    eventBus,
+    executorDeps: {
+      chatService,
+      registry: swarmRegistry,
+      providerService: providerSvc,
+      callLLM: boundCallLLM,
+      maxIterations: runMode.maxIterations ?? 50,
+      systemPrompt: SWARM_NODE_SYSTEM_PROMPT,
+    },
+  });
   agentRoutes(app, agentRegistry, instructionsStore);
   instructionsRoutes(app, instructionsStore);
   voiceRoutes(app, ttsService, sttService);
   skillsRoutes(app, skillsService);
   heartbeatRoutes(app, heartbeatSvc);
-  chatRoutes(app, chatService, chatConfig, runManager, scheduler, browserSvc, skillsService, providerSvc, agentRegistry, instructionsStore, memorySvc, sandboxExec, heartbeatSvc, swarmService, usageService);
+  chatRoutes(
+    app,
+    chatService,
+    chatConfig,
+    runManager,
+    scheduler,
+    browserSvc,
+    skillsService,
+    providerSvc,
+    agentRegistry,
+    instructionsStore,
+    memorySvc,
+    sandboxExec,
+    heartbeatSvc,
+    swarmService,
+    usageService,
+  );
   fileRoutes(app);
   channelRoutes(app, channelManager);
   sessionRoutes(app, chatService);

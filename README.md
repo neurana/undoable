@@ -13,6 +13,10 @@
 </p>
 
 <p align="center">
+  <sub>Inspired by <a href="https://github.com/openclaw/openclaw">OpenClaw</a></sub>
+</p>
+
+<p align="center">
   <a href="#installation">Installation</a> •
   <a href="#features">Features</a> •
   <a href="#quick-start">Quick Start</a> •
@@ -79,6 +83,7 @@ pnpm install
 createdb undoable
 psql -d undoable -c "CREATE USER undoable WITH PASSWORD 'undoable_dev';"
 psql -d undoable -c "GRANT ALL PRIVILEGES ON DATABASE undoable TO undoable;"
+psql -d undoable -c "GRANT ALL ON SCHEMA public TO undoable;"
 
 # Create .env file
 cat > .env << EOF
@@ -86,10 +91,33 @@ DATABASE_URL=postgresql://undoable:undoable_dev@localhost:5432/undoable
 OPENAI_API_KEY=sk-your-key-here
 EOF
 
+# Push schema to database (creates tables)
+pnpm db:push
+
 # Build and start
 pnpm build
 ./dev.sh
 ```
+
+### Onboarding Wizard
+
+First-time users can run the interactive setup wizard:
+
+```bash
+# Run the onboarding wizard
+pnpm cli onboard
+
+# Or with the CLI directly
+undoable onboard
+```
+
+The wizard guides you through:
+- Security warnings and risk acceptance
+- QuickStart vs Manual setup flow
+- Provider and model selection
+- Channel integrations (Telegram, Discord, Slack, WhatsApp)
+- Skills configuration (GitHub, Web Search)
+- Profile customization (SOUL.md, USER.md, IDENTITY.md)
 
 ---
 
@@ -391,7 +419,7 @@ POST   /plugins/:name/disable        # Disable plugin
 ### Environment Variables
 
 ```bash
-# Database (required)
+# Database (optional - runs without persistence if not set)
 DATABASE_URL=postgresql://undoable:undoable_dev@localhost:5432/undoable
 
 # LLM Providers (at least one required)
@@ -558,6 +586,22 @@ pnpm build
 pnpm clean
 ```
 
+### Database Commands
+
+```bash
+# Push schema to database (creates/updates tables)
+pnpm db:push
+
+# Generate migration files from schema changes
+pnpm db:generate
+
+# Run pending migrations
+pnpm db:migrate
+
+# Open Drizzle Studio (database GUI)
+pnpm db:studio
+```
+
 ### Project Structure
 
 ```
@@ -588,6 +632,8 @@ undoable/
 │   ├── Dockerfile.ui
 │   ├── docker-compose.yml
 │   └── start.sh
+├── drizzle/             # Database migrations
+├── drizzle.config.ts    # Drizzle ORM config
 ├── install.sh           # One-line installer
 ├── dev.sh               # Development script
 └── README.md

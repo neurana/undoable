@@ -1,12 +1,14 @@
 import { UndoEngine, type FileBackup } from "@undoable/core";
 import type { ActionLog } from "./action-log.js";
-import type { ActionRecord, FileUndoData } from "./types.js";
+import type { ActionRecord, FileUndoData, ExecUndoData } from "./types.js";
+import { executeReversal } from "./command-reversal.js";
 
 export type UndoResult = {
   actionId: string;
   toolName: string;
   success: boolean;
   error?: string;
+  note?: string;
 };
 
 export class UndoService {
@@ -36,8 +38,39 @@ export class UndoService {
     if (undo.type === "file") {
       return this.undoFileAction(action, undo);
     }
+    if (undo.type === "exec") {
+      return this.undoExecAction(action, undo);
+    }
 
-    return { actionId, toolName: action.toolName, success: false, error: `Unsupported undo type: ${undo.type}` };
+    const exhaustive: never = undo;
+    return { actionId, toolName: action.toolName, success: false, error: `Unsupported undo type: ${(exhaustive as { type: string }).type}` };
+  }
+
+  private undoExecAction(action: ActionRecord, undo: ExecUndoData): UndoResult {
+    const cmdPreview = undo.command.length > 50 ? `${undo.command.slice(0, 50)}...` : undo.command;
+    if (!undo.canReverse || !undo.reverseCommand) {
+      return {
+        actionId: action.id,
+        toolName: action.toolName,
+        success: false,
+        error: `Cannot auto-reverse: "${cmdPreview}"`,
+      };
+    }
+    const result = executeReversal(undo.reverseCommand, undo.cwd);
+    if (result.success) {
+      return {
+        actionId: action.id,
+        toolName: action.toolName,
+        success: true,
+        note: `Reversed "${cmdPreview}" with "${undo.reverseCommand}"`,
+      };
+    }
+    return {
+      actionId: action.id,
+      toolName: action.toolName,
+      success: false,
+      error: `Reversal failed: ${result.error}`,
+    };
   }
 
   async undoLastN(n: number, runId?: string): Promise<UndoResult[]> {

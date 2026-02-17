@@ -16,6 +16,14 @@ import {
 
 const MAX_TOOL_RESULT_CHARS = 30_000;
 const DEFAULT_MAX_ITERATIONS = 25;
+const TOOL_TIMEOUT_MS = 60_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, name: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`Tool "${name}" timed out after ${ms / 1000}s`)), ms)),
+  ]);
+}
 
 export type RunExecutorDeps = {
   chatService: ChatService;
@@ -98,7 +106,9 @@ export async function executeRun(
       const reader = res.body?.getReader();
       if (!reader) {
         emit("RUN_FAILED", { content: "No response body from LLM" });
-        break;
+        runManager.updateStatus(runId, "failed", "system");
+        emit("STATUS_CHANGED", { status: "failed" });
+        return;
       }
 
       let fullContent = "";
@@ -187,7 +197,7 @@ export async function executeRun(
         emit("TOOL_CALL", { name: tc.function.name, args, iteration: loops, maxIterations });
 
         try {
-          const result = await registry.execute(tc.function.name, args);
+          const result = await withTimeout(registry.execute(tc.function.name, args), TOOL_TIMEOUT_MS, tc.function.name);
           const resultStr = truncateToolResult(JSON.stringify(result), MAX_TOOL_RESULT_CHARS);
           await chatService.addToolResult(sessionId, tc.id, resultStr);
           emit("TOOL_RESULT", { name: tc.function.name, result });

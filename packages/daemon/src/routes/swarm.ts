@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
+import type { EventBus } from "@undoable/core";
 import type { RunManager } from "../services/run-manager.js";
+import { executeRun, type RunExecutorDeps } from "../services/run-executor.js";
 import type {
   CreateSwarmNodeInput,
   CreateSwarmWorkflowInput,
@@ -13,7 +15,17 @@ function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function swarmRoutes(app: FastifyInstance, swarmService: SwarmService, runManager: RunManager) {
+export type SwarmRouteDeps = {
+  eventBus: EventBus;
+  executorDeps?: Omit<RunExecutorDeps, "runManager" | "eventBus">;
+};
+
+export function swarmRoutes(
+  app: FastifyInstance,
+  swarmService: SwarmService,
+  runManager: RunManager,
+  extra?: SwarmRouteDeps,
+) {
   app.get("/swarm/workflows", async () => {
     return swarmService.list();
   });
@@ -138,13 +150,45 @@ export function swarmRoutes(app: FastifyInstance, swarmService: SwarmService, ru
       return reply.code(404).send({ error: "Node not found" });
     }
 
-    if (!node.jobId) {
-      return { jobId: null, runs: [] };
+    const syntheticJobId = `swarm-node-${node.id}`;
+    const runs = node.jobId
+      ? runManager.listByJobId(node.jobId)
+      : runManager.listByJobId(syntheticJobId);
+
+    return { jobId: node.jobId ?? syntheticJobId, runs };
+  });
+
+  app.post<{ Params: { id: string; nodeId: string } }>("/swarm/workflows/:id/nodes/:nodeId/run", async (req, reply) => {
+    const workflow = swarmService.getById(req.params.id);
+    if (!workflow) {
+      return reply.code(404).send({ error: "Workflow not found" });
     }
 
-    return {
-      jobId: node.jobId,
-      runs: runManager.listByJobId(node.jobId),
-    };
+    const node = workflow.nodes.find((entry) => entry.id === req.params.nodeId);
+    if (!node) {
+      return reply.code(404).send({ error: "Node not found" });
+    }
+
+    const instruction = node.prompt || `Execute SWARM node "${node.name}" from workflow "${workflow.name}".`;
+    const jobId = node.jobId ?? `swarm-node-${node.id}`;
+
+    const run = runManager.create({
+      userId: "swarm",
+      agentId: node.agentId ?? "default",
+      instruction,
+      jobId,
+    });
+
+    if (extra?.executorDeps && extra.eventBus) {
+      const deps: RunExecutorDeps = {
+        ...extra.executorDeps,
+        runManager,
+        eventBus: extra.eventBus,
+        sessionId: `swarm-node-${node.id}`,
+      };
+      executeRun(run.id, instruction, deps).catch(() => {});
+    }
+
+    return reply.code(201).send(run);
   });
 }

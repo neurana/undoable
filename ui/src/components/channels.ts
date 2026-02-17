@@ -718,7 +718,7 @@ export class ChannelList extends LitElement {
     `;
   }
 
-  private renderQRState(ch: ChannelItem, id: ChannelId, platform: PlatformInfo) {
+  private renderQRState(ch: ChannelItem, _id: ChannelId, _platform: PlatformInfo) {
     return html`
       <div class="qr-section">
         <img class="qr-image" src=${ch.status.qrDataUrl} alt="QR Code" />
@@ -787,7 +787,7 @@ export class ChannelList extends LitElement {
     `;
   }
 
-  private renderQRStep(id: ChannelId, platform: PlatformInfo, state: WizardState) {
+  private renderQRStep(_id: ChannelId, platform: PlatformInfo, _state: WizardState) {
     return html`
       <div class="step-header">Step 1 of 4</div>
       <div class="step-title">Link your WhatsApp</div>
@@ -795,7 +795,7 @@ export class ChannelList extends LitElement {
       <div class="help-box">
         <div class="help-title">How to connect</div>
         <ol class="help-list">
-          ${platform.tokenHint.map((hint) => html`<li>${hint}</li>`)}
+          ${platform.tokenHint.map((hint: string) => html`<li>${hint}</li>`)}
         </ol>
       </div>
 

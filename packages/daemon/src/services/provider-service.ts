@@ -144,7 +144,7 @@ export class ProviderService {
       this.providers = DEFAULT_PROVIDERS.map((p) => ({ ...p, models: [] }));
     }
 
-    this.ensureLocalProviders();
+    this.ensureDefaultProviders();
     await this.refreshLocalModels();
     this.localDiscovery.startAutoRefresh();
 
@@ -172,11 +172,10 @@ export class ProviderService {
     this.discoveredModels = this.localDiscovery.getModels();
   }
 
-  private ensureLocalProviders(): void {
-    for (const lp of ["ollama", "lmstudio"] as const) {
-      if (!this.providers.find((p) => p.id === lp)) {
-        const def = DEFAULT_PROVIDERS.find((p) => p.id === lp);
-        if (def) this.providers.push({ ...def, models: [] });
+  private ensureDefaultProviders(): void {
+    for (const def of DEFAULT_PROVIDERS) {
+      if (!this.providers.find((p) => p.id === def.id)) {
+        this.providers.push({ ...def, models: [] });
       }
     }
   }
@@ -216,6 +215,12 @@ export class ProviderService {
       model: this.activeModel,
       provider: this.activeProvider,
     };
+  }
+
+  getProviderConfig(providerId: string): { apiKey: string; baseUrl: string } | null {
+    const provider = this.providers.find((p) => p.id === providerId);
+    if (!provider) return null;
+    return { apiKey: provider.apiKey, baseUrl: provider.baseUrl };
   }
 
   getModelInfo(modelId: string): ModelInfo | undefined {

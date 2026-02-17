@@ -5,8 +5,16 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentTool } from "./types.js";
 import { validateEnv, isDestructiveCommand } from "./exec-security.js";
-import { type ExecAllowlistConfig, loadAllowlistConfig, evaluateCommand } from "./exec-allowlist.js";
+import {
+  type ExecAllowlistConfig,
+  loadAllowlistConfig,
+  evaluateCommand,
+  addToAllowlist,
+  saveAllowlistConfig,
+  analyzeCommand,
+} from "./exec-allowlist.js";
 import type { SandboxExecService } from "../services/sandbox-exec.js";
+import type { ExecApprovalService } from "../services/exec-approval-service.js";
 import {
   type PtyHandle,
   addSession,
@@ -85,10 +93,14 @@ export function createExecTool(opts?: {
   allowlistConfig?: ExecAllowlistConfig;
   sandboxExec?: SandboxExecService;
   sandboxSessionId?: string;
+  securityBypass?: boolean;
+  execApprovalService?: ExecApprovalService;
 }): AgentTool {
   const allowlistConfig = opts?.allowlistConfig ?? loadAllowlistConfig();
   const isolationMode = resolveExecIsolationMode();
   const sandboxBaseSessionId = (opts?.sandboxSessionId ?? "global").trim() || "global";
+  const securityBypass = opts?.securityBypass === true;
+  const execApprovalService = opts?.execApprovalService;
   return {
     name: "exec",
     definition: {
@@ -142,21 +154,69 @@ export function createExecTool(opts?: {
       const extraEnv = (args.env as Record<string, string>) || {};
       if (Object.keys(extraEnv).length > 0) validateEnv(extraEnv);
 
-      if (isDestructiveCommand(command)) {
-        return {
-          error: "Blocked: this command appears destructive. Confirm with the user first.",
-          command,
-        };
-      }
+      if (!securityBypass) {
+        if (isDestructiveCommand(command)) {
+          if (execApprovalService) {
+            const record = execApprovalService.create({
+              command,
+              cwd,
+              security: "destructive",
+              ask: "This command appears destructive (e.g., rm -rf /, mkfs). Do you want to allow it?",
+            }, 120_000);
+            const decision = await execApprovalService.waitForDecision(record.id);
+            if (decision === "deny") {
+              return {
+                error: "Blocked: destructive command rejected by user.",
+                command,
+              };
+            }
+          } else {
+            return {
+              error: "Blocked: this command appears destructive. Confirm with the user first.",
+              command,
+            };
+          }
+        }
 
-      if (allowlistConfig.security !== "full") {
-        const evaluation = evaluateCommand(command, allowlistConfig);
-        if (!evaluation.allowed) {
-          return {
-            error: `Blocked by exec security (mode: ${allowlistConfig.security}): ${evaluation.reason}`,
-            command,
-            hint: "Use the 'actions' tool with approval_mode to adjust security, or add the command to the allowlist.",
-          };
+        if (allowlistConfig.security !== "full") {
+          const evaluation = evaluateCommand(command, allowlistConfig);
+          if (!evaluation.allowed) {
+            if (execApprovalService) {
+              const analysis = analyzeCommand(command);
+              const blockedBinaries = analysis.segments
+                .map(s => path.basename(s.executable))
+                .filter(bin => !allowlistConfig.safeBins.has(bin.toLowerCase()));
+              const binList = blockedBinaries.length > 0 ? blockedBinaries.join(", ") : "unknown";
+
+              const record = execApprovalService.create({
+                command,
+                cwd,
+                security: "allowlist",
+                ask: `Command uses binary not in allowlist: ${binList}. Allow this command?`,
+              }, 120_000);
+              const decision = await execApprovalService.waitForDecision(record.id);
+
+              if (decision === "deny") {
+                return {
+                  error: `Blocked by exec security: ${evaluation.reason}`,
+                  command,
+                };
+              }
+
+              if (decision === "allow-always") {
+                for (const bin of blockedBinaries) {
+                  addToAllowlist(allowlistConfig, bin);
+                }
+                saveAllowlistConfig(allowlistConfig);
+              }
+            } else {
+              return {
+                error: `Blocked by exec security (mode: ${allowlistConfig.security}): ${evaluation.reason}`,
+                command,
+                hint: "Use the 'actions' tool with approval_mode to adjust security, or add the command to the allowlist.",
+              };
+            }
+          }
         }
       }
 

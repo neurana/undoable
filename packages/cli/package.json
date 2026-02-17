@@ -12,6 +12,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@clack/prompts": "^1.0.1",
     "@undoable/core": "workspace:*",
     "@undoable/shared": "workspace:*",
     "commander": "^14.0.3"

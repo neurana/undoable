@@ -2,8 +2,9 @@ import { execSync } from "node:child_process";
 import type { AgentTool } from "../tools/types.js";
 import type { ActionLog } from "./action-log.js";
 import type { ApprovalGate } from "./approval-gate.js";
-import type { FileUndoData } from "./types.js";
+import type { FileUndoData, ExecUndoData, UndoData } from "./types.js";
 import { getToolCategory, isUndoableTool } from "./types.js";
+import { getReversalCommand } from "./command-reversal.js";
 
 export type ToolMiddlewareOptions = {
   actionLog: ActionLog;
@@ -25,6 +26,30 @@ function captureFileState(args: Record<string, unknown>): FileUndoData | undefin
   } catch {
     return { type: "file", path: filePath, previousContent: null, previousExisted: false };
   }
+}
+
+function captureExecState(args: Record<string, unknown>): ExecUndoData | undefined {
+  const command = (args.command ?? args.cmd ?? args.script) as string | undefined;
+  if (!command) return undefined;
+  const cwd = (args.cwd ?? args.workingDirectory ?? args.dir) as string | undefined;
+  const reversal = getReversalCommand(command, cwd);
+  return {
+    type: "exec",
+    command,
+    cwd,
+    reverseCommand: reversal.reverseCommand,
+    canReverse: reversal.canReverse,
+  };
+}
+
+function captureUndoData(toolName: string, args: Record<string, unknown>): UndoData | undefined {
+  if (toolName === "write_file" || toolName === "edit_file") {
+    return captureFileState(args);
+  }
+  if (toolName === "exec" || toolName === "bash" || toolName === "shell") {
+    return captureExecState(args);
+  }
+  return undefined;
 }
 
 export function wrapToolWithMiddleware(tool: AgentTool, opts: ToolMiddlewareOptions): AgentTool {
@@ -55,9 +80,9 @@ export function wrapToolWithMiddleware(tool: AgentTool, opts: ToolMiddlewareOpti
         };
       }
 
-      let undoData: FileUndoData | undefined;
+      let undoData: UndoData | undefined;
       if (undoable) {
-        undoData = captureFileState(args);
+        undoData = captureUndoData(tool.name, args);
       }
 
       const action = await actionLog.record({

@@ -3,7 +3,9 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { runOnboard } from "./onboard.js";
+import { createClackPrompter } from "../wizard/clack-prompter.js";
+import { runOnboardingWizard } from "../wizard/onboarding.js";
+import { WizardCancelledError } from "../wizard/prompts.js";
 
 const HOME = os.homedir();
 const TCC_DIRS = ["Downloads", "Desktop", "Documents", "Movies", "Music", "Pictures"];
@@ -50,16 +52,24 @@ function openSystemSettings() {
   }
 }
 
+function checkApiKeys(): string[] {
+  const found: string[] = [];
+  if (process.env.OPENAI_API_KEY) found.push("OPENAI_API_KEY");
+  if (process.env.ANTHROPIC_API_KEY) found.push("ANTHROPIC_API_KEY");
+  if (process.env.GOOGLE_API_KEY) found.push("GOOGLE_API_KEY");
+  if (process.env.DEEPSEEK_API_KEY) found.push("DEEPSEEK_API_KEY");
+  return found;
+}
+
 export function setupCommand(): Command {
   return new Command("setup")
-    .description("Initialize Undoable, workspace, and macOS permissions")
+    .description("Initialize Undoable, check permissions, and run onboarding")
     .option("--workspace <dir>", "Agent workspace directory")
-    .option("--wizard", "Run onboarding wizard after setup checks", false)
-    .option("--non-interactive", "Run onboarding wizard without prompts", false)
-    .option("--mode <mode>", "Wizard mode: local|remote", "local")
-    .option("--remote-url <url>", "Remote gateway URL (for mode remote)")
-    .option("--remote-token <token>", "Remote gateway token (optional)")
+    .option("--flow <flow>", "Onboarding flow: quickstart or manual")
+    .option("--non-interactive", "Run onboarding without prompts", false)
+    .option("--accept-risk", "Acknowledge security warning", false)
     .option("--fix", "Automatically open System Settings to fix permissions")
+    .option("--skip-onboard", "Skip onboarding wizard after checks", false)
     .action(async (opts) => {
       console.log("");
       console.log(`${BOLD}  Undoable — Setup${NC}`);
@@ -75,13 +85,13 @@ export function setupCommand(): Command {
           console.log(`       ${ok ? GREEN + "✓" : RED + "✗"} ~/${dir}${NC}`);
         }
         console.log("");
-        console.log(`     ${YELLOW}Fix: System Settings → Privacy & Security → Full Disk Access${NC}`);
+        console.log(`     ${YELLOW}Fix: System Settings > Privacy & Security > Full Disk Access${NC}`);
         console.log(`     ${YELLOW}Enable your terminal app, then restart it.${NC}`);
         if (opts.fix) {
           console.log(`     ${BOLD}Opening System Settings...${NC}`);
           openSystemSettings();
         } else {
-          console.log(`     ${YELLOW}Run ${BOLD}nrn setup --fix${NC}${YELLOW} to open System Settings automatically.${NC}`);
+          console.log(`     ${YELLOW}Run ${BOLD}nrn setup --fix${NC}${YELLOW} to open automatically.${NC}`);
         }
       }
       console.log("");
@@ -94,13 +104,23 @@ export function setupCommand(): Command {
       } catch {
         console.log(`     ${RED}✗ pnpm not found — install with: npm i -g pnpm${NC}`);
       }
+      try {
+        execSync("docker --version", { encoding: "utf-8", timeout: 5000 });
+        console.log(`     ${GREEN}✓ Docker available${NC}`);
+      } catch {
+        console.log(`     ${YELLOW}⚠ Docker not found (optional, needed for sandbox mode)${NC}`);
+      }
       console.log("");
 
-      console.log(`${BOLD}  3. Environment${NC}`);
-      if (process.env.OPENAI_API_KEY) {
-        console.log(`     ${GREEN}✓ OPENAI_API_KEY is set${NC}`);
+      console.log(`${BOLD}  3. API Keys${NC}`);
+      const apiKeys = checkApiKeys();
+      if (apiKeys.length > 0) {
+        for (const key of apiKeys) {
+          console.log(`     ${GREEN}✓ ${key}${NC}`);
+        }
       } else {
-        console.log(`     ${YELLOW}⚠ OPENAI_API_KEY not set — export it before running nrn start${NC}`);
+        console.log(`     ${YELLOW}⚠ No API keys found in environment${NC}`);
+        console.log(`     ${YELLOW}  The onboarding wizard can help you configure a provider.${NC}`);
       }
       console.log("");
 
@@ -109,40 +129,30 @@ export function setupCommand(): Command {
       console.log(`     ${GREEN}✓ ${configDir}${NC}`);
       console.log("");
 
-      const hasWizardFlags =
-        opts.wizard ||
-        opts.nonInteractive ||
-        opts.mode !== "local" ||
-        Boolean(opts.remoteUrl) ||
-        Boolean(opts.remoteToken);
-
-      if (hasWizardFlags) {
-        try {
-          await runOnboard({
-            workspace: opts.workspace as string | undefined,
-            nonInteractive: Boolean(opts.nonInteractive),
-            mode: opts.mode as string | undefined,
-            remoteUrl: opts.remoteUrl as string | undefined,
-            remoteToken: opts.remoteToken as string | undefined,
-          });
-        } catch (err) {
-          console.log(`  ${RED}${BOLD}✗ Onboarding failed:${NC} ${String(err)}`);
-          process.exitCode = 1;
-          return;
+      if (opts.skipOnboard) {
+        if (fda.ok) {
+          console.log(`  ${GREEN}${BOLD}✓ Setup complete! Run: nrn start${NC}`);
+        } else {
+          console.log(`  ${YELLOW}${BOLD}⚠ Setup incomplete — Full Disk Access needed.${NC}`);
         }
+        console.log("");
+        if (!fda.ok) process.exitCode = 1;
+        return;
       }
 
-      if (fda.ok) {
-        console.log(`  ${GREEN}${BOLD}✓ Setup complete! Run: nrn start${NC}`);
-      } else {
-        console.log(`  ${YELLOW}${BOLD}⚠ Setup incomplete — Full Disk Access needed.${NC}`);
-        console.log(`  ${YELLOW}  Fix permissions, restart terminal, then run: nrn setup${NC}`);
+      const prompter = createClackPrompter();
+      try {
+        await runOnboardingWizard({
+          workspace: opts.workspace as string | undefined,
+          flow: opts.flow as string | undefined,
+          acceptRisk: Boolean(opts.acceptRisk),
+        }, prompter);
+      } catch (err) {
+        if (err instanceof WizardCancelledError) {
+          process.exit(0);
+        }
+        console.log(`  ${RED}${BOLD}✗ Onboarding failed:${NC} ${String(err)}`);
+        process.exitCode = 1;
       }
-      if (!hasWizardFlags) {
-        console.log(`  ${YELLOW}Tip:${NC} run ${BOLD}nrn setup --wizard${NC} for guided onboarding.`);
-      }
-      console.log("");
-
-      if (!fda.ok) process.exitCode = 1;
     });
 }

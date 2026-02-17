@@ -151,6 +151,42 @@ function buildInstructionsSection(instructions?: string): string[] {
   ];
 }
 
+function buildSwarmSection(): string[] {
+  return [
+    "## SWARM System",
+    "SWARM is a visual workflow orchestration system. Use it for multi-agent coordination, scheduled automation, or complex pipelines.",
+    "",
+    "### Architecture",
+    "- **Workflow**: Container holding nodes and edges. Has `enabled` flag to activate/deactivate.",
+    "- **Node**: Individual AI agent with its own prompt, schedule (cron), and connections.",
+    "- **Edge**: Directed connection from one node to another. Output of source triggers target.",
+    "",
+    "### Tool Usage Pattern",
+    "1. `swarm_create_workflow` → returns workflow ID",
+    "2. `swarm_add_node` → add nodes with prompt, optional cron schedule",
+    "3. `swarm_set_edges` → connect nodes (array of {from, to} pairs)",
+    "4. `swarm_update_workflow` with `enabled: true` → activate",
+    "",
+    "### Node Configuration",
+    "- `prompt`: Instructions for the AI agent running this node",
+    "- `cron`: Optional schedule (e.g., \"0 9 * * *\" for daily 9am)",
+    "- `position`: {x, y} for canvas placement",
+    "",
+    "### Execution Flow",
+    "- When a node runs, it creates a **run** with real-time events",
+    "- Events: STATUS_CHANGED, LLM_TOKEN, TOOL_CALL, TOOL_RESULT, RUN_COMPLETED, RUN_FAILED",
+    "- UI streams these events via SSE at `/runs/:id/events`",
+    "- Edge triggers happen after RUN_COMPLETED",
+    "",
+    "### Best Practices",
+    "- Keep node prompts focused on a single responsibility",
+    "- Use edges to pass context between nodes (output → input)",
+    "- For recurring tasks, set cron on the entry node only",
+    "- Test nodes individually with `swarm_run_node` before enabling workflow",
+    "",
+  ];
+}
+
 function buildBehaviorSection(): string[] {
   return [
     "## Behavior Rules",
@@ -161,10 +197,9 @@ function buildBehaviorSection(): string[] {
     "5. **Confirm before destructive actions** (rm, overwrite, etc.).",
     "6. Use markdown formatting for readability.",
     "7. **For long-running commands**, use exec with background=true, then poll with the process tool.",
-    "8. **Use SWARM only when it helps orchestration.** Prefer normal direct execution for one-off tasks. Use SWARM tools when the user asks for a workflow, recurring automation, scheduled jobs, or multi-step team/orchestrator behavior.",
-    "9. **When SWARM is requested, build a runnable minimal workflow first.** Create workflow, add essential nodes, set edges, and avoid unnecessary clarification loops unless critical inputs are missing.",
-    "10. **If the user asks for a simple example, provide one immediately.** Use sensible defaults and state assumptions briefly instead of asking broad follow-up questions.",
-    "11. **For data-capture requests (like market verifier + CSV), default to a concrete schema and sample rows first.** If needed, then offer optional refinements after delivering the usable example.",
+    "8. **Use SWARM only when it helps orchestration.** Prefer direct execution for one-off tasks.",
+    "9. **When SWARM is requested, build a runnable minimal workflow first.** Create workflow, add nodes, set edges, enable. Avoid unnecessary clarification.",
+    "10. **Provide concrete examples immediately.** Use sensible defaults and state assumptions briefly.",
     "",
   ];
 }
@@ -220,6 +255,7 @@ export function buildSystemPrompt(params: SystemPromptParams): string {
     ...buildSafetySection(),
     ...buildToolingSection(params.toolDefinitions),
     ...buildToolCallStyleSection(),
+    ...buildSwarmSection(),
     ...buildWorkspaceSection(params.workspaceDir),
     ...buildSkillsSection(params.skillsPrompt),
     ...buildInstructionsSection(params.agentInstructions),

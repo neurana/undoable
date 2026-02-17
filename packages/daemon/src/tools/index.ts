@@ -36,6 +36,7 @@ import { createActionTools } from "./action-tools.js";
 import { createMemoryTools } from "./memory-tools.js";
 import type { MemoryService } from "../services/memory-service.js";
 import type { SandboxExecService } from "../services/sandbox-exec.js";
+import type { ExecApprovalService } from "../services/exec-approval-service.js";
 import { createCanvasTool } from "./canvas-tools.js";
 import type { CanvasService } from "../services/canvas-service.js";
 import { createNodeTools } from "./node-tools.js";
@@ -69,6 +70,8 @@ export function createToolRegistry(deps: {
   approvalMode?: ApprovalMode;
   runId?: string;
   channelManager?: ChannelManager;
+  execApprovalService?: ExecApprovalService;
+  execSecurityBypass?: boolean;
 }): ToolRegistry {
   const connectorRegistry = deps.connectorRegistry ?? new ConnectorRegistry();
   const actionLog = new ActionLog();
@@ -77,7 +80,12 @@ export function createToolRegistry(deps: {
 
   const rawTools: AgentTool[] = [
     /* Exec & process */
-    createExecTool({ sandboxExec: deps.sandboxExec, sandboxSessionId: deps.sandboxSessionId }),
+    createExecTool({
+      sandboxExec: deps.sandboxExec,
+      sandboxSessionId: deps.sandboxSessionId,
+      securityBypass: deps.execSecurityBypass,
+      execApprovalService: deps.execApprovalService,
+    }),
     createProcessTool(),
 
     /* File operations */

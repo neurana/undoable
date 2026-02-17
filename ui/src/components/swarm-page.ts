@@ -14,35 +14,56 @@ type PositionMap = Record<string, NodePos>;
 export class SwarmPage extends LitElement {
   static styles = css`
     :host {
-      display: grid;
+      display: flex;
+      flex-direction: column;
       gap: 8px;
-      min-height: 100%;
+      height: 100%;
+      min-height: 0;
+      padding: 0 12px 12px;
+      box-sizing: border-box;
     }
     .layout {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(312px, 360px);
-      gap: 10px;
-      min-height: calc(100vh - 150px);
-      height: calc(100vh - 150px);
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+      gap: 12px;
+      flex: 1 1 0;
+      min-height: 0;
+      overflow: hidden;
     }
     .left {
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
+      display: flex;
+      flex-direction: column;
       gap: 10px;
       min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .left swarm-toolbar {
+      flex-shrink: 0;
+    }
+    .left swarm-canvas {
+      flex: 1 1 0;
       min-height: 0;
     }
     .inspector-col {
       min-height: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .inspector-col swarm-inspector {
+      flex: 1 1 0;
+      min-height: 0;
     }
     .err {
-      margin: 0 0 10px;
+      margin: 0;
       border: 1px solid rgba(192, 57, 43, 0.25);
       background: var(--danger-subtle);
       color: var(--danger);
       padding: 10px;
       border-radius: 10px;
       font-size: 13px;
+      flex-shrink: 0;
     }
     .muted {
       color: var(--text-tertiary);
@@ -57,15 +78,23 @@ export class SwarmPage extends LitElement {
         grid-template-columns: minmax(0, 1fr) 320px;
       }
     }
-    @media (max-width: 1080px) {
+    @media (max-width: 900px) {
       .layout {
         grid-template-columns: 1fr;
-        height: auto;
-        min-height: 0;
-        gap: 8px;
+        grid-template-rows: minmax(300px, 1fr) minmax(400px, 1fr);
+        overflow-y: auto;
       }
       .inspector-col {
-        min-height: 360px;
+        min-height: 400px;
+      }
+    }
+    @media (max-width: 600px) {
+      :host {
+        padding: 0 8px 8px;
+      }
+      .layout {
+        gap: 8px;
+        grid-template-rows: minmax(250px, 1fr) minmax(350px, auto);
       }
     }
   `;

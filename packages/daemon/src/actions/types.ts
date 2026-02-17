@@ -34,7 +34,9 @@ export type FileUndoData = {
 export type ExecUndoData = {
   type: "exec";
   command: string;
-  note: string;
+  cwd?: string;
+  reverseCommand?: string;
+  canReverse: boolean;
 };
 
 export type ToolCategoryMap = Record<string, ActionCategory>;
@@ -84,5 +86,5 @@ export function requiresApproval(toolName: string, mode: ApprovalMode): boolean 
 }
 
 export function isUndoableTool(toolName: string): boolean {
-  return toolName === "write_file" || toolName === "edit_file";
+  return toolName === "write_file" || toolName === "edit_file" || toolName === "exec" || toolName === "bash" || toolName === "shell";
 }

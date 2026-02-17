@@ -105,6 +105,17 @@ export const api = {
       request<{ deleted: boolean }>(`/swarm/workflows/${workflowId}/edges?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { method: "DELETE" }),
     listNodeRuns: (workflowId: string, nodeId: string) =>
       request<{ jobId: string | null; runs: RunItem[] }>(`/swarm/workflows/${workflowId}/nodes/${nodeId}/runs`),
+    runNode: (workflowId: string, nodeId: string) =>
+      request<RunItem>(`/swarm/workflows/${workflowId}/nodes/${nodeId}/run`, { method: "POST" }),
+  },
+  undo: {
+    list: () => request<UndoListResult>("/chat/undo", { method: "POST", body: JSON.stringify({ action: "list" }) }),
+    undoOne: (id: string) => request<UndoOneResult>("/chat/undo", { method: "POST", body: JSON.stringify({ action: "one", id }) }),
+    undoLast: (count = 1) => request<UndoManyResult>("/chat/undo", { method: "POST", body: JSON.stringify({ action: "last", count }) }),
+    undoAll: () => request<UndoManyResult>("/chat/undo", { method: "POST", body: JSON.stringify({ action: "all" }) }),
+    redoOne: (id: string) => request<UndoOneResult>("/chat/undo", { method: "POST", body: JSON.stringify({ action: "redo_one", id }) }),
+    redoLast: (count = 1) => request<UndoManyResult>("/chat/undo", { method: "POST", body: JSON.stringify({ action: "redo_last", count }) }),
+    redoAll: () => request<UndoManyResult>("/chat/undo", { method: "POST", body: JSON.stringify({ action: "redo_all" }) }),
   },
   gateway: {
     call: (method: string, params: Record<string, unknown> = {}) => gatewayRequest<unknown>(method, params),
@@ -402,4 +413,32 @@ export type SessionDetailItem = {
   messageCount: number;
   createdAt: number;
   updatedAt: number;
+};
+
+export type UndoActionSummary = {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  startedAt: string;
+};
+
+export type UndoResult = {
+  actionId: string;
+  toolName: string;
+  success: boolean;
+  error?: string;
+  note?: string;
+};
+
+export type UndoListResult = {
+  undoable: UndoActionSummary[];
+  redoable: UndoActionSummary[];
+};
+
+export type UndoOneResult = {
+  result: UndoResult;
+};
+
+export type UndoManyResult = {
+  results: UndoResult[];
 };

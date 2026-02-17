@@ -60,9 +60,14 @@ type ActiveChatRun = {
 
 const activeChatRuns = new Map<string, ActiveChatRun>();
 let chatRunCounter = 0;
+let sessionCounter = 0;
 
 function generateRunId(): string {
   return `run-${Date.now()}-${++chatRunCounter}`;
+}
+
+function generateSessionId(): string {
+  return `chat-${Date.now()}-${++sessionCounter}`;
 }
 
 export type ChatRouteConfig = {
@@ -446,7 +451,10 @@ export function chatRoutes(
   });
 
   app.post<{ Body: { message: string; sessionId?: string; agentId?: string; model?: string; attachments?: ChatAttachment[] } }>("/chat", async (req, reply) => {
-    const { message, sessionId = "default", agentId, model: requestModel, attachments } = req.body;
+    const { message, agentId, model: requestModel, attachments } = req.body;
+    // Create new session if no sessionId provided (or empty string)
+    const sessionId = req.body.sessionId || generateSessionId();
+    const isNewSession = !req.body.sessionId;
     if (!message?.trim() && (!attachments || attachments.length === 0)) {
       return reply.code(400).send({ error: "message or attachments required" });
     }
@@ -550,7 +558,8 @@ export function chatRoutes(
     }
 
     sse({
-      type: "session_info", mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode(),
+      type: "session_info", sessionId: isNewSession ? sessionId : undefined,
+      mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode(),
       dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
       thinking: thinkingConfig.level, reasoningVisibility: thinkingConfig.visibility,
       model: activeConf.model, provider: activeConf.provider, canThink: canThink(),

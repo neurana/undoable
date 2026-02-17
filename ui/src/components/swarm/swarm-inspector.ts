@@ -1,6 +1,7 @@
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { RunItem, SwarmNodePatchInput, SwarmNodeType, SwarmWorkflow, SwarmWorkflowNode } from "../../api/client.js";
+import "./swarm-activity-stream.js";
 
 type RegistrySkillSearchItem = {
   reference: string;
@@ -24,18 +25,26 @@ export class SwarmInspector extends LitElement {
       flex-direction: column;
       background: var(--surface-1);
       min-height: 0;
+      min-width: 0;
+      height: 100%;
       overflow: hidden;
+      border-radius: 12px;
+      border: 1px solid var(--border-divider);
     }
     .body {
-      padding: 10px;
+      padding: 12px;
       overflow-y: auto;
       overflow-x: hidden;
-      flex: 1;
+      flex: 1 1 0;
       min-height: 0;
-      display: grid;
-      gap: 8px;
-      align-content: start;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
+    .body::-webkit-scrollbar { width: 6px; }
+    .body::-webkit-scrollbar-track { background: transparent; }
+    .body::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
     .panel-head {
       border: 1px solid var(--border-divider);
       border-radius: 10px;
@@ -43,6 +52,9 @@ export class SwarmInspector extends LitElement {
       padding: 10px;
       display: grid;
       gap: 8px;
+      flex-shrink: 0;
+      min-width: 0;
+      overflow: hidden;
     }
     .panel-title {
       display: flex;
@@ -101,10 +113,13 @@ export class SwarmInspector extends LitElement {
     .section {
       border: 1px solid var(--border-divider);
       border-radius: 10px;
-      padding: 9px;
+      padding: 10px;
       background: var(--surface-1);
       display: grid;
       gap: 8px;
+      flex-shrink: 0;
+      min-width: 0;
+      overflow: hidden;
     }
     .input, .select, .textarea {
       border: 1px solid var(--border-strong);
@@ -112,11 +127,14 @@ export class SwarmInspector extends LitElement {
       background: var(--surface-1);
       color: var(--text-primary);
       font: inherit;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
     }
     .input, .select { height: 32px; padding: 0 10px; }
     .textarea { min-height: 84px; padding: 8px 10px; resize: vertical; }
-    .row { display: grid; gap: 6px; }
-    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .row { display: grid; gap: 6px; min-width: 0; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; min-width: 0; }
     .inline {
       display: flex;
       align-items: center;
@@ -188,6 +206,47 @@ export class SwarmInspector extends LitElement {
     .run-id { font-family: var(--mono); color: var(--text-secondary); }
     .run-time { font-size: 11px; color: var(--text-tertiary); }
     .muted { font-size: 12px; color: var(--text-tertiary); }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border-divider);
+      background: var(--surface-2);
+      flex-shrink: 0;
+    }
+    .tab {
+      padding: 6px 12px;
+      border: none;
+      background: transparent;
+      color: var(--text-tertiary);
+      font-size: 12px;
+      cursor: pointer;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tab:hover { background: var(--wash); color: var(--text-secondary); }
+    .tab.active { background: var(--surface-1); color: var(--text-primary); font-weight: 500; }
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--mint-strong);
+      animation: blink 1s infinite;
+    }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .activity-area {
+      flex: 1 1 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .activity-area swarm-activity-stream {
+      flex: 1 1 0;
+      min-height: 0;
+    }
     @media (max-width: 920px) {
       .row2 { grid-template-columns: 1fr; }
       .inline { align-items: flex-start; flex-direction: column; }
@@ -201,6 +260,8 @@ export class SwarmInspector extends LitElement {
   @property({ attribute: false }) node: SwarmWorkflowNode | null = null;
   @property({ attribute: false }) runs: RunItem[] = [];
   @property({ type: Boolean }) busy = false;
+  @property() activeRunId = "";
+  @state() private activeTab: "config" | "activity" = "config";
   @state() private edgeTarget = "";
   @state() private skillSearchQuery = "find skills";
   @state() private skillSearching = false;
@@ -213,6 +274,11 @@ export class SwarmInspector extends LitElement {
       this.skillSearchError = "";
       this.skillSearchResults = [];
       this.skillSearchQuery = "find skills";
+    }
+    if (changed.has("activeRunId")) {
+      const prev = changed.get("activeRunId") as string | undefined;
+      if (this.activeRunId && !prev) this.activeTab = "activity";
+      if (!this.activeRunId && prev) this.activeTab = "config";
     }
   }
 
@@ -288,7 +354,20 @@ export class SwarmInspector extends LitElement {
     const edgeTargets = this.workflow.nodes.filter((n) => n.id !== this.node?.id);
 
     return html`
-      <div class="body">
+      ${this.activeRunId ? html`
+        <div class="tabs">
+          <button class="tab ${this.activeTab === 'config' ? 'active' : ''}" @click=${() => this.activeTab = 'config'}>Config</button>
+          <button class="tab ${this.activeTab === 'activity' ? 'active' : ''}" @click=${() => this.activeTab = 'activity'}>
+            Live Activity
+            <span class="live-dot"></span>
+          </button>
+        </div>
+      ` : nothing}
+      ${this.activeTab === 'activity' && this.activeRunId ? html`
+        <div class="activity-area">
+          <swarm-activity-stream .runId=${this.activeRunId} .nodeName=${this.node.name}></swarm-activity-stream>
+        </div>
+      ` : html`<div class="body">
         <div class="panel-head">
           <div class="panel-title">
             <span class="name">${this.node.name}</span>
@@ -385,9 +464,10 @@ export class SwarmInspector extends LitElement {
           </div>
           <div class="actions">
             <button class="btn" ?disabled=${this.busy} @click=${() => this.emit("node-save", this.buildPatch())}>Save</button>
-            <button class="btn btn-secondary" ?disabled=${this.busy} @click=${() => this.emit("node-run-history")}>Refresh runs</button>
-            <button class="btn btn-secondary" ?disabled=${this.busy || !this.edgeTarget} @click=${() => this.emit("edge-link", { to: this.edgeTarget })}>Link selected → target</button>
-            <button class="btn btn-danger" ?disabled=${this.busy} @click=${() => this.emit("node-delete")}>Delete node</button>
+            <button class="btn" ?disabled=${this.busy} @click=${() => this.emit("node-run")}>Run</button>
+            <button class="btn btn-secondary" ?disabled=${this.busy} @click=${() => this.emit("node-run-history")}>Refresh</button>
+            <button class="btn btn-secondary" ?disabled=${this.busy || !this.edgeTarget} @click=${() => this.emit("edge-link", { to: this.edgeTarget })}>Link</button>
+            <button class="btn btn-danger" ?disabled=${this.busy} @click=${() => this.emit("node-delete")}>Delete</button>
           </div>
         </div>
 
@@ -416,7 +496,7 @@ export class SwarmInspector extends LitElement {
             </div>
           `)}
         </div>
-      </div>
+      </div>`}
     `;
   }
 }

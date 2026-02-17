@@ -1,4 +1,4 @@
-import { LitElement, css, html } from "lit";
+import { LitElement, css, html, nothing } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import type { SwarmWorkflow } from "../../api/client.js";
 
@@ -13,7 +13,9 @@ export class SwarmCanvas extends LitElement {
       width: 100%;
       height: 100%;
       background: var(--surface-1);
-      overflow: auto;
+      overflow: hidden;
+      border-radius: 12px;
+      border: 1px solid var(--border-divider);
     }
     .canvas-stage {
       width: 100%;
@@ -22,6 +24,10 @@ export class SwarmCanvas extends LitElement {
       overflow: auto;
       background: radial-gradient(circle at 1px 1px, var(--hatch-line) 1px, transparent 0) 0 0 / 18px 18px, var(--surface-2);
     }
+    .canvas-stage::-webkit-scrollbar { width: 8px; height: 8px; }
+    .canvas-stage::-webkit-scrollbar-track { background: transparent; }
+    .canvas-stage::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+    .canvas-stage::-webkit-scrollbar-corner { background: transparent; }
     .scene {
       position: relative;
       min-width: 100%;
@@ -44,12 +50,31 @@ export class SwarmCanvas extends LitElement {
       cursor: grab;
       user-select: none;
     }
-    .node:active {
-      cursor: grabbing;
-    }
+    .node:active { cursor: grabbing; }
     .node[data-selected] {
       border-color: var(--mint-strong);
       box-shadow: 0 0 0 1px var(--mint-strong), var(--shadow-card);
+    }
+    .node[data-running] {
+      border-color: var(--mint-strong);
+      box-shadow: 0 0 0 2px rgba(46, 69, 57, 0.15);
+    }
+    .node[data-running] .dot { animation: pulse 1.5s ease-in-out infinite; }
+    .node[data-running]::before {
+      content: "RUNNING";
+      position: absolute;
+      top: -8px;
+      right: 8px;
+      font-size: 9px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--mint-strong);
+      color: white;
+      font-weight: 600;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(1.3); }
     }
     .node-top {
       padding: 10px 12px;
@@ -106,9 +131,7 @@ export class SwarmCanvas extends LitElement {
       background: var(--danger);
       flex-shrink: 0;
     }
-    .dot.live {
-      background: var(--mint-strong);
-    }
+    .dot.live { background: var(--mint-strong); }
     .empty {
       display: grid;
       place-items: center;
@@ -118,16 +141,60 @@ export class SwarmCanvas extends LitElement {
       padding: 24px;
       text-align: center;
     }
+    .empty-guide {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      text-align: center;
+      color: var(--text-tertiary);
+    }
+    .empty-guide svg {
+      width: 64px;
+      height: 64px;
+      stroke: var(--mint-strong);
+      stroke-width: 1.5;
+      fill: none;
+      opacity: 0.6;
+    }
+    .empty-guide-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+    .empty-guide-text {
+      font-size: 12px;
+      line-height: 1.5;
+      max-width: 240px;
+    }
+    .empty-guide-hint {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      background: var(--surface-1);
+      border: 1px dashed var(--border-strong);
+    }
+    .empty-guide-hint svg {
+      width: 14px;
+      height: 14px;
+      opacity: 1;
+    }
     @media (max-width: 768px) {
-      .node {
-        width: 200px;
-      }
+      .node { width: 200px; }
     }
   `;
 
   @property({ attribute: false }) workflow: SwarmWorkflow | null = null;
   @property() selectedNodeId = "";
   @property({ attribute: false }) positions: Record<string, NodePos> = {};
+  @property({ attribute: false }) activeRunsByNode: Record<string, string> = {};
 
   private drag?: { nodeId: string; pointerId: number; offsetX: number; offsetY: number };
 
@@ -222,10 +289,25 @@ export class SwarmCanvas extends LitElement {
     const workflow = this.workflow;
     if (!workflow) return html`<div class="empty">Create or select a workflow</div>`;
     const size = this.sceneSize(workflow);
+    const hasNodes = workflow.nodes.length > 0;
 
     return html`
       <div class="canvas-stage">
         <div class="scene" style=${`width:${size.width}px;height:${size.height}px;`}>
+          ${!hasNodes ? html`
+            <div class="empty-guide">
+              <svg viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 8v8M8 12h8"/>
+              </svg>
+              <div class="empty-guide-title">No nodes yet</div>
+              <div class="empty-guide-text">Add your first node to start building your AI workflow</div>
+              <div class="empty-guide-hint">
+                <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+                Click "+ Node" in the toolbar
+              </div>
+            </div>
+          ` : nothing}
           <svg class="edges" viewBox=${`0 0 ${size.width} ${size.height}`} preserveAspectRatio="none">
             ${workflow.edges.map((edge) => {
               const fromIndex = workflow.nodes.findIndex((n) => n.id === edge.from);
@@ -240,10 +322,12 @@ export class SwarmCanvas extends LitElement {
           </svg>
           ${workflow.nodes.map((node, idx) => {
             const pos = this.getPos(node.id, idx);
+            const isRunning = !!this.activeRunsByNode[node.id];
             return html`
               <div
                 class="node"
                 ?data-selected=${node.id === this.selectedNodeId}
+                ?data-running=${isRunning}
                 style=${`left:${pos.x}px;top:${pos.y}px;`}
                 @pointerdown=${(e: PointerEvent) => this.startDrag(e, node.id, idx)}
                 @click=${() => this.emit("node-select", { nodeId: node.id })}

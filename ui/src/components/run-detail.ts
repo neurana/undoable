@@ -149,6 +149,7 @@ export class RunDetail extends LitElement {
   `;
 
   @property() runId = "";
+  @property() backLabel = "Back to Jobs";
   @state() private run: RunItem | null = null;
   @state() private events: RunEvent[] = [];
   @state() private streamedContent = "";
@@ -252,7 +253,7 @@ export class RunDetail extends LitElement {
 
     return html`
       <div class="header">
-        <button class="back" @click=${this.back}>← Back to Jobs</button>
+        <button class="back" @click=${this.back}>← ${this.backLabel}</button>
         <h2>${r.instruction}</h2>
         <span class="status status-${r.status}">${r.status}</span>
       </div>

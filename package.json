@@ -13,10 +13,15 @@
     "lint": "oxlint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
   },
   "devDependencies": {
     "@types/node": "^25.2.3",
+    "drizzle-kit": "^0.30.4",
     "oxlint": "^0.16.10",
     "tsdown": "^0.20.3",
     "tsx": "^4.21.0",
