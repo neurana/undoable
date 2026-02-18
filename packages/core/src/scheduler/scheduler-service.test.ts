@@ -234,6 +234,41 @@ describe("SchedulerService", () => {
       expect(executed).toHaveLength(0);
       await cleanup();
     });
+
+    it("executes due jobs in parallel on timer ticks", async () => {
+      const starts = new Map<string, number>();
+      const { svc, cleanup } = await setup({
+        enabled: true,
+        executor: async (job) => {
+          starts.set(job.id, Date.now());
+          await new Promise((resolve) => setTimeout(resolve, 140));
+          return { status: "ok" as const };
+        },
+      });
+      await svc.start();
+
+      const at = new Date(Date.now() + 80).toISOString();
+      await svc.add({
+        name: "parallel-a",
+        enabled: true,
+        schedule: { kind: "at", at },
+        payload: { kind: "event", text: "A" },
+      });
+      await svc.add({
+        name: "parallel-b",
+        enabled: true,
+        schedule: { kind: "at", at },
+        payload: { kind: "event", text: "B" },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 600));
+
+      const observed = [...starts.values()];
+      expect(observed).toHaveLength(2);
+      const deltaMs = Math.abs(observed[0]! - observed[1]!);
+      expect(deltaMs).toBeLessThan(100);
+      await cleanup();
+    });
   });
 
   describe("persistence", () => {

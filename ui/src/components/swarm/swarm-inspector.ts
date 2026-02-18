@@ -23,16 +23,18 @@ export class SwarmInspector extends LitElement {
     :host {
       display: flex;
       flex-direction: column;
-      background: var(--surface-1);
+      background:
+        radial-gradient(circle at 100% -18%, rgba(174, 231, 199, 0.24), transparent 34%),
+        linear-gradient(180deg, rgba(253, 254, 253, 0.98), rgba(246, 250, 248, 0.94));
       min-height: 0;
       min-width: 0;
       height: 100%;
       overflow: hidden;
-      border-radius: 12px;
-      border: 1px solid var(--border-divider);
+      border-radius: 0;
+      border: none;
     }
     .body {
-      padding: 12px;
+      padding: 14px;
       overflow-y: auto;
       overflow-x: hidden;
       flex: 1 1 0;
@@ -40,30 +42,33 @@ export class SwarmInspector extends LitElement {
       min-width: 0;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 12px;
     }
     .body::-webkit-scrollbar { width: 6px; }
     .body::-webkit-scrollbar-track { background: transparent; }
     .body::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
     .panel-head {
       border: 1px solid var(--border-divider);
-      border-radius: 10px;
-      background: var(--surface-2);
-      padding: 10px;
+      border-radius: 14px;
+      background:
+        linear-gradient(180deg, rgba(253, 254, 253, 0.96), rgba(246, 250, 248, 0.92));
+      padding: 12px;
       display: grid;
-      gap: 8px;
+      gap: 10px;
       flex-shrink: 0;
       min-width: 0;
       overflow: hidden;
+      box-shadow: 0 8px 18px rgba(17, 26, 23, 0.06);
+      animation: panel-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
     }
     .panel-title {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
+      gap: 10px;
     }
     .name {
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 600;
       color: var(--text-primary);
       overflow: hidden;
@@ -73,11 +78,13 @@ export class SwarmInspector extends LitElement {
     .chip {
       font-size: 10px;
       border-radius: 999px;
-      padding: 2px 8px;
+      padding: 3px 9px;
       border: 1px solid var(--border-strong);
-      background: var(--surface-1);
+      background: rgba(253, 254, 253, 0.86);
       color: var(--text-secondary);
       white-space: nowrap;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
     }
     .chip.live {
       background: color-mix(in srgb, var(--accent-subtle) 85%, transparent);
@@ -112,29 +119,39 @@ export class SwarmInspector extends LitElement {
     }
     .section {
       border: 1px solid var(--border-divider);
-      border-radius: 10px;
-      padding: 10px;
-      background: var(--surface-1);
+      border-radius: 14px;
+      padding: 11px;
+      background:
+        linear-gradient(180deg, rgba(253, 254, 253, 0.95), rgba(246, 250, 248, 0.9));
       display: grid;
-      gap: 8px;
+      gap: 10px;
       flex-shrink: 0;
       min-width: 0;
       overflow: hidden;
+      box-shadow: 0 5px 14px rgba(17, 26, 23, 0.05);
+      animation: panel-in 260ms cubic-bezier(0.22, 1, 0.36, 1);
     }
     .input, .select, .textarea {
       border: 1px solid var(--border-strong);
-      border-radius: 10px;
-      background: var(--surface-1);
+      border-radius: 11px;
+      background: rgba(253, 254, 253, 0.96);
       color: var(--text-primary);
       font: inherit;
       width: 100%;
       max-width: 100%;
       box-sizing: border-box;
+      transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
     }
-    .input, .select { height: 32px; padding: 0 10px; }
-    .textarea { min-height: 84px; padding: 8px 10px; resize: vertical; }
-    .row { display: grid; gap: 6px; min-width: 0; }
-    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; min-width: 0; }
+    .input, .select { height: 34px; padding: 0 11px; }
+    .textarea { min-height: 88px; padding: 9px 11px; resize: vertical; }
+    .input:focus, .select:focus, .textarea:focus {
+      outline: none;
+      border-color: var(--mint-strong);
+      box-shadow: 0 0 0 3px rgba(171, 204, 186, 0.2);
+      background: var(--surface-1);
+    }
+    .row { display: grid; gap: 7px; min-width: 0; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; min-width: 0; }
     .inline {
       display: flex;
       align-items: center;
@@ -142,11 +159,41 @@ export class SwarmInspector extends LitElement {
       gap: 10px;
       font-size: 12px;
       color: var(--text-secondary);
+      line-height: 1.45;
     }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
-    .btn { height: 32px; border: none; border-radius: 10px; padding: 0 12px; font-size: 12px; cursor: pointer; background: var(--dark); color: #fff; }
-    .btn-secondary { background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--border-strong); }
-    .btn-danger { background: var(--danger-subtle); color: var(--danger); border: 1px solid rgba(192,57,43,0.18); }
+    .btn {
+      height: 34px;
+      border: none;
+      border-radius: 10px;
+      padding: 0 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--dark);
+      color: #fff;
+      transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease, opacity 180ms ease;
+    }
+    .btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 22px rgba(17, 26, 23, 0.14);
+    }
+    .btn:disabled, .btn-mini:disabled {
+      opacity: 0.58;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    .btn-secondary {
+      background: rgba(253, 254, 253, 0.82);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-strong);
+    }
+    .btn-danger {
+      background: var(--danger-subtle);
+      color: var(--danger);
+      border: 1px solid rgba(192,57,43,0.2);
+    }
     .skill-search-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -154,30 +201,32 @@ export class SwarmInspector extends LitElement {
       align-items: center;
     }
     .btn-mini {
-      height: 30px;
-      border-radius: 9px;
+      height: 32px;
+      border-radius: 10px;
       border: 1px solid var(--border-strong);
-      background: var(--surface-1);
+      background: rgba(253, 254, 253, 0.88);
       color: var(--text-secondary);
-      padding: 0 10px;
+      padding: 0 11px;
       font-size: 11px;
+      font-weight: 500;
       cursor: pointer;
+      transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 160ms ease;
     }
-    .btn-mini:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
+    .btn-mini:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 7px 14px rgba(17, 26, 23, 0.08);
     }
     .skill-results {
       display: grid;
       gap: 6px;
-      max-height: 180px;
+      max-height: 196px;
       overflow: auto;
     }
     .skill-item {
       border: 1px solid var(--border-divider);
-      border-radius: 9px;
-      padding: 7px 8px;
-      background: var(--surface-2);
+      border-radius: 10px;
+      padding: 8px;
+      background: rgba(246, 250, 248, 0.92);
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -201,33 +250,53 @@ export class SwarmInspector extends LitElement {
       font-size: 11px;
       color: var(--danger);
     }
-    .run { border: 1px solid var(--border-divider); border-radius: 10px; padding: 8px; display: grid; gap: 8px; background: var(--surface-2); }
+    .run {
+      border: 1px solid var(--border-divider);
+      border-radius: 11px;
+      padding: 9px;
+      display: grid;
+      gap: 8px;
+      background: rgba(246, 250, 248, 0.92);
+    }
     .run-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
     .run-id { font-family: var(--mono); color: var(--text-secondary); }
     .run-time { font-size: 11px; color: var(--text-tertiary); }
     .muted { font-size: 12px; color: var(--text-tertiary); }
+    .hint { font-size: 11px; color: var(--text-tertiary); line-height: 1.4; }
     .tabs {
       display: flex;
       gap: 4px;
-      padding: 6px 10px;
+      padding: 8px 12px;
       border-bottom: 1px solid var(--border-divider);
-      background: var(--surface-2);
+      background: rgba(246, 250, 248, 0.92);
       flex-shrink: 0;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
     }
     .tab {
-      padding: 6px 12px;
+      padding: 7px 13px;
       border: none;
       background: transparent;
       color: var(--text-tertiary);
       font-size: 12px;
       cursor: pointer;
-      border-radius: 6px;
+      border-radius: 8px;
       display: flex;
       align-items: center;
       gap: 6px;
+      transition: all 180ms cubic-bezier(0.22, 1, 0.36, 1);
     }
-    .tab:hover { background: var(--wash); color: var(--text-secondary); }
-    .tab.active { background: var(--surface-1); color: var(--text-primary); font-weight: 500; }
+    .tab:hover {
+      transform: translateY(-1px);
+      background: var(--wash);
+      color: var(--text-secondary);
+    }
+    .tab.active {
+      background: var(--surface-1);
+      color: var(--text-primary);
+      font-weight: 600;
+      box-shadow: 0 6px 14px rgba(17, 26, 23, 0.08);
+    }
     .live-dot {
       width: 6px;
       height: 6px;
@@ -236,6 +305,16 @@ export class SwarmInspector extends LitElement {
       animation: blink 1s infinite;
     }
     @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    @keyframes panel-in {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
     .activity-area {
       flex: 1 1 0;
       min-height: 0;
@@ -253,6 +332,24 @@ export class SwarmInspector extends LitElement {
       .skill-search-row {
         grid-template-columns: 1fr;
       }
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }
+      .btn, .btn-mini {
+        width: 100%;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .panel-head,
+      .section,
+      .tab,
+      .btn,
+      .btn-mini,
+      .live-dot {
+        animation: none !important;
+        transition: none !important;
+      }
     }
   `;
 
@@ -267,6 +364,11 @@ export class SwarmInspector extends LitElement {
   @state() private skillSearching = false;
   @state() private skillSearchError = "";
   @state() private skillSearchResults: RegistrySkillSearchItem[] = [];
+  @state() private scheduleMode: "manual" | "dependency" | "every" | "at" | "cron" = "manual";
+  @state() private scheduleEverySeconds = "60";
+  @state() private scheduleAtISO = "";
+  @state() private scheduleCronExpr = "0 9 * * *";
+  @state() private scheduleTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
   protected willUpdate(changed: Map<PropertyKey, unknown>) {
     if (changed.has("node")) {
@@ -274,6 +376,7 @@ export class SwarmInspector extends LitElement {
       this.skillSearchError = "";
       this.skillSearchResults = [];
       this.skillSearchQuery = "find skills";
+      this.hydrateScheduleDraft();
     }
     if (changed.has("activeRunId")) {
       const prev = changed.get("activeRunId") as string | undefined;
@@ -297,6 +400,47 @@ export class SwarmInspector extends LitElement {
     if (["completed", "done", "success"].includes(status)) return "status-done";
     if (["failed", "cancelled", "error"].includes(status)) return "status-failed";
     return "";
+  }
+
+  private hydrateScheduleDraft() {
+    const schedule = this.node?.schedule;
+    if (!schedule) {
+      this.scheduleMode = "manual";
+      return;
+    }
+
+    this.scheduleMode = schedule.mode;
+    if (schedule.mode === "every") {
+      const seconds = Math.max(1, Math.round((schedule.everyMs ?? 60_000) / 1000));
+      this.scheduleEverySeconds = String(seconds);
+    } else if (!this.scheduleEverySeconds) {
+      this.scheduleEverySeconds = "60";
+    }
+
+    if (schedule.mode === "at") {
+      this.scheduleAtISO = schedule.at ?? "";
+    } else if (!this.scheduleAtISO) {
+      this.scheduleAtISO = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    }
+
+    if (schedule.mode === "cron") {
+      this.scheduleCronExpr = schedule.expr ?? "0 9 * * *";
+      this.scheduleTimezone = schedule.tz ?? this.scheduleTimezone;
+    } else if (!this.scheduleCronExpr) {
+      this.scheduleCronExpr = "0 9 * * *";
+    }
+  }
+
+  private scheduleChip(): string {
+    if (!this.node) return "manual";
+    const schedule = this.node.schedule;
+    if (schedule.mode === "every") {
+      const seconds = Math.max(1, Math.round((schedule.everyMs ?? 60_000) / 1000));
+      return `every ${seconds}s`;
+    }
+    if (schedule.mode === "at") return `at ${schedule.at}`;
+    if (schedule.mode === "cron") return `cron ${schedule.expr}`;
+    return schedule.mode;
   }
 
   private async searchSkillsRegistry() {
@@ -338,6 +482,31 @@ export class SwarmInspector extends LitElement {
     const agentInput = this.renderRoot.querySelector<HTMLInputElement>("#agent");
     const skillsInput = this.renderRoot.querySelector<HTMLInputElement>("#skills");
     const enabledInput = this.renderRoot.querySelector<HTMLInputElement>("#enabled");
+    const scheduleMode = this.scheduleMode;
+
+    const schedule: SwarmNodePatchInput["schedule"] =
+      scheduleMode === "manual" || scheduleMode === "dependency"
+        ? { mode: scheduleMode }
+        : scheduleMode === "every"
+          ? {
+            mode: "every",
+            everySeconds: Number.isFinite(Number(this.scheduleEverySeconds))
+              && Number(this.scheduleEverySeconds) > 0
+              ? Number(this.scheduleEverySeconds)
+              : 60,
+          }
+          : scheduleMode === "at"
+            ? {
+              mode: "at",
+              at: this.scheduleAtISO.trim()
+                || (this.node?.schedule.mode === "at" ? this.node.schedule.at : new Date(Date.now() + 60 * 60 * 1000).toISOString()),
+            }
+            : {
+              mode: "cron",
+              expr: this.scheduleCronExpr.trim()
+                || (this.node?.schedule.mode === "cron" ? this.node.schedule.expr : "0 9 * * *"),
+              tz: this.scheduleTimezone.trim() || undefined,
+            };
 
     return {
       name: nameInput?.value.trim() ?? "",
@@ -345,6 +514,7 @@ export class SwarmInspector extends LitElement {
       prompt: promptInput?.value.trim() ?? "",
       agentId: agentInput?.value.trim() ?? "",
       skillRefs: (skillsInput?.value ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+      schedule,
       enabled: enabledInput?.checked ?? true,
     };
   }
@@ -375,7 +545,7 @@ export class SwarmInspector extends LitElement {
           </div>
           <div class="chips">
             <span class="chip ${this.node.enabled ? "live" : ""}">${this.node.enabled ? "Enabled" : "Disabled"}</span>
-            <span class="chip">${this.node.schedule.mode}</span>
+            <span class="chip">${this.scheduleChip()}</span>
             ${this.node.jobId ? html`<span class="chip">job ${this.node.jobId.slice(0, 8)}</span>` : html`<span class="chip">no job</span>`}
           </div>
         </div>
@@ -405,6 +575,96 @@ export class SwarmInspector extends LitElement {
           <div class="row">
             <div class="label">Prompt</div>
             <textarea id="prompt" class="textarea" ?disabled=${this.busy}>${this.node.prompt ?? ""}</textarea>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="row2">
+            <div class="row">
+              <div class="label">Schedule mode</div>
+              <select
+                id="schedule-mode"
+                class="select"
+                .value=${this.scheduleMode}
+                ?disabled=${this.busy}
+                @change=${(e: Event) => {
+                  this.scheduleMode = (e.target as HTMLSelectElement).value as typeof this.scheduleMode;
+                }}
+              >
+                <option value="manual">manual</option>
+                <option value="dependency">dependency</option>
+                <option value="every">every</option>
+                <option value="at">at</option>
+                <option value="cron">cron</option>
+              </select>
+            </div>
+            <div class="row">
+              <div class="label">Run model</div>
+              <div class="hint">
+                <strong>manual/dependency</strong> run on demand. <strong>every/cron/at</strong> run through persistent scheduler jobs (24/7 capable while daemon is running).
+              </div>
+            </div>
+            ${this.scheduleMode === "every" ? html`
+              <div class="row">
+                <div class="label">Every (seconds)</div>
+                <input
+                  id="schedule-every"
+                  class="input"
+                  type="number"
+                  min="1"
+                  .value=${this.scheduleEverySeconds}
+                  ?disabled=${this.busy}
+                  @input=${(e: Event) => {
+                    this.scheduleEverySeconds = (e.target as HTMLInputElement).value;
+                  }}
+                />
+              </div>
+            ` : nothing}
+            ${this.scheduleMode === "at" ? html`
+              <div class="row">
+                <div class="label">At (ISO)</div>
+                <input
+                  id="schedule-at"
+                  class="input"
+                  .value=${this.scheduleAtISO}
+                  placeholder="2026-02-17T14:00:00Z"
+                  ?disabled=${this.busy}
+                  @input=${(e: Event) => {
+                    this.scheduleAtISO = (e.target as HTMLInputElement).value;
+                  }}
+                />
+              </div>
+            ` : nothing}
+            ${this.scheduleMode === "cron" ? html`
+              <div class="row">
+                <div class="label">Cron expression</div>
+                <input
+                  id="schedule-cron"
+                  class="input"
+                  .value=${this.scheduleCronExpr}
+                  placeholder="0 * * * *"
+                  ?disabled=${this.busy}
+                  @input=${(e: Event) => {
+                    this.scheduleCronExpr = (e.target as HTMLInputElement).value;
+                  }}
+                />
+              </div>
+            ` : nothing}
+            ${this.scheduleMode === "cron" ? html`
+              <div class="row">
+                <div class="label">Timezone</div>
+                <input
+                  id="schedule-timezone"
+                  class="input"
+                  .value=${this.scheduleTimezone}
+                  placeholder="America/New_York"
+                  ?disabled=${this.busy}
+                  @input=${(e: Event) => {
+                    this.scheduleTimezone = (e.target as HTMLInputElement).value;
+                  }}
+                />
+              </div>
+            ` : nothing}
           </div>
         </div>
 

@@ -27,13 +27,15 @@ services:
       - "7433:7433"
     environment:
       NODE_ENV: production
-      PORT: "7433"
+      NRN_PORT: "7433"
       DATABASE_URL: "postgresql://undoable:undoable_dev@postgres:5432/undoable"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - undoable-home:/home/node/.undoable
     networks:
       - undoable-network
     restart: unless-stopped
@@ -59,3 +61,4 @@ networks:
 
 volumes:
   pgdata:
+  undoable-home:

@@ -44,6 +44,8 @@ import type { SwarmService } from "../services/swarm-service.js";
 import { createSwarmTools } from "./swarm/index.js";
 import type { ChannelManager } from "../channels/channel-manager.js";
 import { createChannelTools } from "./channel-tools.js";
+import { createSkillsTools } from "./skills-tools.js";
+import type { SkillsService } from "../services/skills-service.js";
 
 export type { AgentTool, ToolDefinition, ToolExecutor, ToolResult } from "./types.js";
 
@@ -72,6 +74,7 @@ export function createToolRegistry(deps: {
   channelManager?: ChannelManager;
   execApprovalService?: ExecApprovalService;
   execSecurityBypass?: boolean;
+  skillsService?: SkillsService;
 }): ToolRegistry {
   const connectorRegistry = deps.connectorRegistry ?? new ConnectorRegistry();
   const actionLog = new ActionLog();
@@ -111,8 +114,11 @@ export function createToolRegistry(deps: {
     /* Workflow & scheduling */
     ...createWorkflowTools(deps.runManager, deps.scheduler),
 
+    /* Skills (skills.sh) */
+    ...(deps.skillsService ? createSkillsTools(deps.skillsService) : []),
+
     /* SWARM workflows */
-    ...(deps.swarmService ? createSwarmTools(deps.swarmService, deps.runManager) : []),
+    ...(deps.swarmService ? createSwarmTools(deps.swarmService, deps.runManager, deps.scheduler) : []),
 
     /* Connectors */
     ...createConnectorTools(connectorRegistry),

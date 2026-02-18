@@ -19,6 +19,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+type ApiErrorPayload = {
+  error?: string;
+  recovery?: string;
+};
+
+type RunConfigPayload = {
+  mode?: string;
+  maxIterations?: number;
+  configuredMaxIterations?: number;
+  approvalMode?: string;
+  dangerouslySkipPermissions?: boolean;
+  economyMode?: boolean;
+  thinking?: string;
+  reasoningVisibility?: string;
+  model?: string;
+  provider?: string;
+  canThink?: boolean;
+};
+
+function normalizeErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.replace(/^Error:\s*/i, "").trim();
+}
+
+const DEFAULT_CANVAS_HOST_URL = "/__undoable__/canvas/__starter";
+const CANVAS_ROOT_PATH = "/__undoable__/canvas";
+
 @customElement("undoable-chat")
 export class UndoableChat extends LitElement {
   static styles = [
@@ -112,6 +139,16 @@ export class UndoableChat extends LitElement {
         background: var(--danger-subtle);
         color: var(--danger);
         border-color: rgba(192, 57, 43, 0.2);
+      }
+      .badge-economy-on {
+        background: var(--warning-subtle);
+        color: var(--warning);
+        border-color: rgba(184, 134, 11, 0.2);
+      }
+      .badge-economy-off {
+        background: var(--bg-deep);
+        color: var(--text-tertiary);
+        border-color: var(--border-strong);
       }
       .usage-label {
         font-family: var(--mono);
@@ -596,6 +633,7 @@ export class UndoableChat extends LitElement {
   @state() private error = "";
   @state() private runMode = "";
   @state() private approvalModeLabel = "";
+  @state() private economyMode = false;
   @state() private dangerouslySkipPermissions = false;
   @state() private maxIter = 0;
   @state() private currentIter = 0;
@@ -617,6 +655,7 @@ export class UndoableChat extends LitElement {
   @state() private agentDropdownOpen = false;
   @state() private activeRunId = "";
   @state() private voiceResponsePending = false;
+  @state() private transcribeLimitBytes = 20 * 1024 * 1024;
   private audioPlayer: HTMLAudioElement | null = null;
   @state() private usage = {
     promptTokens: 0,
@@ -645,6 +684,7 @@ export class UndoableChat extends LitElement {
     this.refreshUndoState();
     this.fetchRunConfig();
     this.fetchAgents();
+    this.fetchTranscribeLimit();
     this.checkOnboarding();
     window.addEventListener("popstate", this.onPopState);
     window.addEventListener("keydown", this.onGlobalKey);
@@ -731,31 +771,47 @@ export class UndoableChat extends LitElement {
 
   // ── API helpers ──
 
+  private async readApiError(res: Response, fallback: string): Promise<string> {
+    const body = (await res.json().catch(() => ({}))) as ApiErrorPayload;
+    const message = body.error?.trim() || fallback;
+    if (body.recovery?.trim()) return `${message} ${body.recovery.trim()}`;
+    return message;
+  }
+
+  private async fetchTranscribeLimit() {
+    try {
+      const res = await fetch("/api/chat/stt/status");
+      if (!res.ok) return;
+      const data = (await res.json()) as { maxAudioBytes?: number };
+      if (typeof data.maxAudioBytes === "number" && data.maxAudioBytes > 0) {
+        this.transcribeLimitBytes = data.maxAudioBytes;
+      }
+    } catch {
+      // Keep defaults when unavailable.
+    }
+  }
+
+  private applyRunConfig(data: RunConfigPayload) {
+    if (typeof data.mode === "string") this.runMode = data.mode;
+    if (typeof data.maxIterations === "number") this.maxIter = data.maxIterations;
+    if (typeof data.approvalMode === "string") this.approvalModeLabel = data.approvalMode;
+    if (typeof data.dangerouslySkipPermissions === "boolean") {
+      this.dangerouslySkipPermissions = data.dangerouslySkipPermissions;
+    }
+    if (typeof data.economyMode === "boolean") this.economyMode = data.economyMode;
+    if (typeof data.thinking === "string") this.thinkingLevel = data.thinking;
+    if (typeof data.reasoningVisibility === "string") this.reasoningVis = data.reasoningVisibility;
+    if (typeof data.model === "string") this.currentModel = data.model;
+    if (typeof data.provider === "string") this.currentProvider = data.provider;
+    if (typeof data.canThink === "boolean") this.canThink = data.canThink;
+  }
+
   private async fetchRunConfig() {
     try {
       const res = await fetch("/api/chat/run-config");
       if (res.ok) {
-        const data = (await res.json()) as {
-          mode: string;
-          maxIterations: number;
-          approvalMode: string;
-          dangerouslySkipPermissions?: boolean;
-          thinking?: string;
-          reasoningVisibility?: string;
-          model?: string;
-          provider?: string;
-          canThink?: boolean;
-        };
-        this.runMode = data.mode;
-        this.maxIter = data.maxIterations;
-        this.approvalModeLabel = data.approvalMode;
-        this.dangerouslySkipPermissions =
-          data.dangerouslySkipPermissions === true;
-        this.thinkingLevel = data.thinking ?? "";
-        this.reasoningVis = data.reasoningVisibility ?? "";
-        this.currentModel = data.model ?? "";
-        this.currentProvider = data.provider ?? "";
-        this.canThink = data.canThink ?? false;
+        const data = (await res.json()) as RunConfigPayload;
+        this.applyRunConfig(data);
       }
     } catch {
       /* ignore */
@@ -812,19 +868,79 @@ export class UndoableChat extends LitElement {
 
   private openCanvasPanelFromAgent() {
     this.swarmOpen = false;
+    this.ensureCanvasHostSurface();
     this.canvasOpen = true;
     this.ensureCanvasPanelWidth();
+  }
+
+  private ensureCanvasHostSurface() {
+    if (this.canvasUrl.trim()) {
+      this.canvasUrl = this.normalizeCanvasUrl(this.canvasUrl);
+      return;
+    }
+    if (this.canvasFrames.length === 0) {
+      this.canvasUrl = DEFAULT_CANVAS_HOST_URL;
+    }
+  }
+
+  private isLegacyCanvasRootUrl(url: string): boolean {
+    const trimmed = url.trim();
+    if (!trimmed) return false;
+    try {
+      const parsed = new URL(trimmed, window.location.origin);
+      const normalizedPath = parsed.pathname.replace(/\/+$/, "");
+      if (normalizedPath !== CANVAS_ROOT_PATH) return false;
+      // Explicit workspace opt-in keeps root mode available.
+      return parsed.searchParams.get("view") !== "workspace";
+    } catch {
+      return trimmed === CANVAS_ROOT_PATH || trimmed === `${CANVAS_ROOT_PATH}/`;
+    }
+  }
+
+  private normalizeCanvasUrl(url: string): string {
+    const trimmed = url.trim();
+    if (!trimmed) return "";
+    if (this.isLegacyCanvasRootUrl(trimmed)) return DEFAULT_CANVAS_HOST_URL;
+    return trimmed;
   }
 
   private isSwarmToolName(name: string): boolean {
     return name.trim().toLowerCase().startsWith("swarm_");
   }
 
-  private applySwarmFromToolName(name: string) {
+  private isSwarmMutationToolName(name: string): boolean {
+    const normalized = name.trim().toLowerCase();
+    return [
+      "swarm_create_workflow",
+      "swarm_update_workflow",
+      "swarm_delete_workflow",
+      "swarm_add_node",
+      "swarm_update_node",
+      "swarm_remove_node",
+      "swarm_delete_node",
+      "swarm_set_edges",
+      "swarm_upsert_edge",
+      "swarm_remove_edge",
+      "swarm_run_node",
+      "swarm_reconcile_jobs",
+    ].includes(normalized);
+  }
+
+  private requestSwarmPanelSync() {
+    const panel = this.renderRoot.querySelector("swarm-panel") as
+      | { requestSync?: () => void }
+      | null;
+    panel?.requestSync?.();
+  }
+
+  private applySwarmFromToolName(name: string, phase: "call" | "result" = "call") {
     if (!this.isSwarmToolName(name)) return;
     this.canvasOpen = false;
     this.swarmOpen = true;
     this.ensureSwarmPanelWidth();
+    if (phase === "result" && this.isSwarmMutationToolName(name)) {
+      this.requestSwarmPanelSync();
+    }
   }
 
   private applyCanvasFromToolCall(name: string, args: Record<string, unknown>) {
@@ -840,7 +956,7 @@ export class UndoableChat extends LitElement {
     }
     if (action === "navigate") {
       if (typeof args.url === "string" && args.url.trim()) {
-        this.canvasUrl = args.url.trim();
+        this.canvasUrl = this.normalizeCanvasUrl(args.url);
       }
       this.openCanvasPanelFromAgent();
       return;
@@ -859,6 +975,9 @@ export class UndoableChat extends LitElement {
           .filter(Boolean);
         if (lines.length > 0) {
           this.canvasFrames = [...this.canvasFrames, ...lines];
+          if (this.canvasUrl === DEFAULT_CANVAS_HOST_URL) {
+            this.canvasUrl = "";
+          }
         }
       }
       this.openCanvasPanelFromAgent();
@@ -872,18 +991,22 @@ export class UndoableChat extends LitElement {
     if (canvas) {
       if (typeof canvas.visible === "boolean") this.canvasOpen = canvas.visible;
       if (typeof canvas.url === "string" && canvas.url.trim())
-        this.canvasUrl = canvas.url.trim();
+        this.canvasUrl = this.normalizeCanvasUrl(canvas.url);
       if (Array.isArray(canvas.frames)) {
         this.canvasFrames = canvas.frames.filter(
           (line): line is string => typeof line === "string",
         );
       }
+      if (this.canvasOpen) this.ensureCanvasPanelWidth();
     }
 
     const action =
       typeof result.canvasAction === "string" ? result.canvasAction : "";
     if (action === "hide") this.canvasOpen = false;
     if (action === "a2ui_reset") this.canvasFrames = [];
+    if (action === "a2ui_push" && this.canvasFrames.length > 0 && this.canvasUrl === DEFAULT_CANVAS_HOST_URL) {
+      this.canvasUrl = "";
+    }
     if (action === "present" || action === "navigate" || action === "a2ui_push")
       this.openCanvasPanelFromAgent();
 
@@ -893,7 +1016,7 @@ export class UndoableChat extends LitElement {
     const navPrefix = "Canvas navigated to ";
     if (textResult.startsWith(navPrefix)) {
       const url = textResult.slice(navPrefix.length).trim();
-      if (url) this.canvasUrl = url;
+      if (url) this.canvasUrl = this.normalizeCanvasUrl(url);
       this.openCanvasPanelFromAgent();
     }
   }
@@ -901,7 +1024,10 @@ export class UndoableChat extends LitElement {
   private toggleCanvas = () => {
     if (!this.canvasOpen) this.swarmOpen = false;
     this.canvasOpen = !this.canvasOpen;
-    if (this.canvasOpen) this.ensureCanvasPanelWidth();
+    if (this.canvasOpen) {
+      this.ensureCanvasHostSurface();
+      this.ensureCanvasPanelWidth();
+    }
   };
 
   private toggleSwarm = () => {
@@ -1274,9 +1400,11 @@ export class UndoableChat extends LitElement {
         }),
       });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
         throw new Error(
-          (body as { error?: string }).error ?? `HTTP ${res.status}`,
+          await this.readApiError(
+            res,
+            `Chat request failed (HTTP ${res.status})`,
+          ),
         );
       }
 
@@ -1313,16 +1441,7 @@ export class UndoableChat extends LitElement {
                 this.pushChatUrl(evt.sessionId);
                 this.loadSessions();
               }
-              this.runMode = evt.mode ?? "";
-              this.approvalModeLabel = evt.approvalMode ?? "";
-              this.dangerouslySkipPermissions =
-                evt.dangerouslySkipPermissions === true;
-              this.maxIter = evt.maxIterations ?? 0;
-              this.thinkingLevel = evt.thinking ?? "";
-              this.reasoningVis = evt.reasoningVisibility ?? "";
-              this.currentModel = evt.model ?? this.currentModel;
-              this.currentProvider = evt.provider ?? this.currentProvider;
-              this.canThink = evt.canThink ?? false;
+              this.applyRunConfig(evt as RunConfigPayload);
             } else if (evt.type === "progress") {
               this.currentIter = evt.iteration ?? 0;
               this.maxIter = evt.maxIterations ?? this.maxIter;
@@ -1374,7 +1493,7 @@ export class UndoableChat extends LitElement {
                 },
               ];
             } else if (evt.type === "tool_result") {
-              this.applySwarmFromToolName(evt.name ?? "");
+              this.applySwarmFromToolName(evt.name ?? "", "result");
               this.applyCanvasFromToolResult(evt.result);
               this.entries = [
                 ...this.entries,
@@ -1418,7 +1537,10 @@ export class UndoableChat extends LitElement {
               }
               aiAdded = false;
             } else if (evt.type === "error") {
-              this.error = evt.content ?? "Unknown error";
+              const message = evt.content?.trim() || "Unknown error";
+              this.error = evt.recovery?.trim()
+                ? `${message} ${evt.recovery.trim()}`
+                : message;
             }
           } catch {}
         }
@@ -1429,7 +1551,7 @@ export class UndoableChat extends LitElement {
         this.entries = [...this.entries.slice(0, -1), { ...aiEntry }];
       }
     } catch (err) {
-      this.error = String(err);
+      this.error = normalizeErrorMessage(err);
       if (aiAdded && !aiEntry.content) this.entries = this.entries.slice(0, -1);
     } finally {
       this.loading = false;
@@ -1509,17 +1631,8 @@ export class UndoableChat extends LitElement {
         body: JSON.stringify({ mode: next }),
       });
       if (res.ok) {
-        const data = (await res.json()) as {
-          mode: string;
-          maxIterations: number;
-          approvalMode: string;
-          dangerouslySkipPermissions?: boolean;
-        };
-        this.runMode = data.mode;
-        this.maxIter = data.maxIterations;
-        this.approvalModeLabel = data.approvalMode;
-        this.dangerouslySkipPermissions =
-          data.dangerouslySkipPermissions === true;
+        const data = (await res.json()) as RunConfigPayload;
+        this.applyRunConfig(data);
       }
     } catch {}
   }
@@ -1584,6 +1697,20 @@ export class UndoableChat extends LitElement {
     } catch {}
   }
 
+  private async toggleEconomyMode() {
+    try {
+      const res = await fetch("/api/chat/run-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ economyMode: !this.economyMode }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as RunConfigPayload;
+        this.applyRunConfig(data);
+      }
+    } catch {}
+  }
+
   private openMaxIterDialog() {
     this.showMaxIterDialog = true;
   }
@@ -1597,17 +1724,8 @@ export class UndoableChat extends LitElement {
         body: JSON.stringify({ maxIterations: n }),
       });
       if (res.ok) {
-        const data = (await res.json()) as {
-          maxIterations: number;
-          mode?: string;
-          approvalMode?: string;
-          dangerouslySkipPermissions?: boolean;
-        };
-        this.maxIter = data.maxIterations;
-        if (data.mode) this.runMode = data.mode;
-        if (data.approvalMode) this.approvalModeLabel = data.approvalMode;
-        this.dangerouslySkipPermissions =
-          data.dangerouslySkipPermissions === true;
+        const data = (await res.json()) as RunConfigPayload;
+        this.applyRunConfig(data);
       }
     } catch {}
   }
@@ -1760,7 +1878,7 @@ export class UndoableChat extends LitElement {
           <button
             class="btn-canvas ${this.canvasOpen ? "active" : ""}"
             @click=${this.toggleCanvas}
-            title=${this.canvasOpen ? "Hide canvas" : "Show canvas"}
+            title=${this.canvasOpen ? "Hide live canvas workspace" : "Show live canvas workspace"}
           >
             <svg viewBox="0 0 24 24">
               <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -1822,6 +1940,18 @@ export class UndoableChat extends LitElement {
                       >${this.approvalModeLabel || "off"}</span
                     ></span
                   >
+                  <span
+                    >Economy:
+                    <span
+                      class="status-badge ${this.economyMode
+                        ? "badge-economy-on"
+                        : "badge-economy-off"}"
+                      style="cursor:pointer;"
+                      title="Click to toggle token economy mode"
+                      @click=${this.toggleEconomyMode}
+                      >${this.economyMode ? "on" : "off"}</span
+                    ></span
+                  >
                   ${this.dangerouslySkipPermissions
                     ? html`<span
                         class="status-badge badge-danger-skip"
@@ -1876,7 +2006,7 @@ export class UndoableChat extends LitElement {
                     @handle-approval=${(e: CustomEvent) =>
                       this.handleApproval(e.detail)}
                     @chat-error=${(e: CustomEvent) => {
-                      this.error = e.detail;
+                      this.error = normalizeErrorMessage(e.detail);
                     }}
                   ></chat-messages>
                 `}
@@ -1889,6 +2019,7 @@ export class UndoableChat extends LitElement {
               ?hasUndoable=${this.hasUndoable}
               ?hasRedoable=${this.hasRedoable}
               .thinkingLevel=${this.canThink ? this.thinkingLevel : ""}
+              .transcribeLimitBytes=${this.transcribeLimitBytes}
               ?canThink=${this.canThink}
               @send-message=${(e: CustomEvent) =>
                 this.handleSendMessage(e.detail)}
@@ -1897,7 +2028,7 @@ export class UndoableChat extends LitElement {
               @redo=${(e: CustomEvent) => this.handleRedo(e.detail)}
               @cycle-thinking=${this.cycleThinkingLevel}
               @chat-error=${(e: CustomEvent) => {
-                this.error = e.detail;
+                this.error = normalizeErrorMessage(e.detail);
               }}
             ></chat-input>
           </div>

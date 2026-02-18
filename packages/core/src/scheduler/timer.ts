@@ -43,8 +43,10 @@ export function clearTimer(state: TimerState): void {
 export async function runMissedJobs(state: TimerState): Promise<void> {
   const now = state.nowMs();
   const missed = findDueJobs(state.jobs, now);
-  for (const job of missed) {
-    await executeJob(state, job, now);
+  if (missed.length === 0) return;
+  await Promise.all(missed.map((job) => executeJob(state, job, now)));
+  if (recomputeAllNextRuns(state.jobs, state.nowMs())) {
+    await state.onPersist();
   }
 }
 
@@ -56,6 +58,7 @@ export async function runSingleJob(
   const now = state.nowMs();
   if (!force && !isDue(job, now)) return false;
   await executeJob(state, job, now);
+  await state.onPersist();
   return true;
 }
 
@@ -91,11 +94,12 @@ async function onTick(state: TimerState): Promise<void> {
     const now = state.nowMs();
     const due = findDueJobs(state.jobs, now);
 
-    for (const job of due) {
-      await executeJob(state, job, now);
+    if (due.length > 0) {
+      await Promise.all(due.map((job) => executeJob(state, job, now)));
     }
 
-    if (recomputeAllNextRuns(state.jobs, state.nowMs())) {
+    const recomputed = recomputeAllNextRuns(state.jobs, state.nowMs());
+    if (due.length > 0 || recomputed) {
       await state.onPersist();
     }
   } finally {
@@ -158,8 +162,6 @@ async function executeJob(state: TimerState, job: ScheduledJob, nowMs: number): 
     if (idx >= 0) state.jobs.splice(idx, 1);
     state.onEvent?.({ jobId: job.id, action: "removed" });
   }
-
-  await state.onPersist();
 }
 
 function clearStuckJobs(state: TimerState): void {

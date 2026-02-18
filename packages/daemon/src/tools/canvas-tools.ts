@@ -10,6 +10,7 @@ const CANVAS_ACTIONS = [
   "snapshot",
   "a2ui_push",
   "a2ui_reset",
+  "status",
 ] as const;
 
 export function createCanvasTool(
@@ -23,15 +24,16 @@ export function createCanvasTool(
       function: {
         name: "canvas",
         description: [
-          "Rich UI canvas for presenting interactive surfaces, web content, and A2UI frames.",
+          "Live Canvas: agent-driven visual workspace for web surfaces and A2UI frames.",
           "Actions:",
-          "  present — show canvas (optional x, y, width, height)",
+          "  present — show canvas (opens default canvas host if no target is set)",
           "  hide — hide canvas",
           "  navigate — load a URL in the canvas",
           "  eval — execute JavaScript in the canvas context",
           "  snapshot — capture canvas as screenshot",
           "  a2ui_push — push A2UI JSONL frames to render",
           "  a2ui_reset — clear all A2UI frames",
+          "  status — inspect current canvas state",
         ].join("\n"),
         parameters: {
           type: "object",
@@ -104,6 +106,10 @@ export function createCanvasTool(
           case "a2ui_reset": {
             canvasService.resetFrames();
             return { result: "Canvas frames reset" };
+          }
+
+          case "status": {
+            return { result: "Canvas state", canvas: canvasService.getState() };
           }
 
           default:

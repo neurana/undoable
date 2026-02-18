@@ -10,6 +10,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path: string) => path.replace(/^\/api/, ""),
       },
+      "/__undoable__": {
+        target: "http://localhost:7433",
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
   publicDir: "assets",

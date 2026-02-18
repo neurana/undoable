@@ -6,6 +6,7 @@ import * as os from "node:os";
 import { createClackPrompter } from "../wizard/clack-prompter.js";
 import { runOnboardingWizard } from "../wizard/onboarding.js";
 import { WizardCancelledError } from "../wizard/prompts.js";
+import { runNonInteractiveOnboard } from "./onboard.js";
 
 const HOME = os.homedir();
 const TCC_DIRS = ["Downloads", "Desktop", "Documents", "Movies", "Music", "Pictures"];
@@ -21,18 +22,19 @@ function checkFDA(): { ok: boolean; details: Record<string, boolean> } {
   let allOk = true;
   for (const dir of TCC_DIRS) {
     try {
-      const raw = execSync(`ls -1A ${JSON.stringify(path.join(HOME, dir))} 2>/dev/null | wc -l`, {
-        encoding: "utf-8", timeout: 3000,
-      }).trim();
-      const count = Number.parseInt(raw, 10) || 0;
-      details[dir] = count > 0;
-      if (count === 0) allOk = false;
-    } catch {
-      details[dir] = false;
-      allOk = false;
+      fs.readdirSync(path.join(HOME, dir));
+      details[dir] = true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        details[dir] = true;
+      } else {
+        details[dir] = false;
+        allOk = false;
+      }
     }
   }
-  return { ok: Object.values(details).some(Boolean) ? allOk : false, details };
+  return { ok: allOk, details };
 }
 
 function ensureConfigDir(): string {
@@ -58,6 +60,7 @@ function checkApiKeys(): string[] {
   if (process.env.ANTHROPIC_API_KEY) found.push("ANTHROPIC_API_KEY");
   if (process.env.GOOGLE_API_KEY) found.push("GOOGLE_API_KEY");
   if (process.env.DEEPSEEK_API_KEY) found.push("DEEPSEEK_API_KEY");
+  if (process.env.OPENROUTER_API_KEY) found.push("OPENROUTER_API_KEY");
   return found;
 }
 
@@ -65,7 +68,10 @@ export function setupCommand(): Command {
   return new Command("setup")
     .description("Initialize Undoable, check permissions, and run onboarding")
     .option("--workspace <dir>", "Agent workspace directory")
-    .option("--flow <flow>", "Onboarding flow: quickstart or manual")
+    .option("--flow <flow>", "Onboarding flow: quickstart, advanced, or manual")
+    .option("--mode <mode>", "Wizard mode: local|remote", "local")
+    .option("--remote-url <url>", "Remote gateway URL (for mode remote)")
+    .option("--remote-token <token>", "Remote gateway token (optional)")
     .option("--non-interactive", "Run onboarding without prompts", false)
     .option("--accept-risk", "Acknowledge security warning", false)
     .option("--fix", "Automatically open System Settings to fix permissions")
@@ -142,11 +148,28 @@ export function setupCommand(): Command {
 
       const prompter = createClackPrompter();
       try {
-        await runOnboardingWizard({
-          workspace: opts.workspace as string | undefined,
-          flow: opts.flow as string | undefined,
-          acceptRisk: Boolean(opts.acceptRisk),
-        }, prompter);
+        if (opts.nonInteractive) {
+          if (!opts.acceptRisk) {
+            throw new Error("--accept-risk is required with --non-interactive");
+          }
+          await runNonInteractiveOnboard({
+            workspace: opts.workspace as string | undefined,
+            flow: opts.flow as string | undefined,
+            acceptRisk: true,
+            mode: opts.mode as "local" | "remote" | undefined,
+            remoteUrl: opts.remoteUrl as string | undefined,
+            remoteToken: opts.remoteToken as string | undefined,
+          });
+        } else {
+          await runOnboardingWizard({
+            workspace: opts.workspace as string | undefined,
+            flow: opts.flow as string | undefined,
+            acceptRisk: Boolean(opts.acceptRisk),
+            mode: opts.mode as "local" | "remote" | undefined,
+            remoteUrl: opts.remoteUrl as string | undefined,
+            remoteToken: opts.remoteToken as string | undefined,
+          }, prompter);
+        }
       } catch (err) {
         if (err instanceof WizardCancelledError) {
           process.exit(0);

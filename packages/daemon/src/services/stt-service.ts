@@ -23,21 +23,35 @@ export class SttService {
   }
 
   setApiKey(provider: string, key: string): void {
-    this.apiKeys[provider] = key;
+    this.apiKeys[provider] = key.trim();
   }
 
   setBaseUrl(provider: string, url: string): void {
-    this.baseUrls[provider] = url;
+    this.baseUrls[provider] = url.trim();
   }
 
   getStatus(): SttStatus {
-    const providers: SttProvider[] = ["openai"];
-    if (this.apiKeys["deepgram"]) providers.push("deepgram");
-    return { provider: this.provider, providers };
+    const providers: SttProvider[] = [];
+    if (this.hasProviderKey("openai")) providers.push("openai");
+    if (this.hasProviderKey("deepgram")) providers.push("deepgram");
+
+    const provider = providers.includes(this.provider)
+      ? this.provider
+      : (providers[0] ?? this.provider);
+
+    return { provider, providers };
   }
 
   async transcribe(audio: Buffer, opts?: SttOptions & { mime?: string }): Promise<{ text: string }> {
-    switch (this.provider) {
+    const provider = this.resolveProvider();
+    if (!provider) {
+      throw new Error(
+        "No STT provider configured. Set OPENAI_API_KEY or DEEPGRAM_API_KEY.",
+      );
+    }
+    this.provider = provider;
+
+    switch (provider) {
       case "openai":
         return this.transcribeOpenAI(audio, opts?.mime ?? "audio/webm", opts ?? {});
       case "deepgram":
@@ -47,12 +61,41 @@ export class SttService {
     }
   }
 
+  private hasProviderKey(provider: SttProvider): boolean {
+    return (this.apiKeys[provider] ?? "").trim().length > 0;
+  }
+
+  private resolveProvider(): SttProvider | null {
+    if (this.provider === "openai" && this.hasProviderKey("openai")) {
+      return "openai";
+    }
+    if (this.provider === "deepgram" && this.hasProviderKey("deepgram")) {
+      return "deepgram";
+    }
+    if (this.hasProviderKey("openai")) {
+      return "openai";
+    }
+    if (this.hasProviderKey("deepgram")) {
+      return "deepgram";
+    }
+    return null;
+  }
+
   private async transcribeOpenAI(audio: Buffer, mime: string, opts: SttOptions): Promise<{ text: string }> {
     const apiKey = this.apiKeys["openai"];
     if (!apiKey) throw new Error("OpenAI API key not configured for STT");
 
     const baseUrl = (this.baseUrls["openai"] ?? "https://api.openai.com/v1").replace(/\/+$/, "");
-    const ext = mime.includes("mp4") ? "m4a" : mime.includes("wav") ? "wav" : "webm";
+    const lowerMime = mime.toLowerCase();
+    const ext = lowerMime.includes("mp4") || lowerMime.includes("m4a")
+      ? "m4a"
+      : lowerMime.includes("wav")
+        ? "wav"
+        : lowerMime.includes("ogg")
+          ? "ogg"
+          : lowerMime.includes("mpeg") || lowerMime.includes("mp3")
+            ? "mp3"
+            : "webm";
 
     const form = new FormData();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

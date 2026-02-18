@@ -291,8 +291,32 @@ export class UndoableOnboarding extends LitElement {
     if (this.step > 0) this.step--;
   }
 
-  private close() {
-    this.dispatchEvent(new CustomEvent("onboarding-close", { bubbles: true, composed: true }));
+  private async close() {
+    if (this.saving) return;
+    this.saving = true;
+    try {
+      await fetch("/api/chat/onboarding", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userName: this.userName || "User",
+          botName: this.botName || "Undoable",
+          timezone: this.timezone,
+          personality: this.personality || undefined,
+          instructions: this.instructions || undefined,
+        }),
+      });
+    } catch {
+      // Skip should not block entry to the app; defaults can be edited later.
+    } finally {
+      this.saving = false;
+      this.dispatchEvent(
+        new CustomEvent("onboarding-close", {
+          bubbles: true,
+          composed: true,
+        }),
+      );
+    }
   }
 
   private renderDots() {
@@ -331,7 +355,7 @@ export class UndoableOnboarding extends LitElement {
       </div>
 
       <div class="actions">
-        <button class="btn btn-primary" @click=${this.next} ?disabled=${!this.userName.trim()}>Continue</button>
+        <button class="btn btn-primary" @click=${this.next}>Continue</button>
       </div>
     `;
   }
@@ -402,7 +426,7 @@ export class UndoableOnboarding extends LitElement {
     if (!this.loaded) return html``;
     return html`
       <div class="card">
-        <button class="close-btn" @click=${this.close} title="Skip">
+        <button class="close-btn" @click=${this.close} title="Skip" ?disabled=${this.saving}>
           <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
         ${this.step === 0 ? this.renderStep0() : ""}

@@ -326,13 +326,21 @@ export class ProviderService {
   }
 
   async setProviderKey(providerId: string, apiKey: string, baseUrl?: string): Promise<boolean> {
+    const normalizedKey = apiKey.trim();
+    const normalizedBaseUrl = baseUrl?.trim();
     let provider = this.providers.find((p) => p.id === providerId);
     if (!provider) {
-      provider = { id: providerId, name: providerId, baseUrl: baseUrl ?? "", apiKey, models: [] };
+      provider = {
+        id: providerId,
+        name: providerId,
+        baseUrl: normalizedBaseUrl ?? "",
+        apiKey: normalizedKey,
+        models: [],
+      };
       this.providers.push(provider);
     } else {
-      provider.apiKey = apiKey;
-      if (baseUrl) provider.baseUrl = baseUrl;
+      provider.apiKey = normalizedKey;
+      if (normalizedBaseUrl) provider.baseUrl = normalizedBaseUrl;
     }
     await this.saveState();
     return true;

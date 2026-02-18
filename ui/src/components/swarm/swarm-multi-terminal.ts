@@ -20,7 +20,9 @@ export class SwarmMultiTerminal extends LitElement {
       height: 100%;
     }
     .pane {
-      background: #1a1a1a;
+      background: var(--surface-1);
+      border: 1px solid var(--border-divider);
+      box-shadow: var(--shadow-sm);
       border-radius: 8px;
       overflow: hidden;
       display: flex;
@@ -29,7 +31,7 @@ export class SwarmMultiTerminal extends LitElement {
     }
     .pane-header {
       padding: 6px 10px;
-      background: #2a2a2a;
+      background: var(--surface-2);
       display: flex;
       align-items: center;
       gap: 8px;
@@ -48,7 +50,7 @@ export class SwarmMultiTerminal extends LitElement {
     }
     .pane-title {
       font-size: 11px;
-      color: #888;
+      color: var(--text-secondary);
       font-family: var(--mono);
       overflow: hidden;
       text-overflow: ellipsis;
@@ -57,12 +59,6 @@ export class SwarmMultiTerminal extends LitElement {
     swarm-activity-stream {
       flex: 1;
       min-height: 0;
-      --surface-1: #1a1a1a;
-      --surface-2: #222;
-      --text-primary: #e0e0e0;
-      --text-secondary: #aaa;
-      --text-tertiary: #666;
-      --border-divider: #333;
     }
     .empty {
       display: grid;

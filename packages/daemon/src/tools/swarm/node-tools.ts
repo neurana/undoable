@@ -1,3 +1,4 @@
+import type { SchedulerService } from "@undoable/core";
 import type { RunManager } from "../../services/run-manager.js";
 import type { SwarmNodeType, SwarmService } from "../../services/swarm-service.js";
 import type { AgentTool } from "../types.js";
@@ -14,7 +15,18 @@ import {
 export function createSwarmNodeTools(
   swarmService: SwarmService,
   runManager: RunManager,
+  scheduler: SchedulerService,
 ): AgentTool[] {
+  const removeNode = async (args: Record<string, unknown>) => {
+    const workflowId = asOptionalString(args.workflowId);
+    const nodeId = asOptionalString(args.nodeId);
+    if (!workflowId || !nodeId) return { error: "workflowId and nodeId are required" };
+    const deleted = await swarmService.removeNode(workflowId, nodeId);
+    return deleted
+      ? { deleted: true, workflowId, nodeId }
+      : { error: `workflow ${workflowId} or node ${nodeId} not found` };
+  };
+
   return [
     {
       name: "swarm_add_node",
@@ -136,15 +148,26 @@ export function createSwarmNodeTools(
           },
         },
       },
-      execute: async (args) => {
-        const workflowId = asOptionalString(args.workflowId);
-        const nodeId = asOptionalString(args.nodeId);
-        if (!workflowId || !nodeId) return { error: "workflowId and nodeId are required" };
-        const deleted = await swarmService.removeNode(workflowId, nodeId);
-        return deleted
-          ? { deleted: true, workflowId, nodeId }
-          : { error: `workflow ${workflowId} or node ${nodeId} not found` };
+      execute: removeNode,
+    },
+    {
+      name: "swarm_delete_node",
+      definition: {
+        type: "function",
+        function: {
+          name: "swarm_delete_node",
+          description: "Delete node from SWARM workflow (alias for swarm_remove_node).",
+          parameters: {
+            type: "object",
+            properties: {
+              workflowId: { type: "string" },
+              nodeId: { type: "string" },
+            },
+            required: ["workflowId", "nodeId"],
+          },
+        },
       },
+      execute: removeNode,
     },
     {
       name: "swarm_set_edges",
@@ -252,6 +275,73 @@ export function createSwarmNodeTools(
       },
     },
     {
+      name: "swarm_run_node",
+      definition: {
+        type: "function",
+        function: {
+          name: "swarm_run_node",
+          description: "Trigger one SWARM node immediately.",
+          parameters: {
+            type: "object",
+            properties: {
+              workflowId: { type: "string" },
+              nodeId: { type: "string" },
+            },
+            required: ["workflowId", "nodeId"],
+          },
+        },
+      },
+      execute: async (args) => {
+        const workflowId = asOptionalString(args.workflowId);
+        const nodeId = asOptionalString(args.nodeId);
+        if (!workflowId || !nodeId) return { error: "workflowId and nodeId are required" };
+
+        const workflow = swarmService.getById(workflowId);
+        if (!workflow) return { error: `workflow ${workflowId} not found` };
+
+        const node = workflow.nodes.find((entry) => entry.id === nodeId);
+        if (!node) return { error: `node ${nodeId} not found` };
+
+        const runExistingJob = async (jobId: string, temporary: boolean) => {
+          const ran = await scheduler.run(jobId, "force");
+          return {
+            ran,
+            workflowId,
+            nodeId,
+            jobId,
+            temporaryJob: temporary,
+          };
+        };
+
+        if (node.jobId) {
+          return runExistingJob(node.jobId, false);
+        }
+
+        const instruction = node.prompt || `Execute SWARM node "${node.name}" from workflow "${workflow.name}".`;
+        const tempJob = await scheduler.add({
+          name: `swarm:${workflow.name}:${node.name}:manual`,
+          description: `Temporary SWARM trigger for node ${node.id} in workflow ${workflow.id}`,
+          enabled: false,
+          schedule: { kind: "every", everyMs: 86_400_000 },
+          payload: {
+            kind: "run",
+            instruction,
+            ...(node.agentId ? { agentId: node.agentId } : {}),
+          },
+        });
+
+        try {
+          const out = await runExistingJob(tempJob.id, true);
+          return {
+            ...out,
+            note: "Node has no persistent schedule job. Triggered with a temporary one-time job.",
+          };
+        } finally {
+          await scheduler.remove(tempJob.id).catch(() => {});
+        }
+      },
+    },
+    {
       name: "swarm_list_node_runs",
       definition: {
         type: "function",
@@ -279,11 +369,11 @@ export function createSwarmNodeTools(
         const node = workflow.nodes.find((entry) => entry.id === nodeId);
         if (!node) return { error: `node ${nodeId} not found` };
 
-        if (!node.jobId) return { jobId: null, runs: [] };
-
+        const syntheticJobId = `swarm-node-${node.id}`;
+        const jobId = node.jobId ?? syntheticJobId;
         return {
-          jobId: node.jobId,
-          runs: runManager.listByJobId(node.jobId),
+          jobId,
+          runs: runManager.listByJobId(jobId),
         };
       },
     },

@@ -36,22 +36,36 @@ export class TtsService {
   }
 
   setApiKey(provider: string, key: string): void {
-    this.apiKeys[provider] = key;
+    this.apiKeys[provider] = key.trim();
   }
 
   setBaseUrl(provider: string, url: string): void {
-    this.baseUrls[provider] = url;
+    this.baseUrls[provider] = url.trim();
   }
 
   getStatus(): TtsStatus {
-    const providers: TtsProvider[] = ["openai"];
+    const providers: TtsProvider[] = [];
+    if (this.hasProviderKey("openai")) providers.push("openai");
     if (this.isEdgeTtsAvailable()) providers.push("edge-tts");
-    if (this.apiKeys["elevenlabs"]) providers.push("elevenlabs");
-    return { enabled: this.enabled, provider: this.provider, providers };
+    if (this.hasProviderKey("elevenlabs")) providers.push("elevenlabs");
+
+    const provider = providers.includes(this.provider)
+      ? this.provider
+      : (providers[0] ?? this.provider);
+
+    return { enabled: this.enabled, provider, providers };
   }
 
   async convert(text: string, opts?: TtsOptions): Promise<Buffer> {
-    switch (this.provider) {
+    const provider = this.resolveProvider();
+    if (!provider) {
+      throw new Error(
+        "No TTS provider configured. Set OPENAI_API_KEY, install edge-tts, or set ELEVENLABS_API_KEY.",
+      );
+    }
+    this.provider = provider;
+
+    switch (provider) {
       case "openai":
         return this.convertOpenAI(text, opts);
       case "edge-tts":
@@ -61,6 +75,32 @@ export class TtsService {
       default:
         throw new Error(`Unknown TTS provider: ${this.provider}`);
     }
+  }
+
+  private hasProviderKey(provider: "openai" | "elevenlabs"): boolean {
+    return (this.apiKeys[provider] ?? "").trim().length > 0;
+  }
+
+  private resolveProvider(): TtsProvider | null {
+    if (this.provider === "openai" && this.hasProviderKey("openai")) {
+      return "openai";
+    }
+    if (this.provider === "edge-tts" && this.isEdgeTtsAvailable()) {
+      return "edge-tts";
+    }
+    if (this.provider === "elevenlabs" && this.hasProviderKey("elevenlabs")) {
+      return "elevenlabs";
+    }
+    if (this.hasProviderKey("openai")) {
+      return "openai";
+    }
+    if (this.isEdgeTtsAvailable()) {
+      return "edge-tts";
+    }
+    if (this.hasProviderKey("elevenlabs")) {
+      return "elevenlabs";
+    }
+    return null;
   }
 
   private async convertOpenAI(text: string, opts?: TtsOptions): Promise<Buffer> {

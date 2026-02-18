@@ -15,11 +15,13 @@ import { WizardCancelledError } from "../wizard/prompts.js";
 
 const UNDOABLE_DIR = path.join(os.homedir(), ".undoable");
 
-async function runNonInteractiveOnboard(opts: OnboardOptions & {
+export type NonInteractiveOnboardOptions = OnboardOptions & {
   mode?: string;
   remoteUrl?: string;
   remoteToken?: string;
-}) {
+};
+
+export async function runNonInteractiveOnboard(opts: NonInteractiveOnboardOptions) {
   ensureUndoableDir();
 
   const workspace = opts.workspace?.trim() || DEFAULT_WORKSPACE;
@@ -73,7 +75,7 @@ async function runNonInteractiveOnboard(opts: OnboardOptions & {
 export function onboardCommand(): Command {
   return new Command("onboard")
     .description("Interactive wizard to set up Undoable")
-    .option("--flow <flow>", "Onboarding flow: quickstart or manual")
+    .option("--flow <flow>", "Onboarding flow: quickstart, advanced, or manual")
     .option("--workspace <dir>", "Agent workspace directory")
     .option("--non-interactive", "Run onboarding without prompts", false)
     .option("--accept-risk", "Acknowledge security warning", false)
@@ -83,11 +85,10 @@ export function onboardCommand(): Command {
     .option("--remote-token <token>", "Remote gateway token (optional)")
     .action(async (opts) => {
       if (opts.nonInteractive) {
-        await runNonInteractiveOnboard(opts as OnboardOptions & {
-          mode?: string;
-          remoteUrl?: string;
-          remoteToken?: string;
-        });
+        if (!opts.acceptRisk) {
+          throw new Error("--accept-risk is required with --non-interactive");
+        }
+        await runNonInteractiveOnboard(opts as NonInteractiveOnboardOptions);
         return;
       }
 

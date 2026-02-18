@@ -230,4 +230,26 @@ describe("UndoService", () => {
     expect(await fs.readFile(f1, "utf-8")).toBe("one-after");
     expect(await fs.readFile(f2, "utf-8")).toBe("two-after");
   });
+
+  it("undoes legacy actions that stored ~/ paths", async () => {
+    const filePath = path.join(tmpDir, "legacy.txt");
+    const rel = path.relative(os.homedir(), filePath).replace(/\\/g, "/");
+    const legacyPath = `~/${rel}`;
+
+    const action = await actionLog.record({
+      toolName: "write_file",
+      category: "mutate",
+      args: { path: legacyPath },
+      approval: "auto-approved",
+      undoable: true,
+      undoData: { type: "file", path: legacyPath, previousContent: null, previousExisted: false },
+    });
+    await fs.writeFile(filePath, "created by AI");
+    await actionLog.complete(action.id, { written: true });
+
+    const result = await undoService.undoAction(action.id);
+    expect(result.success).toBe(true);
+
+    await expect(fs.access(filePath)).rejects.toThrow();
+  });
 });

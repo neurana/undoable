@@ -1,6 +1,6 @@
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { api, type RunItem, type SwarmNodePatchInput, type SwarmWorkflow } from "../api/client.js";
+import { api, type RunItem, type SwarmNodePatchInput, type SwarmWorkflow, type SwarmWorkflowRunResult } from "../api/client.js";
 import "./swarm/swarm-canvas.js";
 import "./swarm/swarm-inspector.js";
 import "./swarm/swarm-multi-terminal.js";
@@ -10,6 +10,8 @@ const POSITIONS_KEY = "undoable_swarm_positions_v1";
 
 type NodePos = { x: number; y: number };
 type PositionMap = Record<string, NodePos>;
+type NodeRunSnapshot = { runId: string; status: string; updatedAt: string };
+type NodeSelectEventDetail = { nodeId: string; source?: "click" | "drag" };
 
 @customElement("swarm-panel")
 export class SwarmPanel extends LitElement {
@@ -19,28 +21,41 @@ export class SwarmPanel extends LitElement {
       flex-direction: column;
       width: 100%;
       height: 100%;
-      background: var(--bg-base);
-      border-radius: 12px;
+      background:
+        radial-gradient(circle at 78% -20%, rgba(174, 231, 199, 0.28), transparent 40%),
+        var(--bg-base);
+      border-radius: 14px;
       overflow: hidden;
       border: 1px solid var(--border-divider);
+    }
+    :host(:fullscreen),
+    :host(:-webkit-full-screen) {
+      width: 100vw;
+      height: 100vh;
+      border-radius: 0;
+      border: none;
     }
 
     /* ── Top nav bar ── */
     .nav {
       display: flex;
       align-items: center;
-      gap: 6px;
-      padding: 6px 10px;
+      gap: 7px;
+      padding: 8px 12px;
       border-bottom: 1px solid var(--border-divider);
-      background: var(--surface-1);
+      background:
+        linear-gradient(180deg, rgba(253, 254, 253, 0.95), rgba(246, 250, 248, 0.92));
       flex-shrink: 0;
-      min-height: 40px;
+      min-height: 46px;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
     }
     .nav-title {
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
       color: var(--text-primary);
-      letter-spacing: -0.01em;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
       flex-shrink: 0;
     }
     .nav-sep {
@@ -50,31 +65,33 @@ export class SwarmPanel extends LitElement {
       flex-shrink: 0;
     }
     .nav-select {
-      height: 28px;
+      height: 30px;
       border: 1px solid var(--border-strong);
-      border-radius: 8px;
-      background: var(--surface-1);
+      border-radius: 9px;
+      background: rgba(253, 254, 253, 0.88);
       color: var(--text-primary);
-      padding: 0 8px;
+      padding: 0 10px;
       font: inherit;
       font-size: 11px;
       min-width: 0;
-      max-width: 200px;
+      max-width: 230px;
     }
     .nav-spacer { flex: 1; }
     .nav-pills {
       display: flex;
-      gap: 4px;
+      gap: 5px;
       flex-shrink: 0;
     }
     .pill {
-      padding: 2px 7px;
+      padding: 3px 8px;
       border-radius: 999px;
       border: 1px solid var(--border-strong);
-      background: var(--surface-2);
+      background: rgba(253, 254, 253, 0.74);
       font-size: 9px;
       color: var(--text-tertiary);
       white-space: nowrap;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
     .pill-live {
       background: color-mix(in srgb, var(--accent-subtle) 85%, transparent);
@@ -82,11 +99,11 @@ export class SwarmPanel extends LitElement {
       border-color: var(--mint-strong);
     }
     .nav-btn {
-      height: 28px;
-      padding: 0 8px;
-      border-radius: 8px;
+      height: 30px;
+      padding: 0 10px;
+      border-radius: 9px;
       border: 1px solid var(--border-strong);
-      background: var(--surface-1);
+      background: rgba(253, 254, 253, 0.84);
       color: var(--text-secondary);
       font-size: 11px;
       font-weight: 500;
@@ -94,13 +111,15 @@ export class SwarmPanel extends LitElement {
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      transition: all 150ms ease;
+      transition: all 180ms cubic-bezier(0.22, 1, 0.36, 1);
       flex-shrink: 0;
     }
     .nav-btn:hover {
-      background: var(--wash);
+      transform: translateY(-1px);
+      background: var(--surface-1);
       border-color: var(--mint-strong);
       color: var(--text-primary);
+      box-shadow: 0 8px 18px rgba(17, 26, 23, 0.08);
     }
     .nav-btn:disabled {
       opacity: 0.5;
@@ -118,6 +137,7 @@ export class SwarmPanel extends LitElement {
       background: color-mix(in srgb, var(--accent-subtle) 85%, transparent);
       color: var(--dark);
       border-color: var(--mint-strong);
+      box-shadow: inset 0 0 0 1px rgba(46, 69, 57, 0.07);
     }
     .nav-btn-run:hover {
       background: var(--accent-subtle);
@@ -145,18 +165,18 @@ export class SwarmPanel extends LitElement {
       fill: none;
     }
     .nav-close {
-      width: 28px;
-      height: 28px;
+      width: 30px;
+      height: 30px;
       padding: 0;
       justify-content: center;
       border: none;
       background: transparent;
       color: var(--text-tertiary);
       cursor: pointer;
-      border-radius: 6px;
+      border-radius: 8px;
       display: flex;
       align-items: center;
-      transition: all 150ms ease;
+      transition: all 180ms cubic-bezier(0.22, 1, 0.36, 1);
       flex-shrink: 0;
     }
     .nav-close:hover {
@@ -177,6 +197,7 @@ export class SwarmPanel extends LitElement {
       min-height: 0;
       display: flex;
       overflow: hidden;
+      position: relative;
     }
     .canvas-area {
       flex: 1;
@@ -192,17 +213,20 @@ export class SwarmPanel extends LitElement {
 
     /* ── Inspector side panel ── */
     .inspector-col {
-      width: clamp(320px, 36%, 420px);
-      min-width: 320px;
-      max-width: 420px;
+      width: clamp(340px, 34vw, 460px);
+      min-width: 340px;
+      max-width: 460px;
       flex-shrink: 0;
       min-height: 0;
       display: flex;
       flex-direction: column;
       border-left: 1px solid var(--border-divider);
       background: var(--surface-1);
-      transition: width 200ms ease, opacity 200ms ease;
+      transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease, transform 220ms ease;
       overflow: hidden;
+      transform: translateX(0);
+      box-shadow: -14px 0 34px rgba(17, 26, 23, 0.08);
+      z-index: 4;
     }
     .inspector-col.hidden {
       width: 0;
@@ -210,7 +234,9 @@ export class SwarmPanel extends LitElement {
       max-width: 0;
       border-left-color: transparent;
       opacity: 0;
+      transform: translateX(14px);
       pointer-events: none;
+      box-shadow: none;
     }
     swarm-inspector {
       flex: 1;
@@ -218,6 +244,21 @@ export class SwarmPanel extends LitElement {
       border: none;
       border-radius: 0;
       overflow: auto;
+    }
+    .inspector-backdrop {
+      display: none;
+      position: absolute;
+      inset: 0;
+      border: 0;
+      background: rgba(17, 26, 23, 0.28);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 220ms ease;
+      z-index: 3;
+    }
+    .inspector-backdrop.active {
+      opacity: 1;
+      pointer-events: auto;
     }
 
     /* ── Error bar ── */
@@ -277,22 +318,27 @@ export class SwarmPanel extends LitElement {
 
     @media (max-width: 640px) {
       .nav-pills { display: none; }
-      .nav-select { max-width: 120px; }
+      .nav-select { max-width: 132px; }
       .inspector-col {
         width: 100%;
+        min-width: 0;
         max-width: 100%;
         position: absolute;
         right: 0;
         top: 0;
         bottom: 0;
         z-index: 5;
+        border-left: none;
+        box-shadow: -22px 0 34px rgba(17, 26, 23, 0.12);
       }
       .inspector-col.hidden {
-        width: 0;
-        max-width: 0;
+        width: 100%;
+        max-width: 100%;
+        opacity: 0;
+        transform: translateX(100%);
       }
-      .content {
-        position: relative;
+      .inspector-backdrop {
+        display: block;
       }
     }
   `;
@@ -306,14 +352,23 @@ export class SwarmPanel extends LitElement {
   @state() private error = "";
   @state() private inspectorOpen = true;
   @state() private activeRunsByNode: Record<string, string> = {};
+  @state() private latestRunsByNode: Record<string, NodeRunSnapshot> = {};
   @state() private viewMode: "canvas" | "terminal" = "canvas";
   @state() private selectedRunId = "";
+  @state() private isFullscreen = false;
   private pollTimer?: ReturnType<typeof setTimeout>;
+  private syncTimer?: ReturnType<typeof setTimeout>;
   private connected = false;
+  private fullscreenChangeHandler = () => {
+    this.isFullscreen = this.isOwnFullscreen();
+  };
 
   connectedCallback() {
     super.connectedCallback();
     this.connected = true;
+    document.addEventListener("fullscreenchange", this.fullscreenChangeHandler);
+    document.addEventListener("webkitfullscreenchange", this.fullscreenChangeHandler as EventListener);
+    this.fullscreenChangeHandler();
     this.positions = this.loadPositions();
     void this.loadWorkflows();
     this.startPolling();
@@ -322,13 +377,45 @@ export class SwarmPanel extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.connected = false;
+    document.removeEventListener("fullscreenchange", this.fullscreenChangeHandler);
+    document.removeEventListener("webkitfullscreenchange", this.fullscreenChangeHandler as EventListener);
     if (this.pollTimer) clearTimeout(this.pollTimer);
+    if (this.syncTimer) clearTimeout(this.syncTimer);
   }
 
-  private startPolling() {
+  requestSync() {
+    if (!this.connected) return;
+    if (this.syncTimer) return;
+    this.syncTimer = setTimeout(() => {
+      this.syncTimer = undefined;
+      void this.syncFromExternalChange();
+    }, 220);
+  }
+
+  private async syncFromExternalChange() {
+    if (!this.connected) return;
+    if (this.busy) {
+      this.requestSync();
+      return;
+    }
+    await this.loadWorkflows();
+    await this.pollActiveRuns();
+  }
+
+  private startPolling(delayMs = 3000) {
     if (this.pollTimer) clearTimeout(this.pollTimer);
     if (!this.connected) return;
-    this.pollTimer = setTimeout(() => this.pollActiveRuns(), 3000);
+    this.pollTimer = setTimeout(() => this.pollActiveRuns(), delayMs);
+  }
+
+  private latestRun(runs: RunItem[]): RunItem | null {
+    const [first, ...rest] = runs;
+    if (!first) return null;
+    return rest.reduce<RunItem>((latest, current) => {
+      return new Date(current.updatedAt).getTime() > new Date(latest.updatedAt).getTime()
+        ? current
+        : latest;
+    }, first);
   }
 
   private async pollActiveRuns() {
@@ -336,24 +423,33 @@ export class SwarmPanel extends LitElement {
     const workflow = this.workflow;
     if (!workflow) {
       this.activeRunsByNode = {};
-      this.startPolling();
+      this.latestRunsByNode = {};
+      this.startPolling(8000);
       return;
     }
     const hasActive = Object.keys(this.activeRunsByNode).length > 0;
     const activeMap: Record<string, string> = {};
+    const latestMap: Record<string, NodeRunSnapshot> = {};
     for (const node of workflow.nodes) {
       try {
         const { runs } = await api.swarm.listNodeRuns(workflow.id, node.id);
+        const latest = this.latestRun(runs);
+        if (latest) {
+          latestMap[node.id] = {
+            runId: latest.id,
+            status: latest.status,
+            updatedAt: latest.updatedAt,
+          };
+        }
         const activeRun = runs.find(r => ["created", "planning", "applying", "running"].includes(r.status));
         if (activeRun) activeMap[node.id] = activeRun.id;
       } catch { /* ignore */ }
     }
     this.activeRunsByNode = activeMap;
+    this.latestRunsByNode = latestMap;
     if (this.selectedNodeId && !this.selectedRunId) await this.refreshRuns();
     const stillActive = Object.keys(activeMap).length > 0;
-    if (stillActive || hasActive) {
-      this.startPolling();
-    }
+    this.startPolling(stillActive || hasActive ? 3000 : 12000);
   }
 
   private get workflow(): SwarmWorkflow | null {
@@ -514,6 +610,37 @@ export class SwarmPanel extends LitElement {
     }
   }
 
+  private async runWorkflowParallel() {
+    if (!this.workflowId || !this.workflow) return;
+    try {
+      this.busy = true;
+      const out: SwarmWorkflowRunResult = await api.swarm.runWorkflow(this.workflowId, { allowConcurrent: false });
+      if (out.launched.length === 0 && out.skipped.length > 0) {
+        const reasons = out.skipped.slice(0, 3).map((entry) => `${entry.nodeId}: ${entry.reason}`).join(" | ");
+        this.error = `No nodes launched: ${reasons}`;
+      } else {
+        this.error = "";
+      }
+
+      if (out.launched.length > 0) {
+        const nextActive = { ...this.activeRunsByNode };
+        for (const launched of out.launched) {
+          nextActive[launched.nodeId] = launched.runId;
+        }
+        this.activeRunsByNode = nextActive;
+      }
+
+      if (this.selectedNodeId) {
+        await this.refreshRuns();
+      }
+      this.busy = false;
+      this.startPolling(1200);
+    } catch (e) {
+      this.error = String(e);
+      this.busy = false;
+    }
+  }
+
   private async runAction(detail: { runId: string; action: string }) {
     try {
       await api.runs.action(detail.runId, detail.action);
@@ -569,11 +696,89 @@ export class SwarmPanel extends LitElement {
     this.dispatchEvent(new CustomEvent("swarm-close", { bubbles: true, composed: true }));
   }
 
+  private getFullscreenElement(): Element | null {
+    const doc = document as Document & { webkitFullscreenElement?: Element | null };
+    return document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+  }
+
+  private isOwnFullscreen(): boolean {
+    const fullscreenElement = this.getFullscreenElement();
+    if (!fullscreenElement) return false;
+    if (fullscreenElement === this) return true;
+
+    const host = this as HTMLElement;
+    if (typeof host.matches === "function") {
+      if (host.matches(":fullscreen")) return true;
+      if (host.matches(":-webkit-full-screen")) return true;
+    }
+
+    return fullscreenElement.contains(host) || host.contains(fullscreenElement);
+  }
+
+  private async enterFullscreen() {
+    const host = this as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+      webkitRequestFullScreen?: () => Promise<void> | void;
+    };
+    if (typeof host.requestFullscreen === "function") {
+      await host.requestFullscreen();
+      return;
+    }
+    if (typeof host.webkitRequestFullscreen === "function") {
+      await host.webkitRequestFullscreen();
+      return;
+    }
+    if (typeof host.webkitRequestFullScreen === "function") {
+      await host.webkitRequestFullScreen();
+    }
+  }
+
+  private async exitFullscreen() {
+    const doc = document as Document & {
+      webkitExitFullscreen?: () => Promise<void> | void;
+      webkitCancelFullScreen?: () => Promise<void> | void;
+    };
+    if (typeof document.exitFullscreen === "function") {
+      await document.exitFullscreen();
+      return;
+    }
+    if (typeof doc.webkitExitFullscreen === "function") {
+      await doc.webkitExitFullscreen();
+      return;
+    }
+    if (typeof doc.webkitCancelFullScreen === "function") {
+      await doc.webkitCancelFullScreen();
+    }
+  }
+
+  private async toggleFullscreen() {
+    try {
+      if (this.isOwnFullscreen() || this.isFullscreen) {
+        await this.exitFullscreen();
+      } else {
+        await this.enterFullscreen();
+      }
+      this.fullscreenChangeHandler();
+    } catch (err) {
+      this.error = `Unable to toggle fullscreen: ${String(err)}`;
+    }
+  }
+
+  private async onNodeSelect(detail: NodeSelectEventDetail) {
+    this.selectedNodeId = detail.nodeId;
+    const source = detail.source ?? "click";
+    if (source === "click" || this.inspectorOpen) {
+      this.inspectorOpen = true;
+    }
+    if (!this.selectedRunId) await this.refreshRuns();
+  }
+
   render() {
     const workflow = this.workflow;
     const selectedNode = this.selectedNode;
     const nodeCount = workflow?.nodes.length ?? 0;
     const edgeCount = workflow?.edges.length ?? 0;
+    const showInspector = this.inspectorOpen && !!selectedNode;
 
     return html`
       <div class="nav">
@@ -607,6 +812,15 @@ export class SwarmPanel extends LitElement {
             `}
             ${workflow.enabled ? "Pause" : "Run"}
           </button>
+          <button
+            class="nav-btn nav-btn-primary"
+            ?disabled=${this.busy || workflow.nodes.length === 0}
+            @click=${() => this.runWorkflowParallel()}
+            title="Run all enabled nodes in parallel"
+          >
+            <svg viewBox="0 0 24 24"><polygon points="4 3 20 12 4 21 4 3"/><path d="M10 4l10 8-10 8"/></svg>
+            Run All
+          </button>
         ` : nothing}
 
         <button class="nav-btn" ?disabled=${this.busy} @click=${() => this.createWorkflow()} title="New workflow">
@@ -631,6 +845,15 @@ export class SwarmPanel extends LitElement {
           title=${this.viewMode === 'canvas' ? 'Terminal View' : 'Canvas View'}>
           <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
         </button>
+        <button
+          class="nav-btn ${this.isFullscreen ? 'active' : ''}"
+          @click=${() => { void this.toggleFullscreen(); }}
+          title=${this.isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+        >
+          ${this.isFullscreen
+            ? html`<svg viewBox="0 0 24 24"><path d="M10 4H4v6M14 4h6v6M10 20H4v-6M20 14v6h-6"/></svg>`
+            : html`<svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/></svg>`}
+        </button>
         <button class="nav-close" @click=${() => this.emitClose()} title="Close SWARM">
           <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
@@ -645,6 +868,11 @@ export class SwarmPanel extends LitElement {
       ` : nothing}
 
       <div class="content">
+        <button
+          class="inspector-backdrop ${showInspector ? "active" : ""}"
+          @click=${() => { this.inspectorOpen = false; }}
+          aria-label="Close inspector"
+        ></button>
         ${this.selectedRunId ? html`
           <run-detail .runId=${this.selectedRunId} .backLabel=${"Back to SWARM"} @back=${() => { this.selectedRunId = ""; }}></run-detail>
         ` : this.viewMode === 'terminal' ? html`
@@ -668,17 +896,18 @@ export class SwarmPanel extends LitElement {
               .selectedNodeId=${this.selectedNodeId}
               .positions=${this.positions}
               .activeRunsByNode=${this.activeRunsByNode}
-              @node-select=${(e: CustomEvent<{ nodeId: string }>) => { this.selectedNodeId = e.detail.nodeId; this.inspectorOpen = true; void this.refreshRuns(); }}
+              @node-select=${(e: CustomEvent<NodeSelectEventDetail>) => { void this.onNodeSelect(e.detail); }}
               @node-move=${(e: CustomEvent<{ nodeId: string; x: number; y: number }>) => {
           this.positions = { ...this.positions, [e.detail.nodeId]: { x: e.detail.x, y: e.detail.y } };
           this.savePositions();
         }}
+              .latestRunsByNode=${this.latestRunsByNode}
             ></swarm-canvas>
           `}
         </div>
         `}
 
-        <div class="inspector-col ${this.inspectorOpen && selectedNode ? "" : "hidden"}">
+        <div class="inspector-col ${showInspector ? "" : "hidden"}">
           <swarm-inspector
             .workflow=${workflow}
             .node=${selectedNode}

@@ -1,4 +1,6 @@
 import { UndoEngine, type FileBackup } from "@undoable/core";
+import os from "node:os";
+import path from "node:path";
 import type { ActionLog } from "./action-log.js";
 import type { ActionRecord, FileUndoData, ExecUndoData } from "./types.js";
 import { executeReversal } from "./command-reversal.js";
@@ -20,6 +22,15 @@ export class UndoService {
   constructor(actionLog: ActionLog) {
     this.engine = new UndoEngine();
     this.actionLog = actionLog;
+  }
+
+  private resolveFilePath(input: string): string {
+    const raw = input.trim();
+    const home = os.homedir();
+    if (raw === "~") return home;
+    if (raw.startsWith("~/")) return path.join(home, raw.slice(2));
+    if (path.isAbsolute(raw)) return raw;
+    return path.resolve(home, raw);
   }
 
   async undoAction(actionId: string): Promise<UndoResult> {
@@ -121,10 +132,12 @@ export class UndoService {
     if (redo.type !== "file") {
       return { actionId, toolName: action.toolName, success: false, error: `Unsupported redo type: ${redo.type}` };
     }
+    const resolvedPath = this.resolveFilePath(redo.path);
 
     const restore: FileBackup = {
-      path: redo.path,
+      path: resolvedPath,
       content: redo.previousContent,
+      contentBase64: redo.previousContentBase64,
       existed: redo.previousExisted,
     };
     const result = await this.engine.undoWithFileRestore([restore]);
@@ -159,10 +172,12 @@ export class UndoService {
   }
 
   private async undoFileAction(action: ActionRecord, undo: FileUndoData): Promise<UndoResult> {
-    const beforeUndo = await this.engine.backupFile(undo.path);
+    const resolvedPath = this.resolveFilePath(undo.path);
+    const beforeUndo = await this.engine.backupFile(resolvedPath);
     const backup: FileBackup = {
-      path: undo.path,
+      path: resolvedPath,
       content: undo.previousContent,
+      contentBase64: undo.previousContentBase64,
       existed: undo.previousExisted,
     };
 
@@ -170,8 +185,9 @@ export class UndoService {
     if (result.success) {
       this.redoSnapshots.set(action.id, {
         type: "file",
-        path: undo.path,
+        path: resolvedPath,
         previousContent: beforeUndo.content,
+        previousContentBase64: beforeUndo.contentBase64,
         previousExisted: beforeUndo.existed,
       });
       this.removeFromRedoStack(action.id);

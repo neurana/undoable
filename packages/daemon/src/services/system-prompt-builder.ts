@@ -12,6 +12,7 @@ export type SystemPromptParams = {
   skillsPrompt?: string;
   toolDefinitions?: ToolDefinition[];
   contextFiles?: ContextFile[];
+  economyMode?: boolean;
   workspaceDir?: string;
   runtime?: {
     model?: string;
@@ -40,8 +41,23 @@ function buildSafetySection(): string[] {
   ];
 }
 
-function buildToolingSection(toolDefs?: ToolDefinition[]): string[] {
+function buildToolingSection(
+  toolDefs?: ToolDefinition[],
+  economyMode = false,
+): string[] {
   if (!toolDefs || toolDefs.length === 0) return [];
+
+  if (economyMode) {
+    const names = Array.from(
+      new Set(toolDefs.map((t) => t.function.name)),
+    ).sort();
+    return [
+      "## Tooling",
+      "Economy mode is enabled. Minimize tool calls and keep outputs concise.",
+      `Available tools: ${names.join(", ")}`,
+      "",
+    ];
+  }
 
   const TOOL_CATEGORIES: Record<string, string[]> = {
     "Understanding (use FIRST)": ["project_info", "file_info", "codebase_search", "system_info"],
@@ -53,6 +69,17 @@ function buildToolingSection(toolDefs?: ToolDefinition[]): string[] {
     "Subagents": ["subagent_spawn", "subagent_list"],
     "Connectors": ["connect", "nodes"],
     "Workflow": ["list_runs", "create_run", "list_jobs", "create_job", "delete_job", "toggle_job", "run_job", "scheduler_status"],
+    "Skills (skills.sh)": [
+      "skills_list",
+      "skills_search",
+      "skills_discover",
+      "skills_install",
+      "skills_installed",
+      "skills_check_updates",
+      "skills_update",
+      "skills_remove",
+      "skills_toggle",
+    ],
     "SWARM Orchestration": [
       "swarm_list_workflows",
       "swarm_get_workflow",
@@ -62,9 +89,13 @@ function buildToolingSection(toolDefs?: ToolDefinition[]): string[] {
       "swarm_reconcile_jobs",
       "swarm_add_node",
       "swarm_update_node",
+      "swarm_remove_node",
       "swarm_delete_node",
       "swarm_set_edges",
+      "swarm_upsert_edge",
+      "swarm_remove_edge",
       "swarm_run_node",
+      "swarm_list_node_runs",
     ],
     "Canvas": ["canvas"],
     "Channel Actions": ["telegram_actions", "discord_actions", "slack_actions", "whatsapp_actions"],
@@ -105,12 +136,32 @@ function buildToolingSection(toolDefs?: ToolDefinition[]): string[] {
   return lines;
 }
 
-function buildToolCallStyleSection(): string[] {
+function buildToolCallStyleSection(economyMode = false): string[] {
   return [
     "## Tool Call Style",
     "Default: do not narrate routine, low-risk tool calls (just call the tool).",
     "Narrate only when it helps: multi-step work, complex problems, sensitive actions (e.g., deletions), or when the user explicitly asks.",
     "Keep narration brief and value-dense; avoid repeating obvious steps.",
+    ...(economyMode
+      ? [
+          "In economy mode, avoid exploratory calls unless required for task completion.",
+        ]
+      : []),
+    "",
+  ];
+}
+
+function buildCanvasSection(toolDefs?: ToolDefinition[]): string[] {
+  if (!toolDefs?.some((t) => t.function.name === "canvas")) return [];
+  return [
+    "## Live Canvas",
+    "Canvas is Undoable's agent-driven visual workspace (inspired by OpenClaw's live canvas model).",
+    "Use it when users want dashboards, visual workflows, previews, or traceable UI output.",
+    "- `canvas` `present`: open the workspace panel",
+    "- `canvas` `navigate`: render a target page inside the workspace",
+    "- `canvas` `a2ui_push` / `a2ui_reset`: stream and reset generated UI frames",
+    "- `canvas` `snapshot`: capture rendered output for verification",
+    "Prefer Canvas output over external tools when the user asks for an in-product visual result.",
     "",
   ];
 }
@@ -158,19 +209,20 @@ function buildSwarmSection(): string[] {
     "",
     "### Architecture",
     "- **Workflow**: Container holding nodes and edges. Has `enabled` flag to activate/deactivate.",
-    "- **Node**: Individual AI agent with its own prompt, schedule (cron), and connections.",
+    "- **Node**: Individual AI agent with its own prompt, schedule, and connections.",
     "- **Edge**: Directed connection from one node to another. Output of source triggers target.",
     "",
     "### Tool Usage Pattern",
     "1. `swarm_create_workflow` → returns workflow ID",
-    "2. `swarm_add_node` → add nodes with prompt, optional cron schedule",
+    "2. `swarm_add_node` → add nodes with prompt, optional schedule",
     "3. `swarm_set_edges` → connect nodes (array of {from, to} pairs)",
     "4. `swarm_update_workflow` with `enabled: true` → activate",
     "",
     "### Node Configuration",
     "- `prompt`: Instructions for the AI agent running this node",
-    "- `cron`: Optional schedule (e.g., \"0 9 * * *\" for daily 9am)",
-    "- `position`: {x, y} for canvas placement",
+    "- `schedule`: one of `manual`, `dependency`, `every`, `at`, `cron`",
+    "- `config`: Optional JSON object for node-specific settings",
+    "- Canvas node position is UI state; treat it as view metadata.",
     "",
     "### Execution Flow",
     "- When a node runs, it creates a **run** with real-time events",
@@ -183,11 +235,55 @@ function buildSwarmSection(): string[] {
     "- Use edges to pass context between nodes (output → input)",
     "- For recurring tasks, set cron on the entry node only",
     "- Test nodes individually with `swarm_run_node` before enabling workflow",
+    "- Use SWARM proactively when users ask for automations, agents, recurring jobs, or 24/7 workflows.",
     "",
   ];
 }
 
-function buildBehaviorSection(): string[] {
+function buildAutomationDefaultsSection(toolDefs?: ToolDefinition[]): string[] {
+  if (!toolDefs || toolDefs.length === 0) return [];
+  const toolNames = new Set(toolDefs.map((t) => t.function.name));
+  const has = (name: string) => toolNames.has(name);
+  const channelLabels = [
+    has("telegram_actions") ? "Telegram" : "",
+    has("discord_actions") ? "Discord" : "",
+    has("slack_actions") ? "Slack" : "",
+    has("whatsapp_actions") ? "WhatsApp" : "",
+  ].filter(Boolean);
+
+  return [
+    "## Automation Defaults",
+    "Treat terms like `automation`, `workflow`, `agent`, `SDR`, `pipeline`, `24/7`, and `follow-up` as build requests, not just advice requests.",
+    "Prefer Undoable-native implementation first: SWARM/workflow tools + channel action tools + local execution tools.",
+    "Proactively check reusable capabilities with `skills_search` / `skills_discover` when a request maps to known integrations or workflows.",
+    "When a relevant trusted skill exists, offer it and use `skills_install` (with user consent for third-party code) before reinventing the flow.",
+    "Do not default to external platforms (Zapier/Make/n8n) unless the user explicitly asks for those.",
+    "Ask only blocking clarification questions (missing credentials, required IDs, legal/safety constraints). Otherwise choose sensible defaults and proceed.",
+    "If an integration has no dedicated tool, implement it inside Undoable via `exec` and/or `web_fetch`, then schedule/orchestrate it with SWARM/workflow tools.",
+    channelLabels.length > 0
+      ? `Native messaging channels available in this runtime: ${channelLabels.join(", ")}.`
+      : "",
+    "Examples:",
+    "- `I need an SDR for Shopify and Gmail` → create a concrete workflow (lead intake → qualification → outreach drafting → delivery), then request only missing credentials.",
+    "- `When a new Discord member joins, send welcome email` → build the flow in Undoable; if join-event hooks are not directly exposed, use an Undoable-managed script/job bridge.",
+    "",
+  ].filter(Boolean);
+}
+
+function buildBehaviorSection(economyMode = false): string[] {
+  if (economyMode) {
+    return [
+      "## Behavior Rules",
+      "1. **Act directly.** Use tools immediately when needed.",
+      "2. **Minimize tokens.** Keep responses concise and avoid unnecessary narration.",
+      "3. **Minimize tool churn.** Prefer the fewest high-signal calls over broad exploration.",
+      "4. **Use edit_file for targeted code changes.** Use write_file only for new files or full rewrites.",
+      "5. **Confirm before destructive actions** (rm, overwrite, etc.).",
+      "6. **For long-running commands**, use exec with background=true, then poll with process.",
+      "",
+    ];
+  }
+
   return [
     "## Behavior Rules",
     "1. **Act, don't describe.** Call tools immediately when the user asks for something.",
@@ -198,8 +294,10 @@ function buildBehaviorSection(): string[] {
     "6. Use markdown formatting for readability.",
     "7. **For long-running commands**, use exec with background=true, then poll with the process tool.",
     "8. **Use SWARM only when it helps orchestration.** Prefer direct execution for one-off tasks.",
-    "9. **When SWARM is requested, build a runnable minimal workflow first.** Create workflow, add nodes, set edges, enable. Avoid unnecessary clarification.",
-    "10. **Provide concrete examples immediately.** Use sensible defaults and state assumptions briefly.",
+    "9. **For automation intent, use SWARM/workflow proactively even if SWARM is not named explicitly.**",
+    "10. **Build a runnable minimal workflow first.** Create workflow, add nodes, set edges, enable/test. Avoid unnecessary clarification.",
+    "11. **Use in-product tooling first.** Do not recommend external automation platforms unless the user asks for them.",
+    "12. **Provide concrete examples immediately.** Use sensible defaults and state assumptions briefly.",
     "",
   ];
 }
@@ -250,16 +348,19 @@ function buildContextFilesSection(files?: ContextFile[]): string[] {
 }
 
 export function buildSystemPrompt(params: SystemPromptParams): string {
+  const economyMode = params.economyMode === true;
   const lines = [
     ...buildIdentitySection(params.agentName),
     ...buildSafetySection(),
-    ...buildToolingSection(params.toolDefinitions),
-    ...buildToolCallStyleSection(),
-    ...buildSwarmSection(),
+    ...buildToolingSection(params.toolDefinitions, economyMode),
+    ...buildToolCallStyleSection(economyMode),
+    ...buildCanvasSection(params.toolDefinitions),
+    ...(economyMode ? [] : buildSwarmSection()),
+    ...(economyMode ? [] : buildAutomationDefaultsSection(params.toolDefinitions)),
     ...buildWorkspaceSection(params.workspaceDir),
     ...buildSkillsSection(params.skillsPrompt),
     ...buildInstructionsSection(params.agentInstructions),
-    ...buildBehaviorSection(),
+    ...buildBehaviorSection(economyMode),
     ...buildPlatformSection(),
     ...buildRuntimeSection(params.runtime),
     ...buildContextFilesSection(params.contextFiles),

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
+import dns from "node:dns/promises";
 import { promisify } from "node:util";
 import {
   loadAllSkills,
@@ -9,11 +10,20 @@ import {
   buildSkillsPrompt,
   type SkillStatus,
 } from "./skill-loader.js";
+import {
+  formatSkillScanWarnings,
+  scanSkillDirectory,
+  type SkillScanSummary,
+} from "./skills-security.js";
 
 const execFileAsync = promisify(execFile);
 const UNDOABLE_DIR = path.join(os.homedir(), ".undoable");
 const CONFIG_FILE = path.join(UNDOABLE_DIR, "skills.json");
 const USER_SKILLS_DIR = path.join(UNDOABLE_DIR, "skills");
+const BUNDLED_SKILLS_DIR = path.join(
+  path.resolve(import.meta.dirname, "../.."),
+  "skills",
+);
 const SKILLS_DOCS_URL = "https://skills.sh/docs";
 const SKILLS_CLI_DOCS_URL = "https://skills.sh/docs/cli";
 const SKILLS_FIND_SKILL_URL = "https://skills.sh/vercel-labs/skills/find-skills";
@@ -61,6 +71,20 @@ export type SkillsInstallResponse = {
   warning: SkillsDangerWarning;
   stdout?: string;
   stderr?: string;
+  preflight?: SkillsInstallPreflight;
+  warnings?: string[];
+  scan?: {
+    checkedSkills: number;
+    critical: number;
+    warn: number;
+    summaries: Array<{
+      skill: string;
+      scannedFiles: number;
+      critical: number;
+      warn: number;
+      truncated: boolean;
+    }>;
+  };
 };
 
 export type SkillsCliCommandResponse = {
@@ -77,6 +101,25 @@ export type SkillsListResponse = SkillsCliCommandResponse & {
 };
 
 export type SkillAgentTarget = (typeof SUPPORTED_SKILLS_AGENTS)[number];
+
+export type SkillsInstallCheck = {
+  id: string;
+  label: string;
+  status: "pass" | "warn" | "fail";
+  message: string;
+  detail?: string;
+};
+
+export type SkillsInstallPreflight = {
+  ok: boolean;
+  reference: string;
+  normalizedReference?: string;
+  global: boolean;
+  agents: SkillAgentTarget[];
+  checks: SkillsInstallCheck[];
+  errors: string[];
+  warning: SkillsDangerWarning;
+};
 
 function normalizeSkillDirName(name: string): string {
   return name
@@ -115,6 +158,54 @@ function appendAgentArgs(base: string[], agents?: string[]): string[] {
   return next;
 }
 
+function hasExecutable(bin: string): boolean {
+  const pathEnv = process.env.PATH || "";
+  const dirs = pathEnv.split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    const full = path.join(dir, bin);
+    try {
+      fs.accessSync(full, fs.constants.X_OK);
+      return true;
+    } catch {
+      // continue
+    }
+  }
+  return false;
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<T> {
+  let timeoutId: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+async function canWriteDirectory(dirPath: string): Promise<boolean> {
+  const marker = path.join(
+    dirPath,
+    `.skills-write-check-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  try {
+    await fs.promises.mkdir(dirPath, { recursive: true });
+    await fs.promises.writeFile(marker, "ok", "utf-8");
+    await fs.promises.unlink(marker);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function defaultSkillContent(name: string, description?: string): string {
   return [
     "---",
@@ -129,10 +220,45 @@ function defaultSkillContent(name: string, description?: string): string {
   ].join("\n");
 }
 
+function buildSearchResult(repo: string, skill: string): SkillsSearchResult {
+  const [owner, repoName] = repo.split("/");
+  const url = `https://skills.sh/${owner}/${repoName}/${skill}`;
+  return {
+    reference: `${repo}@${skill}`,
+    repo,
+    skill,
+    url,
+    installCommand: `npx skills add ${repo} --skill ${skill} -g --agent <agent> -y`,
+  };
+}
+
 function parseRepositoryReference(reference: string): { repo: string; skill?: string } | null {
   const trimmed = reference.trim();
   if (!trimmed) return null;
-  const match = trimmed.match(/^([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+)(?:@([a-zA-Z0-9._-]+))?$/);
+
+  if (/^(?:https?:\/\/|skills\.sh\/)/i.test(trimmed)) {
+    const urlLike = trimmed.startsWith("http://") || trimmed.startsWith("https://")
+      ? trimmed
+      : `https://${trimmed}`;
+    try {
+      const parsed = new URL(urlLike);
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname === "skills.sh" || hostname === "www.skills.sh") {
+        const parts = parsed.pathname.split("/").filter(Boolean);
+        if (parts.length >= 2) {
+          const repo = `${parts[0]}/${parts[1]}`;
+          const skill = parts[2];
+          return { repo, skill };
+        }
+      }
+    } catch {
+      // Fall through to owner/repo parser.
+    }
+  }
+
+  const match = trimmed.match(
+    /^([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+)(?:@([a-zA-Z0-9._-]+))?$/,
+  );
   if (!match) return null;
   return {
     repo: match[1]!,
@@ -140,27 +266,39 @@ function parseRepositoryReference(reference: string): { repo: string; skill?: st
   };
 }
 
+function normalizeReference(parsed: { repo: string; skill?: string }): string {
+  return parsed.skill ? `${parsed.repo}@${parsed.skill}` : parsed.repo;
+}
+
 function parseSkillsShUrls(output: string): SkillsSearchResult[] {
   const seen = new Set<string>();
   const results: SkillsSearchResult[] = [];
-  const regex = /https:\/\/skills\.sh\/([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+)/g;
+  const push = (repo: string, skill: string) => {
+    const normalizedRepo = repo.trim();
+    const normalizedSkill = skill.trim();
+    if (!normalizedRepo || !normalizedSkill) return;
+    const reference = `${normalizedRepo}@${normalizedSkill}`;
+    if (seen.has(reference)) return;
+    seen.add(reference);
+    results.push(buildSearchResult(normalizedRepo, normalizedSkill));
+  };
+
+  const urlRegex =
+    /(?:https?:\/\/)?skills\.sh\/([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+)/g;
   let match: RegExpExecArray | null;
-  while ((match = regex.exec(output)) !== null) {
+  while ((match = urlRegex.exec(output)) !== null) {
     const owner = match[1]!;
     const repoName = match[2]!;
     const skill = match[3]!;
-    const repo = `${owner}/${repoName}`;
-    const reference = `${repo}@${skill}`;
-    if (seen.has(reference)) continue;
-    seen.add(reference);
-    const url = `https://skills.sh/${owner}/${repoName}/${skill}`;
-    results.push({
-      reference,
-      repo,
-      skill,
-      url,
-      installCommand: `npx skills add ${repo} --skill ${skill} -g --agent <agent> -y`,
-    });
+    push(`${owner}/${repoName}`, skill);
+  }
+
+  const refRegex =
+    /([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+)@([a-zA-Z0-9._-]+)/g;
+  while ((match = refRegex.exec(output)) !== null) {
+    const repo = match[1]!;
+    const skill = match[2]!;
+    push(repo, skill);
   }
   return results;
 }
@@ -188,6 +326,7 @@ export class SkillsService {
   constructor(opts?: { workspaceDir?: string }) {
     this.workspaceDir = opts?.workspaceDir;
     this.loadConfig();
+    this.bootstrapBundledSkills();
     this.refresh();
   }
 
@@ -215,6 +354,38 @@ export class SkillsService {
     }
   }
 
+  private bootstrapBundledSkills(): void {
+    try {
+      if (!fs.existsSync(BUNDLED_SKILLS_DIR)) return;
+      if (!fs.existsSync(USER_SKILLS_DIR)) {
+        fs.mkdirSync(USER_SKILLS_DIR, { recursive: true });
+      }
+
+      const entries = fs.readdirSync(BUNDLED_SKILLS_DIR, {
+        withFileTypes: true,
+      });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const sourceDir = path.join(BUNDLED_SKILLS_DIR, entry.name);
+        const sourceSkill = path.join(sourceDir, "SKILL.md");
+        if (!fs.existsSync(sourceSkill)) continue;
+
+        const targetDir = path.join(USER_SKILLS_DIR, entry.name);
+        const targetSkill = path.join(targetDir, "SKILL.md");
+        if (fs.existsSync(targetSkill)) continue;
+
+        if (!fs.existsSync(targetDir)) {
+          fs.cpSync(sourceDir, targetDir, { recursive: true });
+          continue;
+        }
+
+        fs.copyFileSync(sourceSkill, targetSkill);
+      }
+    } catch {
+      // best effort: skills can still be installed manually later
+    }
+  }
+
   refresh(): SkillStatus[] {
     const loaded = loadAllSkills({ workspaceDir: this.workspaceDir });
     const disabledSet = new Set(this.config.disabled);
@@ -233,6 +404,201 @@ export class SkillsService {
 
   getSupportedAgents(): SkillAgentTarget[] {
     return [...SUPPORTED_SKILLS_AGENTS];
+  }
+
+  private async buildInstallPreflight(
+    reference: string,
+    opts?: { global?: boolean; agents?: string[] },
+  ): Promise<SkillsInstallPreflight> {
+    const warning = this.getDangerWarning();
+    const checks: SkillsInstallCheck[] = [];
+    const parsed = parseRepositoryReference(reference);
+    const normalizedReference = parsed ? normalizeReference(parsed) : undefined;
+    const agents = normalizeAgentTargets(opts?.agents);
+    const global = opts?.global !== false;
+
+    if (parsed) {
+      checks.push({
+        id: "reference",
+        label: "Reference format",
+        status: "pass",
+        message: "Skill reference format is valid",
+        detail: normalizedReference,
+      });
+    } else {
+      checks.push({
+        id: "reference",
+        label: "Reference format",
+        status: "fail",
+        message:
+          "Invalid reference format. Use owner/repo, owner/repo@skill, or https://skills.sh/owner/repo/skill",
+      });
+    }
+
+    if (agents.length > 0) {
+      checks.push({
+        id: "agents",
+        label: "Target agents",
+        status: "pass",
+        message: `Install target(s): ${agents.join(", ")}`,
+      });
+    } else {
+      checks.push({
+        id: "agents",
+        label: "Target agents",
+        status: "fail",
+        message: `Select at least one target agent (${SUPPORTED_SKILLS_AGENTS.join(", ")})`,
+      });
+    }
+
+    if (hasExecutable("npx")) {
+      checks.push({
+        id: "npx",
+        label: "npx CLI",
+        status: "pass",
+        message: "npx is available on PATH",
+      });
+    } else {
+      checks.push({
+        id: "npx",
+        label: "npx CLI",
+        status: "fail",
+        message: "npx is not available on PATH",
+      });
+    }
+
+    const writable = await canWriteDirectory(UNDOABLE_DIR);
+    checks.push({
+      id: "filesystem",
+      label: "Local writable storage",
+      status: writable ? "pass" : "fail",
+      message: writable
+        ? `Write access OK: ${UNDOABLE_DIR}`
+        : `Cannot write to ${UNDOABLE_DIR}. Check directory permissions.`,
+    });
+
+    try {
+      await withTimeout(
+        dns.lookup("registry.npmjs.org"),
+        4_000,
+        "DNS lookup timed out",
+      );
+      checks.push({
+        id: "network",
+        label: "Registry DNS",
+        status: "pass",
+        message: "registry.npmjs.org is resolvable",
+      });
+    } catch (err) {
+      checks.push({
+        id: "network",
+        label: "Registry DNS",
+        status: "warn",
+        message:
+          "Registry DNS lookup failed. Install may fail if network/proxy is unavailable.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    const errors = checks
+      .filter((check) => check.status === "fail")
+      .map((check) => check.message);
+
+    return {
+      ok: errors.length === 0,
+      reference,
+      normalizedReference,
+      global,
+      agents,
+      checks,
+      errors,
+      warning,
+    };
+  }
+
+  async preflightInstallFromRegistry(
+    reference: string,
+    opts?: { global?: boolean; agents?: string[] },
+  ): Promise<SkillsInstallPreflight> {
+    return this.buildInstallPreflight(reference.trim(), opts);
+  }
+
+  private collectSafetyScanCandidates(
+    before: SkillStatus[],
+    after: SkillStatus[],
+    preferredSkill?: string,
+  ): SkillStatus[] {
+    const beforeKeys = new Set(
+      before.map((skill) => `${skill.source}:${skill.name}:${skill.filePath}`),
+    );
+    const preferred = preferredSkill?.trim().toLowerCase();
+
+    const ranked = after
+      .filter((skill) => skill.source !== "bundled")
+      .map((skill) => {
+        const key = `${skill.source}:${skill.name}:${skill.filePath}`;
+        const isNew = !beforeKeys.has(key);
+        const isPreferred = preferred
+          ? skill.name.trim().toLowerCase() === preferred
+          : false;
+        return { skill, isNew, isPreferred };
+      })
+      .sort((a, b) => {
+        if (a.isPreferred !== b.isPreferred) return a.isPreferred ? -1 : 1;
+        if (a.isNew !== b.isNew) return a.isNew ? -1 : 1;
+        return a.skill.name.localeCompare(b.skill.name);
+      })
+      .slice(0, 8)
+      .map((entry) => entry.skill);
+
+    return ranked;
+  }
+
+  private buildSafetyScanResponse(
+    candidates: SkillStatus[],
+  ): {
+    warnings: string[];
+    scan: SkillsInstallResponse["scan"];
+  } {
+    const summaries: Array<{
+      skill: string;
+      summary: SkillScanSummary;
+    }> = [];
+
+    for (const skill of candidates) {
+      try {
+        const summary = scanSkillDirectory(skill.baseDir);
+        summaries.push({ skill: skill.name, summary });
+      } catch {
+        // ignore scanner errors for a single skill
+      }
+    }
+
+    const warnings = summaries.flatMap(({ skill, summary }) =>
+      formatSkillScanWarnings(skill, summary),
+    );
+
+    const critical = summaries.reduce(
+      (acc, item) => acc + item.summary.critical,
+      0,
+    );
+    const warn = summaries.reduce((acc, item) => acc + item.summary.warn, 0);
+
+    return {
+      warnings,
+      scan: {
+        checkedSkills: summaries.length,
+        critical,
+        warn,
+        summaries: summaries.map((item) => ({
+          skill: item.skill,
+          scannedFiles: item.summary.scannedFiles,
+          critical: item.summary.critical,
+          warn: item.summary.warn,
+          truncated: item.summary.truncated,
+        })),
+      },
+    };
   }
 
   private async runSkillsCommand(args: string[], message: string): Promise<SkillsCliCommandResponse> {
@@ -427,28 +793,32 @@ export class SkillsService {
   }
 
   async installFromRegistry(reference: string, opts?: { global?: boolean; agents?: string[] }): Promise<SkillsInstallResponse> {
-    const parsed = parseRepositoryReference(reference);
+    const normalizedReference = reference.trim();
     const warning = this.getDangerWarning();
+    const preflight = await this.buildInstallPreflight(normalizedReference, opts);
+    if (!preflight.ok) {
+      return {
+        ok: false,
+        installed: false,
+        reference: normalizedReference,
+        message: `preflight failed: ${preflight.errors.join("; ")}`,
+        warning,
+        preflight,
+      };
+    }
+    const parsed = parseRepositoryReference(preflight.normalizedReference ?? normalizedReference);
     if (!parsed) {
       return {
         ok: false,
         installed: false,
-        reference,
+        reference: normalizedReference,
         message: "invalid reference format. expected owner/repo or owner/repo@skill-name",
         warning,
+        preflight,
       };
     }
-
-    const agentTargets = normalizeAgentTargets(opts?.agents);
-    if (agentTargets.length === 0) {
-      return {
-        ok: false,
-        installed: false,
-        reference,
-        message: `select at least one agent target (${SUPPORTED_SKILLS_AGENTS.join(", ")})`,
-        warning,
-      };
-    }
+    const agentTargets = preflight.agents;
+    const before = [...this.skills];
 
     const args = ["-y", "skills", "add", parsed.repo];
     if (parsed.skill) {
@@ -472,23 +842,33 @@ export class SkillsService {
         },
         maxBuffer: 1024 * 1024,
       });
-      this.refresh();
+      const after = this.refresh();
+      const candidates = this.collectSafetyScanCandidates(before, after, parsed.skill);
+      const safety = this.buildSafetyScanResponse(candidates);
+      const warningSummary =
+        safety.warnings.length > 0
+          ? ` Installed with ${safety.scan?.critical ?? 0} critical and ${safety.scan?.warn ?? 0} warning findings.`
+          : "";
       return {
         ok: true,
         installed: true,
-        reference,
-        message: `installed ${reference}`,
+        reference: preflight.normalizedReference ?? normalizedReference,
+        message: `installed ${preflight.normalizedReference ?? normalizedReference}.${warningSummary}`,
         warning,
         stdout,
         stderr,
+        preflight,
+        warnings: safety.warnings,
+        scan: safety.scan,
       };
     } catch (err) {
       return {
         ok: false,
         installed: false,
-        reference,
+        reference: preflight.normalizedReference ?? normalizedReference,
         message: err instanceof Error ? err.message : String(err),
         warning,
+        preflight,
       };
     }
   }

@@ -62,6 +62,7 @@ import { TtsService } from "../services/tts-service.js";
 import { SttService } from "../services/stt-service.js";
 import { MediaUnderstandingService } from "../services/media-understanding.js";
 import { UsageService } from "../services/usage-service.js";
+import { resolveEconomyModeFromEnv } from "../services/economy-mode.js";
 import { PluginRegistry } from "../plugins/registry.js";
 import { pluginRoutes } from "../routes/plugins.js";
 import type { PluginContext } from "../plugins/types.js";
@@ -75,8 +76,74 @@ export type ServerOptions = {
   host?: string;
 };
 
+const DEFAULT_BODY_LIMIT_MB = 32;
+
+function resolveBodyLimitBytes(): number {
+  const bytesRaw = process.env.UNDOABLE_BODY_LIMIT_BYTES?.trim();
+  if (bytesRaw) {
+    const bytes = Number(bytesRaw);
+    if (Number.isFinite(bytes) && bytes > 0) {
+      return Math.floor(bytes);
+    }
+  }
+
+  const mbRaw = process.env.UNDOABLE_BODY_LIMIT_MB?.trim();
+  if (mbRaw) {
+    const mb = Number(mbRaw);
+    if (Number.isFinite(mb) && mb > 0) {
+      return Math.floor(mb * 1024 * 1024);
+    }
+  }
+
+  return DEFAULT_BODY_LIMIT_MB * 1024 * 1024;
+}
+
+function formatMiB(bytes: number): string {
+  const mib = bytes / (1024 * 1024);
+  return Number.isInteger(mib) ? `${mib}` : mib.toFixed(1);
+}
+
 export async function createServer(opts: ServerOptions) {
-  const app = Fastify({ logger: true });
+  const bodyLimitBytes = resolveBodyLimitBytes();
+  const app = Fastify({
+    logger: true,
+    bodyLimit: bodyLimitBytes,
+  });
+
+  app.setErrorHandler((err, req, reply) => {
+    if (
+      (err as { code?: string }).code === "FST_ERR_CTP_BODY_TOO_LARGE" &&
+      !reply.sent
+    ) {
+      const limitMiB = formatMiB(bodyLimitBytes);
+      return reply.code(413).send({
+        error: `Request body is too large (max ${limitMiB} MiB).`,
+        code: "REQUEST_BODY_TOO_LARGE",
+        limitBytes: bodyLimitBytes,
+        recovery:
+          "Upload a smaller image/audio file, or increase UNDOABLE_BODY_LIMIT_MB and restart the daemon.",
+      });
+    }
+
+    app.log.error(
+      { err, method: req.method, url: req.url },
+      "request failed",
+    );
+
+    if (reply.sent) return;
+
+    const statusCode =
+      typeof (err as { statusCode?: unknown }).statusCode === "number"
+        ? (err as { statusCode: number }).statusCode
+        : 500;
+    const message =
+      statusCode >= 500
+        ? "Internal server error"
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    return reply.code(statusCode).send({ error: message });
+  });
 
   if (isDatabaseEnabled()) {
     try {
@@ -153,6 +220,7 @@ export async function createServer(opts: ServerOptions) {
     "3. Use your tools (exec, web_search, browser, browse_page, web_fetch, read_file, write_file, edit_file, media, sessions_*, channel actions, etc.) to accomplish the task.",
     "4. When done, return a concise summary of what you did and the results.",
     "5. If the task cannot be completed, explain why in your response.",
+    "6. If web_search is unavailable or weak, continue with browse_page/web_fetch/browser against reputable sources instead of stopping with setup instructions.",
     "",
     "You have full access to the system. Act autonomously and complete the task.",
     "",
@@ -286,6 +354,7 @@ export async function createServer(opts: ServerOptions) {
     dangerouslySkipPermissions:
       process.env.UNDOABLE_DANGEROUSLY_SKIP_PERMISSIONS === "1",
   });
+  const economyMode = resolveEconomyModeFromEnv();
   const initialApiKey = process.env.OPENAI_API_KEY ?? "";
   const initialModel = process.env.UNDOABLE_MODEL ?? "gpt-4.1-mini";
   const initialBaseUrl =
@@ -295,6 +364,7 @@ export async function createServer(opts: ServerOptions) {
     model: initialModel,
     baseUrl: initialBaseUrl,
     runMode,
+    economy: economyMode,
   };
   const providerSvc = new ProviderService();
   await providerSvc.init(initialApiKey, initialModel, initialBaseUrl);
@@ -303,6 +373,7 @@ export async function createServer(opts: ServerOptions) {
       runMode: runMode.mode,
       maxIterations: runMode.maxIterations,
       skipPerms: runMode.dangerouslySkipPermissions,
+      economyMode: economyMode.enabled === true,
       model: initialModel,
     },
     "run mode configured",
@@ -378,6 +449,7 @@ export async function createServer(opts: ServerOptions) {
     sandboxSessionId: "daemon",
     approvalMode: shouldAutoApprove(runMode) ? ("off" as const) : undefined,
     execApprovalService,
+    skillsService,
   });
 
   const boundCallLLM = (
@@ -494,6 +566,7 @@ export async function createServer(opts: ServerOptions) {
     sandboxSessionId: "daemon",
     approvalMode: "off",
     execSecurityBypass: true,
+    skillsService,
   });
   schedulerRegistryRef = { registry: swarmRegistry };
   swarmRegistry.registerTools(createChannelTools(channelManager));
@@ -519,6 +592,7 @@ export async function createServer(opts: ServerOptions) {
     "3. Use your tools (exec, web_search, browser, browse_page, web_fetch, read_file, write_file, edit_file, media, sessions_*, channel actions, etc.) to accomplish the task.",
     "4. When done, return a concise summary of what you did and the results.",
     "5. If the task cannot be completed, explain why in your response.",
+    "6. If web_search is unavailable or weak, continue with browse_page/web_fetch/browser against reputable sources instead of stopping with setup instructions.",
     "",
     "You have full access to the system. Act autonomously and complete the task.",
     "",
@@ -559,6 +633,8 @@ export async function createServer(opts: ServerOptions) {
     heartbeatSvc,
     swarmService,
     usageService,
+    ttsService,
+    sttService,
   );
   fileRoutes(app);
   channelRoutes(app, channelManager);

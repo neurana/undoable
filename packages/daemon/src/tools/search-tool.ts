@@ -1,14 +1,34 @@
 import type { AgentTool } from "./types.js";
 
 const BRAVE_API = "https://api.search.brave.com/res/v1/web/search";
+const DUCKDUCKGO_HTML = "https://html.duckduckgo.com/html/";
 const CACHE_TTL = 15 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 100;
 const FETCH_TIMEOUT = 10_000;
 const DATE_RANGE_RE = /^\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2}$/;
 const SHORTHAND_FRESHNESS = new Set(["pd", "pw", "pm", "py"]);
+const DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/537.36 Chrome/122 Safari/537.36";
 
 type CacheEntry = { ts: number; data: unknown };
 const cache = new Map<string, CacheEntry>();
+
+type SearchResult = {
+  title: string;
+  url: string;
+  description: string;
+  siteName?: string;
+  published?: string;
+};
+
+type SearchResponse = {
+  query: string;
+  provider: "brave" | "duckduckgo";
+  count: number;
+  tookMs: number;
+  results: SearchResult[];
+  warnings?: string[];
+};
 
 type BraveResult = {
   title: string;
@@ -21,8 +41,25 @@ type BraveResponse = {
   web?: { results: BraveResult[] };
 };
 
-function cacheKey(query: string, count: number, freshness?: string, country?: string, lang?: string): string {
-  return `${query}|${count}|${freshness ?? ""}|${country ?? ""}|${lang ?? ""}`;
+type SearchArgs = {
+  query: string;
+  count: number;
+  freshness?: string;
+  country?: string;
+  searchLang?: string;
+  uiLang?: string;
+  safeSearch?: string;
+};
+
+function cacheKey(
+  mode: string,
+  query: string,
+  count: number,
+  freshness?: string,
+  country?: string,
+  lang?: string,
+): string {
+  return `${mode}|${query}|${count}|${freshness ?? ""}|${country ?? ""}|${lang ?? ""}`;
 }
 
 function getCached(key: string): unknown | undefined {
@@ -67,6 +104,166 @@ function validateFreshness(value: string): { valid: boolean; error?: string } {
   return { valid: false, error: `Invalid freshness value: "${value}". Use pd, pw, pm, py, or YYYY-MM-DDtoYYYY-MM-DD` };
 }
 
+function decodeHtmlEntities(input: string): string {
+  const named: Record<string, string> = {
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: "\"",
+    apos: "'",
+    nbsp: " ",
+  };
+  return input.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (match, entity: string) => {
+    const lower = entity.toLowerCase();
+    if (lower in named) return named[lower]!;
+    if (lower.startsWith("#x")) {
+      const cp = Number.parseInt(lower.slice(2), 16);
+      return Number.isFinite(cp) ? String.fromCodePoint(cp) : match;
+    }
+    if (lower.startsWith("#")) {
+      const cp = Number.parseInt(lower.slice(1), 10);
+      return Number.isFinite(cp) ? String.fromCodePoint(cp) : match;
+    }
+    return match;
+  });
+}
+
+function cleanText(value: string): string {
+  return decodeHtmlEntities(value)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeDuckDuckGoUrl(rawHref: string): string | undefined {
+  if (!rawHref) return undefined;
+  try {
+    const absolute = rawHref.startsWith("//")
+      ? `https:${rawHref}`
+      : rawHref.startsWith("/")
+        ? new URL(rawHref, "https://duckduckgo.com").toString()
+        : rawHref;
+
+    if (absolute.startsWith("javascript:")) return undefined;
+
+    const parsed = new URL(absolute);
+    if (parsed.hostname === "duckduckgo.com" && parsed.pathname.startsWith("/l/")) {
+      const target = parsed.searchParams.get("uddg");
+      if (target) return target;
+    }
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function parseDuckDuckGoResults(html: string, count: number): SearchResult[] {
+  const links: Array<{ url: string; title: string }> = [];
+  const snippets: string[] = [];
+  const linkRe = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  const snippetRe = /<(?:a|div)[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|div)>/gi;
+
+  let match: RegExpExecArray | null;
+  while ((match = linkRe.exec(html)) !== null) {
+    const url = normalizeDuckDuckGoUrl(match[1] ?? "");
+    const title = cleanText(match[2] ?? "");
+    if (!url || !title) continue;
+    links.push({ url, title });
+    if (links.length >= count) break;
+  }
+
+  while ((match = snippetRe.exec(html)) !== null) {
+    const snippet = cleanText(match[1] ?? "");
+    snippets.push(snippet);
+    if (snippets.length >= count) break;
+  }
+
+  return links.map((entry, idx) => ({
+    title: entry.title,
+    url: entry.url,
+    description: snippets[idx] ?? "",
+    siteName: extractSiteName(entry.url),
+  }));
+}
+
+async function searchBrave(args: SearchArgs, apiKey: string): Promise<SearchResponse> {
+  const params = new URLSearchParams({ q: args.query, count: String(args.count) });
+  if (args.freshness) params.set("freshness", args.freshness);
+  if (args.country) params.set("country", args.country.toUpperCase());
+  if (args.searchLang) params.set("search_lang", args.searchLang.toLowerCase());
+  if (args.uiLang) params.set("ui_lang", args.uiLang.toLowerCase());
+  if (args.safeSearch) params.set("safesearch", args.safeSearch);
+
+  const start = Date.now();
+  const res = await fetch(`${BRAVE_API}?${params}`, {
+    headers: {
+      Accept: "application/json",
+      "Accept-Encoding": "gzip",
+      "X-Subscription-Token": apiKey,
+    },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Brave API error ${res.status}: ${body.slice(0, 500)}`);
+  }
+
+  const json = (await res.json()) as BraveResponse;
+  const results = (json.web?.results ?? []).map((r) => ({
+    title: r.title,
+    url: r.url,
+    description: r.description,
+    siteName: extractSiteName(r.url),
+    published: r.page_age,
+  }));
+
+  return {
+    query: args.query,
+    provider: "brave",
+    count: results.length,
+    tookMs: Date.now() - start,
+    results,
+  };
+}
+
+async function searchDuckDuckGo(args: SearchArgs, baseWarnings: string[] = []): Promise<SearchResponse> {
+  const warnings = [...baseWarnings];
+  if (args.freshness) warnings.push("freshness filtering is not available in the fallback provider.");
+  if (args.safeSearch) warnings.push("safe_search filtering is not available in the fallback provider.");
+  if (args.country || args.searchLang || args.uiLang) {
+    warnings.push("country/language hints are best-effort in the fallback provider.");
+  }
+
+  const start = Date.now();
+  const params = new URLSearchParams({ q: args.query });
+  const res = await fetch(`${DUCKDUCKGO_HTML}?${params}`, {
+    headers: {
+      Accept: "text/html",
+      "User-Agent": DEFAULT_USER_AGENT,
+      "Accept-Language": args.uiLang ? `${args.uiLang},en;q=0.8` : "en-US,en;q=0.8",
+    },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`DuckDuckGo HTML error ${res.status}: ${body.slice(0, 300)}`);
+  }
+
+  const html = await res.text();
+  const results = parseDuckDuckGoResults(html, args.count);
+
+  return {
+    query: args.query,
+    provider: "duckduckgo",
+    count: results.length,
+    tookMs: Date.now() - start,
+    results,
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
+}
+
 export function createWebSearchTool(): AgentTool {
   return {
     name: "web_search",
@@ -75,7 +272,7 @@ export function createWebSearchTool(): AgentTool {
       function: {
         name: "web_search",
         description:
-          "Search the web using Brave Search API. Supports region-specific and localized search via country and language parameters. Returns titles, URLs, and descriptions for the top results.",
+          "Search the web. Uses Brave Search API when BRAVE_API_KEY is configured, otherwise falls back to DuckDuckGo HTML search. Returns titles, URLs, and descriptions for top results.",
         parameters: {
           type: "object",
           properties: {
@@ -112,76 +309,73 @@ export function createWebSearchTool(): AgentTool {
       },
     },
     execute: async (args) => {
-      const apiKey = process.env.BRAVE_API_KEY;
-      if (!apiKey) {
-        return {
-          error: "BRAVE_API_KEY environment variable is not set. Get a free key at https://brave.com/search/api/",
-        };
-      }
-
       const query = args.query as string;
       if (!query?.trim()) {
         return { error: "Search query cannot be empty" };
       }
 
-      const count = Math.min(10, Math.max(1, (args.count as number) ?? 5));
-      const freshness = args.freshness as string | undefined;
-      const country = args.country as string | undefined;
-      const searchLang = args.search_lang as string | undefined;
-      const uiLang = args.ui_lang as string | undefined;
-      const safeSearch = args.safe_search as string | undefined;
+      const searchArgs: SearchArgs = {
+        query,
+        count: Math.min(10, Math.max(1, (args.count as number) ?? 5)),
+        freshness: args.freshness as string | undefined,
+        country: args.country as string | undefined,
+        searchLang: args.search_lang as string | undefined,
+        uiLang: args.ui_lang as string | undefined,
+        safeSearch: args.safe_search as string | undefined,
+      };
 
-      if (freshness) {
-        const check = validateFreshness(freshness);
+      if (searchArgs.freshness) {
+        const check = validateFreshness(searchArgs.freshness);
         if (!check.valid) return { error: check.error };
       }
 
-      const key = cacheKey(query, count, freshness, country, searchLang);
+      const apiKey = process.env.BRAVE_API_KEY?.trim();
+      const mode = apiKey ? "brave" : "duckduckgo";
+      const key = cacheKey(
+        mode,
+        searchArgs.query,
+        searchArgs.count,
+        searchArgs.freshness,
+        searchArgs.country,
+        searchArgs.searchLang,
+      );
       const cached = getCached(key);
       if (cached) return cached;
 
-      const start = Date.now();
-      const params = new URLSearchParams({ q: query, count: String(count) });
-      if (freshness) params.set("freshness", freshness);
-      if (country) params.set("country", country.toUpperCase());
-      if (searchLang) params.set("search_lang", searchLang.toLowerCase());
-      if (uiLang) params.set("ui_lang", uiLang.toLowerCase());
-      if (safeSearch) params.set("safesearch", safeSearch);
-
-      const res = await fetch(`${BRAVE_API}?${params}`, {
-        headers: {
-          Accept: "application/json",
-          "Accept-Encoding": "gzip",
-          "X-Subscription-Token": apiKey,
-        },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT),
-      });
-
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        return { error: `Brave API error ${res.status}: ${body.slice(0, 500)}` };
+      if (apiKey) {
+        try {
+          const data = await searchBrave(searchArgs, apiKey);
+          cache.set(key, { ts: Date.now(), data });
+          evictCache();
+          return data;
+        } catch (braveErr) {
+          try {
+            const data = await searchDuckDuckGo(searchArgs, [
+              `Brave search failed: ${braveErr instanceof Error ? braveErr.message : String(braveErr)}`,
+            ]);
+            cache.set(key, { ts: Date.now(), data });
+            evictCache();
+            return data;
+          } catch (fallbackErr) {
+            return {
+              error: `Brave and fallback search failed. ${braveErr instanceof Error ? braveErr.message : String(braveErr)} | ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`,
+            };
+          }
+        }
       }
 
-      const json = (await res.json()) as BraveResponse;
-      const results = (json.web?.results ?? []).map((r) => ({
-        title: r.title,
-        url: r.url,
-        description: r.description,
-        siteName: extractSiteName(r.url),
-        published: r.page_age,
-      }));
-
-      const data = {
-        query,
-        provider: "brave",
-        count: results.length,
-        tookMs: Date.now() - start,
-        results,
-      };
-
-      cache.set(key, { ts: Date.now(), data });
-      evictCache();
-      return data;
+      try {
+        const data = await searchDuckDuckGo(searchArgs, [
+          "BRAVE_API_KEY is not configured; using fallback provider.",
+        ]);
+        cache.set(key, { ts: Date.now(), data });
+        evictCache();
+        return data;
+      } catch (fallbackErr) {
+        return {
+          error: `Fallback search failed and BRAVE_API_KEY is not configured. ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`,
+        };
+      }
     },
   };
 }

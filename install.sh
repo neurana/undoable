@@ -412,24 +412,36 @@ setup_database() {
         psql -d "$db_name" -c "GRANT ALL ON SCHEMA public TO $db_user;" 2>/dev/null || true
 
     elif [[ "$OS" == "linux" ]]; then
-        # On Linux, need to use postgres user
-        local run_psql="sudo -u postgres psql"
-        if is_root; then
-            run_psql="su - postgres -c psql"
-        fi
+        run_postgres_sql() {
+            local db="${1:-postgres}"
+            local sql="$2"
+            if is_root; then
+                su - postgres -c "psql -d \"$db\" -c \"$sql\"" >/dev/null 2>&1 || true
+            else
+                sudo -u postgres psql -d "$db" -c "$sql" >/dev/null 2>&1 || true
+            fi
+        }
+
+        list_databases() {
+            if is_root; then
+                su - postgres -c "psql -lqt" 2>/dev/null || true
+            else
+                sudo -u postgres psql -lqt 2>/dev/null || true
+            fi
+        }
 
         # Create database
-        if ! $run_psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw "$db_name"; then
-            $run_psql -c "CREATE DATABASE $db_name;" 2>/dev/null || true
+        if ! list_databases | cut -d \| -f 1 | grep -qw "$db_name"; then
+            run_postgres_sql "postgres" "CREATE DATABASE $db_name;"
             ui_success "Database '$db_name' created"
         else
             ui_info "Database '$db_name' already exists"
         fi
 
-        # Create user
-        $run_psql -c "DO \$\$ BEGIN CREATE USER $db_user WITH PASSWORD '$db_pass'; EXCEPTION WHEN duplicate_object THEN NULL; END \$\$;" 2>/dev/null || true
-        $run_psql -c "GRANT ALL PRIVILEGES ON DATABASE $db_name TO $db_user;" 2>/dev/null || true
-        $run_psql -d "$db_name" -c "GRANT ALL ON SCHEMA public TO $db_user;" 2>/dev/null || true
+        # Create user and grants
+        run_postgres_sql "postgres" "DO \$\$ BEGIN CREATE USER $db_user WITH PASSWORD '$db_pass'; EXCEPTION WHEN duplicate_object THEN NULL; END \$\$;"
+        run_postgres_sql "postgres" "GRANT ALL PRIVILEGES ON DATABASE $db_name TO $db_user;"
+        run_postgres_sql "$db_name" "GRANT ALL ON SCHEMA public TO $db_user;"
     fi
 
     ui_success "Database setup complete"
@@ -464,6 +476,61 @@ ensure_user_local_bin_on_path() {
             echo "$path_line" >> "$rc"
         fi
     done
+}
+
+bootstrap_default_skills() {
+    local repo_dir="$1"
+    local bundled_dir="$repo_dir/packages/daemon/skills"
+    local user_skills_dir="$HOME/.undoable/skills"
+    local skills_config="$HOME/.undoable/skills.json"
+    local copied=0
+    local skipped=0
+
+    if [[ ! -d "$bundled_dir" ]]; then
+        ui_warn "Bundled skills directory not found: $bundled_dir"
+        return 0
+    fi
+
+    mkdir -p "$user_skills_dir"
+
+    local skill_dir
+    for skill_dir in "$bundled_dir"/*; do
+        [[ -d "$skill_dir" ]] || continue
+
+        local skill_name
+        skill_name="$(basename "$skill_dir")"
+        local source_skill="$skill_dir/SKILL.md"
+        local target_dir="$user_skills_dir/$skill_name"
+        local target_skill="$target_dir/SKILL.md"
+
+        [[ -f "$source_skill" ]] || continue
+        if [[ -f "$target_skill" ]]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        mkdir -p "$target_dir"
+        cp -R "$skill_dir"/. "$target_dir"/
+        copied=$((copied + 1))
+    done
+
+    if [[ ! -f "$skills_config" ]]; then
+        cat > "$skills_config" <<EOF
+{
+  "version": 1,
+  "enabled": ["github", "web-search"],
+  "disabled": []
+}
+EOF
+    fi
+
+    if [[ "$copied" -gt 0 ]]; then
+        ui_success "Bootstrapped $copied built-in skills"
+    elif [[ "$skipped" -gt 0 ]]; then
+        ui_info "Built-in skills already present"
+    else
+        ui_warn "No bundled skills were bootstrapped"
+    fi
 }
 
 # Install undoable from git
@@ -520,15 +587,45 @@ ENVEOF
         ui_success "Created .env file"
     fi
 
-    # Create wrapper script
+    if [[ "$SKIP_DB" != "1" ]]; then
+        ui_info "Applying database schema"
+        DATABASE_URL="${DATABASE_URL:-postgresql://undoable:undoable_dev@localhost:5432/undoable}" \
+          pnpm -C "$repo_dir" db:push
+        ui_success "Database schema applied"
+    fi
+
+    ui_info "Bootstrapping built-in skills"
+    bootstrap_default_skills "$repo_dir"
+
+    # Create CLI wrapper script
     cat > "$HOME/.local/bin/undoable" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export DATABASE_URL="\${DATABASE_URL:-postgresql://undoable:undoable_dev@localhost:5432/undoable}"
 cd "${repo_dir}"
-exec node packages/daemon/src/index.js "\$@"
+exec node dist/cli/index.mjs "\$@"
 EOF
     chmod +x "$HOME/.local/bin/undoable"
+
+    # Create canonical CLI name (nrn)
+    cat > "$HOME/.local/bin/nrn" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export DATABASE_URL="\${DATABASE_URL:-postgresql://undoable:undoable_dev@localhost:5432/undoable}"
+cd "${repo_dir}"
+exec node dist/cli/index.mjs "\$@"
+EOF
+    chmod +x "$HOME/.local/bin/nrn"
+
+    # Create daemon wrapper
+    cat > "$HOME/.local/bin/undoable-daemon" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export DATABASE_URL="\${DATABASE_URL:-postgresql://undoable:undoable_dev@localhost:5432/undoable}"
+cd "${repo_dir}"
+exec node dist/daemon/index.mjs "\$@"
+EOF
+    chmod +x "$HOME/.local/bin/undoable-daemon"
 
     # Create dev command wrapper
     cat > "$HOME/.local/bin/undoable-dev" <<EOF
@@ -540,7 +637,7 @@ exec ./dev.sh "\$@"
 EOF
     chmod +x "$HOME/.local/bin/undoable-dev"
 
-    ui_success "Undoable CLI installed to ~/.local/bin/undoable"
+    ui_success "Undoable CLI installed to ~/.local/bin/undoable (and ~/.local/bin/nrn)"
 }
 
 # Check Full Disk Access on macOS
@@ -720,6 +817,21 @@ ENVEOF
     ui_info "Starting services"
     docker compose -f "$repo_dir/docker/docker-compose.yml" up -d
     ui_success "Services started"
+    ui_info "Built-in skills bootstrap automatically on daemon startup (persisted in Docker volume)"
+
+    ui_info "Applying database schema in daemon container"
+    local attempt=0
+    until docker compose -f "$repo_dir/docker/docker-compose.yml" exec -T daemon pnpm db:push >/dev/null 2>&1; do
+        attempt=$((attempt + 1))
+        if [[ "$attempt" -ge 10 ]]; then
+            ui_error "Failed to apply database schema in daemon container"
+            echo "  Try running manually:"
+            echo "  docker compose -f \"$repo_dir/docker/docker-compose.yml\" exec -T daemon pnpm db:push"
+            exit 1
+        fi
+        sleep 2
+    done
+    ui_success "Database schema applied"
 }
 
 # Print help
@@ -966,8 +1078,12 @@ main() {
     echo "  Start the development server:"
     echo -e "    ${ACCENT}undoable-dev${NC}"
     echo ""
-    echo "  Or run daemon directly:"
-    echo -e "    ${ACCENT}undoable${NC}"
+    echo "  Or start via CLI:"
+    echo -e "    ${ACCENT}undoable start${NC}"
+    echo -e "    ${ACCENT}nrn start${NC}"
+    echo ""
+    echo "  Daemon-only:"
+    echo -e "    ${ACCENT}undoable-daemon${NC}"
     echo ""
     echo "  Access the UI:"
     echo -e "    ${INFO}http://localhost:5173${NC}"

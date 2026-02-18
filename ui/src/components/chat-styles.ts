@@ -224,9 +224,10 @@ export const messageStyles = css`
 
     .exec-output {
       font-family: var(--mono); font-size: 11px; line-height: 1.5;
-      color: var(--text-primary); white-space: pre-wrap; word-break: break-all;
+      color: var(--text-secondary); white-space: pre-wrap; word-break: break-word;
       padding: 10px 12px; max-height: 200px; overflow-y: auto;
-      background: var(--deep); color: #d4d8d6;
+      background: var(--bg-deep);
+      border-top: 1px solid var(--border-divider);
     }
     .exec-cmd {
       font-family: var(--mono); font-size: 11px;

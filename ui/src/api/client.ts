@@ -107,6 +107,8 @@ export const api = {
       request<{ jobId: string | null; runs: RunItem[] }>(`/swarm/workflows/${workflowId}/nodes/${nodeId}/runs`),
     runNode: (workflowId: string, nodeId: string) =>
       request<RunItem>(`/swarm/workflows/${workflowId}/nodes/${nodeId}/run`, { method: "POST" }),
+    runWorkflow: (workflowId: string, input: SwarmWorkflowRunInput = {}) =>
+      request<SwarmWorkflowRunResult>(`/swarm/workflows/${workflowId}/run`, { method: "POST", body: JSON.stringify(input) }),
   },
   undo: {
     list: () => request<UndoListResult>("/chat/undo", { method: "POST", body: JSON.stringify({ action: "list" }) }),
@@ -330,6 +332,28 @@ export type SwarmNodePatchInput = {
   config?: Record<string, unknown>;
   schedule?: SwarmNodeScheduleInput | null;
   enabled?: boolean;
+};
+
+export type SwarmWorkflowRunInput = {
+  nodeIds?: string[];
+  includeDisabled?: boolean;
+  allowConcurrent?: boolean;
+};
+
+export type SwarmWorkflowRunResult = {
+  workflowId: string;
+  launched: Array<{
+    nodeId: string;
+    runId: string;
+    jobId: string;
+    agentId: string;
+  }>;
+  skipped: Array<{
+    nodeId: string;
+    reason: string;
+    activeRunId?: string;
+  }>;
+  startedAt: string;
 };
 
 export type NodeItem = {

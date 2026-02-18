@@ -13,6 +13,7 @@ export type UndoResult = {
 export type FileBackup = {
   path: string;
   content: string | null;
+  contentBase64?: string | null;
   existed: boolean;
 };
 
@@ -52,7 +53,20 @@ export class UndoEngine {
     try {
       for (const backup of backups) {
         if (!backup.existed) {
-          await fs.unlink(backup.path).catch(() => {});
+          try {
+            await fs.unlink(backup.path);
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code !== "ENOENT") {
+              throw err;
+            }
+          }
+        } else if (backup.contentBase64 !== undefined) {
+          await fs.mkdir(path.dirname(backup.path), { recursive: true });
+          await fs.writeFile(
+            backup.path,
+            Buffer.from(backup.contentBase64 ?? "", "base64"),
+          );
         } else if (backup.content !== null) {
           await fs.mkdir(path.dirname(backup.path), { recursive: true });
           await fs.writeFile(backup.path, backup.content, "utf-8");
@@ -70,10 +84,15 @@ export class UndoEngine {
 
   async backupFile(filePath: string): Promise<FileBackup> {
     try {
-      const content = await fs.readFile(filePath, "utf-8");
-      return { path: filePath, content, existed: true };
+      const buffer = await fs.readFile(filePath);
+      return {
+        path: filePath,
+        content: buffer.toString("utf-8"),
+        contentBase64: buffer.toString("base64"),
+        existed: true,
+      };
     } catch {
-      return { path: filePath, content: null, existed: false };
+      return { path: filePath, content: null, contentBase64: null, existed: false };
     }
   }
 

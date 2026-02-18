@@ -9,6 +9,21 @@ type PendingFile = {
   preview?: string;
 };
 
+type ApiErrorPayload = {
+  error?: string;
+  recovery?: string;
+};
+
+const DEFAULT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_TRANSCRIBE_MAX_BYTES = 20 * 1024 * 1024;
+const MAX_RECORDING_SECONDS = 120;
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
 @customElement("chat-input")
 export class ChatInput extends LitElement {
   static styles = [
@@ -177,6 +192,8 @@ export class ChatInput extends LitElement {
   @property({ type: Boolean }) canThink = false;
   @property({ type: Boolean }) hasUndoable = false;
   @property({ type: Boolean }) hasRedoable = false;
+  @property({ type: Number }) attachmentLimitBytes = DEFAULT_ATTACHMENT_MAX_BYTES;
+  @property({ type: Number }) transcribeLimitBytes = DEFAULT_TRANSCRIBE_MAX_BYTES;
   @state() private input = "";
   @state() private pendingFiles: PendingFile[] = [];
   @state() private dragOver = false;
@@ -261,10 +278,33 @@ export class ChatInput extends LitElement {
     });
   }
 
+  private blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        const comma = result.indexOf(",");
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  private async readApiError(res: Response, fallback: string): Promise<string> {
+    const body = (await res.json().catch(() => ({}))) as ApiErrorPayload;
+    const msg = body.error?.trim() || fallback;
+    if (body.recovery?.trim()) return `${msg} ${body.recovery.trim()}`;
+    return msg;
+  }
+
   private async addFiles(files: FileList | File[]) {
     for (const file of Array.from(files)) {
-      if (file.size > 5_000_000) {
-        this.emit("chat-error", `${file.name}: exceeds 5MB limit`);
+      if (file.size > this.attachmentLimitBytes) {
+        this.emit(
+          "chat-error",
+          `${file.name} is too large (${formatBytes(file.size)}). Max is ${formatBytes(this.attachmentLimitBytes)}.`,
+        );
         continue;
       }
       const content = await this.fileToBase64(file);
@@ -354,22 +394,33 @@ export class ChatInput extends LitElement {
 
       this.mediaRecorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        if (this.recordingChunks.length === 0) return;
-        const blob = new Blob(this.recordingChunks, { type: mimeType });
         this.recording = false;
         if (this.recordingTimer) {
           clearInterval(this.recordingTimer);
           this.recordingTimer = null;
         }
+        if (this.recordingChunks.length === 0) return;
+        const blob = new Blob(this.recordingChunks, { type: mimeType });
         await this.transcribeAudio(blob, mimeType);
       };
 
       this.mediaRecorder.start(250);
       this.recordingTimer = setInterval(() => {
         this.recordingTime++;
+        if (this.recordingTime >= MAX_RECORDING_SECONDS) {
+          this.emit(
+            "chat-error",
+            `Recording stopped at ${MAX_RECORDING_SECONDS}s. Short recordings are more reliable.`,
+          );
+          this.stopRecording();
+        }
       }, 1000);
     } catch (err) {
-      this.emit("chat-error", `Microphone access denied: ${err}`);
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit(
+        "chat-error",
+        `Microphone access failed: ${message}. Allow microphone permission and retry.`,
+      );
       this.recording = false;
     }
   }
@@ -383,33 +434,50 @@ export class ChatInput extends LitElement {
   private async transcribeAudio(blob: Blob, mime: string) {
     this.transcribing = true;
     try {
-      const buffer = await blob.arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      const chunks: string[] = [];
-      for (let i = 0; i < bytes.length; i += 8192) {
-        chunks.push(String.fromCharCode(...bytes.subarray(i, i + 8192)));
+      if (blob.size > this.transcribeLimitBytes) {
+        throw new Error(
+          `Audio is too large (${formatBytes(blob.size)}). Max is ${formatBytes(this.transcribeLimitBytes)}.`,
+        );
       }
-      const base64 = btoa(chunks.join(""));
+      const base64 = await this.blobToBase64(blob);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 45_000);
 
       const res = await fetch("/api/chat/transcribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ audio: base64, mime }),
+        signal: controller.signal,
+      }).finally(() => {
+        clearTimeout(timeout);
       });
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         throw new Error(
-          (data as { error?: string }).error ?? `HTTP ${res.status}`,
+          await this.readApiError(
+            res,
+            `Transcription request failed (HTTP ${res.status})`,
+          ),
         );
       }
 
       const data = (await res.json()) as { text: string };
       if (data.text && data.text.trim()) {
         this.doSend(true, data.text);
+      } else {
+        this.emit(
+          "chat-error",
+          "No speech detected. Try speaking louder or closer to the microphone.",
+        );
       }
     } catch (err) {
-      this.emit("chat-error", `Transcription failed: ${err}`);
+      const message =
+        err instanceof Error
+          ? err.name === "AbortError"
+            ? "Transcription timed out. Try a shorter recording."
+            : err.message
+          : String(err);
+      this.emit("chat-error", message);
     } finally {
       this.transcribing = false;
     }

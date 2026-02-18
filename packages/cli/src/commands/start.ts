@@ -14,6 +14,7 @@ export function startCommand(): Command {
     .option("--no-ui", "Start daemon only, no UI")
     .option("--mode <mode>", "Run mode: interactive|autonomous|supervised", "interactive")
     .option("--max-iterations <n>", "Max tool loop iterations per request")
+    .option("--economy", "Enable economy mode for lower token usage")
     .option("--dangerously-skip-permissions", "Skip all permission checks (autonomous mode)")
     .action((opts) => {
       const rootDir = path.resolve(import.meta.dirname, "../../../..");
@@ -21,19 +22,37 @@ export function startCommand(): Command {
       const uiDir = path.join(rootDir, "ui");
 
       const children: ReturnType<typeof spawn>[] = [];
+      let shuttingDown = false;
 
-      const cleanup = () => {
+      const stopChildren = () => {
         for (const child of children) {
-          if (!child.killed) child.kill("SIGTERM");
+          if (!child.killed) {
+            try {
+              child.kill("SIGTERM");
+            } catch {
+              // best effort
+            }
+          }
         }
-        process.exit(0);
       };
-      process.on("SIGINT", cleanup);
-      process.on("SIGTERM", cleanup);
 
-      const daemonEnv: Record<string, string> = { ...process.env as Record<string, string>, PORT: opts.port };
+      const shutdown = (code = 0) => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        stopChildren();
+        process.exit(code);
+      };
+
+      process.on("SIGINT", () => shutdown(130));
+      process.on("SIGTERM", () => shutdown(143));
+
+      const daemonEnv: Record<string, string> = {
+        ...(process.env as Record<string, string>),
+        NRN_PORT: String(opts.port),
+      };
       if (opts.mode) daemonEnv.UNDOABLE_RUN_MODE = opts.mode;
       if (opts.maxIterations) daemonEnv.UNDOABLE_MAX_ITERATIONS = opts.maxIterations;
+      if (opts.economy) daemonEnv.UNDOABLE_ECONOMY_MODE = "1";
       if (opts.dangerouslySkipPermissions) daemonEnv.UNDOABLE_DANGEROUSLY_SKIP_PERMISSIONS = "1";
 
       const daemonProc = spawn("node", ["--import", "tsx", daemonEntry], {
@@ -50,6 +69,14 @@ export function startCommand(): Command {
           env: process.env,
         });
         children.push(viteProc);
+
+        viteProc.on("exit", (code) => {
+          if (shuttingDown) return;
+          if (code !== 0 && code !== null) {
+            console.error(`UI exited with code ${code}`);
+          }
+          shutdown(code ?? 0);
+        });
       }
 
       console.log("");
@@ -57,6 +84,7 @@ export function startCommand(): Command {
       const modeLabel = opts.dangerouslySkipPermissions ? "autonomous (skip-permissions)" : opts.mode;
       console.log(`${GREEN}${BOLD}  Undoable is running${NC}`);
       console.log(`  Mode:   ${modeLabel}`);
+      console.log(`  Economy:${opts.economy ? " on" : " off"}`);
       if (opts.ui !== false) {
         console.log(`  UI:     http://localhost:${opts.uiPort}`);
       }
@@ -66,10 +94,11 @@ export function startCommand(): Command {
       console.log("");
 
       daemonProc.on("exit", (code) => {
+        if (shuttingDown) return;
         if (code !== 0 && code !== null) {
           console.error(`Daemon exited with code ${code}`);
         }
-        cleanup();
+        shutdown(code ?? 0);
       });
     });
 }

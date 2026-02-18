@@ -12,6 +12,7 @@ type ChatOptions = {
   message?: string;
   url?: string;
   token?: string;
+  economy?: boolean;
   history?: boolean;
   jsonEvents?: boolean;
   showThinking?: boolean;
@@ -49,6 +50,7 @@ type ChatSseEvent = {
   provider?: string;
   thinking?: string;
   reasoningVisibility?: string;
+  economyMode?: boolean;
   [key: string]: unknown;
 };
 
@@ -226,6 +228,7 @@ function printHelp() {
   console.log("  /agents               List agents");
   console.log("  /agent <id>           Set active agent for next messages");
   console.log("  /thinking on|off      Toggle rendering assistant thinking blocks");
+  console.log("  /economy on|off|status Toggle economy mode");
   console.log("  /abort                Abort active run");
   console.log("  /clear                Clear terminal");
   console.log("  /exit                 Exit chat");
@@ -354,8 +357,11 @@ async function sendChatMessage(params: {
         const mode = typeof event.mode === "string" ? event.mode : "unknown";
         const provider = typeof event.provider === "string" ? event.provider : "";
         const model = typeof event.model === "string" ? event.model : "";
+        const economyMode = event.economyMode === true;
         const modelLabel = provider && model ? `${provider}/${model}` : model || provider || "unknown";
-        console.log(`[session] mode=${mode} model=${modelLabel}`);
+        console.log(
+          `[session] mode=${mode} economy=${economyMode ? "on" : "off"} model=${modelLabel}`,
+        );
         break;
       }
       case "token": {
@@ -457,6 +463,7 @@ export function chatCommand(): Command {
     .option("--message <text>", "Send an initial message")
     .option("--url <url>", "Daemon base URL (default: http://127.0.0.1:7433)")
     .option("--token <token>", "Gateway/daemon bearer token")
+    .option("--economy", "Enable economy mode at chat start", false)
     .option("--no-history", "Do not load chat history on start")
     .option("--json-events", "Print raw SSE events", false)
     .option("--show-thinking", "Show model thinking blocks", false)
@@ -558,6 +565,29 @@ export function chatCommand(): Command {
         console.log(JSON.stringify(status, null, 2));
       };
 
+      const setEconomyMode = async (enabled: boolean) => {
+        const result = await daemonRequest<{
+          economyMode?: boolean;
+          maxIterations?: number;
+          configuredMaxIterations?: number;
+        }>("/chat/run-config", {
+          url: baseUrl,
+          token,
+          method: "POST",
+          body: { economyMode: enabled },
+        });
+        const active = result.economyMode === true;
+        const effectiveMax =
+          typeof result.maxIterations === "number" ? result.maxIterations : null;
+        const configuredMax =
+          typeof result.configuredMaxIterations === "number"
+            ? result.configuredMaxIterations
+            : null;
+        console.log(
+          `[economy] ${active ? "on" : "off"}${effectiveMax ? ` (max ${effectiveMax}${configuredMax && configuredMax !== effectiveMax ? ` of ${configuredMax}` : ""})` : ""}`,
+        );
+      };
+
       const sendMessage = async (message: string) => {
         currentAbortController = new AbortController();
         try {
@@ -656,6 +686,17 @@ export function chatCommand(): Command {
             showThinking = arg === "on";
             console.log(`[thinking] ${showThinking ? "on" : "off"}`);
             return false;
+          case "economy":
+            if (!arg || arg === "status") {
+              await printStatus();
+              return false;
+            }
+            if (arg !== "on" && arg !== "off") {
+              console.log("usage: /economy on|off|status");
+              return false;
+            }
+            await setEconomyMode(arg === "on");
+            return false;
           case "abort":
             await abortActiveRun();
             return false;
@@ -675,6 +716,10 @@ export function chatCommand(): Command {
         console.log(`Session: ${sessionId}`);
         console.log(`Agent: ${agentId ?? "default"}`);
         console.log("Type /help for commands.");
+
+        if (opts.economy) {
+          await setEconomyMode(true);
+        }
 
         if (opts.history !== false) {
           await loadHistory();

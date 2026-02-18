@@ -1,5 +1,6 @@
 import type { EventBus } from "@undoable/core";
 import type { EventType } from "@undoable/shared";
+import { CANVAS_DEFAULT_URL } from "./canvas-constants.js";
 
 export type CanvasState = {
   visible: boolean;
@@ -33,6 +34,9 @@ export class CanvasService {
 
   present(opts?: { x?: number; y?: number; width?: number; height?: number }) {
     this.state.visible = true;
+    if (!this.state.url && this.state.frames.length === 0) {
+      this.state.url = CANVAS_DEFAULT_URL;
+    }
     if (opts?.x !== undefined) this.state.x = opts.x;
     if (opts?.y !== undefined) this.state.y = opts.y;
     if (opts?.width !== undefined) this.state.width = opts.width;

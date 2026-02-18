@@ -15,6 +15,72 @@ function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+const ACTIVE_RUN_STATUSES = new Set([
+  "created",
+  "planning",
+  "planned",
+  "shadowing",
+  "shadowed",
+  "approval_required",
+  "applying",
+  "running",
+  "undoing",
+]);
+
+type SwarmWorkflowRunBody = {
+  nodeIds?: string[];
+  includeDisabled?: boolean;
+  allowConcurrent?: boolean;
+};
+
+type SwarmNodeLaunchResult = {
+  nodeId: string;
+  runId: string;
+  jobId: string;
+  agentId: string;
+};
+
+type SwarmNodeSkipResult = {
+  nodeId: string;
+  reason: string;
+  activeRunId?: string;
+};
+
+function startNodeRun(
+  runManager: RunManager,
+  workflowName: string,
+  node: { id: string; name: string; prompt?: string; jobId?: string; agentId?: string },
+  extra?: SwarmRouteDeps,
+): SwarmNodeLaunchResult {
+  const instruction = node.prompt || `Execute SWARM node "${node.name}" from workflow "${workflowName}".`;
+  const jobId = node.jobId ?? `swarm-node-${node.id}`;
+  const agentId = node.agentId ?? "default";
+
+  const run = runManager.create({
+    userId: "swarm",
+    agentId,
+    instruction,
+    jobId,
+  });
+
+  if (extra?.executorDeps && extra.eventBus) {
+    const deps: RunExecutorDeps = {
+      ...extra.executorDeps,
+      runManager,
+      eventBus: extra.eventBus,
+      sessionId: `swarm-node-${node.id}`,
+    };
+    executeRun(run.id, instruction, deps).catch(() => {});
+  }
+
+  return {
+    nodeId: node.id,
+    runId: run.id,
+    jobId,
+    agentId,
+  };
+}
+
 export type SwarmRouteDeps = {
   eventBus: EventBus;
   executorDeps?: Omit<RunExecutorDeps, "runManager" | "eventBus">;
@@ -169,26 +235,66 @@ export function swarmRoutes(
       return reply.code(404).send({ error: "Node not found" });
     }
 
-    const instruction = node.prompt || `Execute SWARM node "${node.name}" from workflow "${workflow.name}".`;
-    const jobId = node.jobId ?? `swarm-node-${node.id}`;
+    const started = startNodeRun(runManager, workflow.name, node, extra);
+    const run = runManager.getById(started.runId);
+    return reply.code(201).send(run);
+  });
 
-    const run = runManager.create({
-      userId: "swarm",
-      agentId: node.agentId ?? "default",
-      instruction,
-      jobId,
-    });
-
-    if (extra?.executorDeps && extra.eventBus) {
-      const deps: RunExecutorDeps = {
-        ...extra.executorDeps,
-        runManager,
-        eventBus: extra.eventBus,
-        sessionId: `swarm-node-${node.id}`,
-      };
-      executeRun(run.id, instruction, deps).catch(() => {});
+  app.post<{ Params: { id: string }; Body: SwarmWorkflowRunBody }>("/swarm/workflows/:id/run", async (req, reply) => {
+    const workflow = swarmService.getById(req.params.id);
+    if (!workflow) {
+      return reply.code(404).send({ error: "Workflow not found" });
     }
 
-    return reply.code(201).send(run);
+    const body = req.body ?? {};
+    const allowConcurrent = body.allowConcurrent === true;
+    const includeDisabled = body.includeDisabled === true;
+    const requestedNodeIds = Array.isArray(body.nodeIds)
+      ? [...new Set(body.nodeIds.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean))]
+      : [];
+
+    const skipped: SwarmNodeSkipResult[] = [];
+    const launched: SwarmNodeLaunchResult[] = [];
+    const nodeById = new Map(workflow.nodes.map((node) => [node.id, node] as const));
+
+    const nodes = requestedNodeIds.length > 0
+      ? requestedNodeIds.map((nodeId) => {
+        const node = nodeById.get(nodeId);
+        if (!node) {
+          skipped.push({ nodeId, reason: "node not found" });
+          return null;
+        }
+        return node;
+      }).filter((node): node is (typeof workflow.nodes)[number] => node !== null)
+      : workflow.nodes;
+
+    for (const node of nodes) {
+      if (!node.enabled && !includeDisabled) {
+        skipped.push({ nodeId: node.id, reason: "node is disabled" });
+        continue;
+      }
+
+      const jobId = node.jobId ?? `swarm-node-${node.id}`;
+      if (!allowConcurrent) {
+        const activeRun = runManager.listByJobId(jobId).find((run) => ACTIVE_RUN_STATUSES.has(run.status));
+        if (activeRun) {
+          skipped.push({
+            nodeId: node.id,
+            reason: "node already has an active run",
+            activeRunId: activeRun.id,
+          });
+          continue;
+        }
+      }
+
+      launched.push(startNodeRun(runManager, workflow.name, node, extra));
+    }
+
+    return reply.code(201).send({
+      workflowId: workflow.id,
+      launched,
+      skipped,
+      startedAt: new Date().toISOString(),
+    });
   });
 }

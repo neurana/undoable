@@ -127,4 +127,25 @@ describe("canvas host", () => {
 
     await handler.close();
   });
+
+  it("serves built-in starter surface without depending on root index", async () => {
+    const root = await makeTempRoot();
+    await fs.writeFile(path.join(root, "index.html"), "<!doctype html><title>custom</title>", "utf8");
+    const handler = await createCanvasHostHandler({
+      rootDir: root,
+      basePath: CANVAS_HOST_PATH,
+      allowInTests: true,
+      liveReload: false,
+    });
+
+    const { res, getHeader, getBody } = mockRes();
+    const handled = await handler.handleHttpRequest(mockReq(`${CANVAS_HOST_PATH}/__starter`), res);
+
+    expect(handled).toBe(true);
+    expect(getHeader("content-type")).toContain("text/html");
+    expect(getBody()).toContain("Live Canvas Workspace");
+    expect(getBody()).not.toContain("<title>custom</title>");
+
+    await handler.close();
+  });
 });

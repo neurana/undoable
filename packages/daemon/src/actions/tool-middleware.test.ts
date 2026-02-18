@@ -53,8 +53,14 @@ describe("wrapToolWithMiddleware", () => {
     expect(record.undoable).toBe(true);
     expect(record.undoData).toBeDefined();
     expect(record.undoData!.type).toBe("file");
-    const fileUndo = record.undoData as { type: "file"; previousContent: string; previousExisted: boolean };
+    const fileUndo = record.undoData as {
+      type: "file";
+      previousContent: string;
+      previousContentBase64?: string | null;
+      previousExisted: boolean;
+    };
     expect(fileUndo.previousContent).toBe("original");
+    expect(fileUndo.previousContentBase64).toBe(Buffer.from("original", "utf-8").toString("base64"));
     expect(fileUndo.previousExisted).toBe(true);
   });
 
@@ -71,6 +77,17 @@ describe("wrapToolWithMiddleware", () => {
     const fileUndo = record.undoData as { type: "file"; previousContent: string | null; previousExisted: boolean };
     expect(fileUndo.previousExisted).toBe(false);
     expect(fileUndo.previousContent).toBeNull();
+  });
+
+  it("normalizes ~/ paths before storing undo data", async () => {
+    const tool = makeFakeTool("write_file", { written: true });
+    const wrapped = wrapToolWithMiddleware(tool, { actionLog, approvalGate });
+
+    await wrapped.execute({ path: "~/Desktop/undo-mw-test.txt", content: "x" });
+
+    const record = actionLog.list()[0]!;
+    const fileUndo = record.undoData as { type: "file"; path: string };
+    expect(fileUndo.path).toBe(path.join(os.homedir(), "Desktop", "undo-mw-test.txt"));
   });
 
   it("blocks mutate tool when approval mode is mutate and rejected", async () => {

@@ -26,6 +26,9 @@ export type ApiMessage = {
 export type SseEvent = {
   type: string;
   content?: string;
+  recovery?: string;
+  status?: number;
+  code?: string;
   name?: string;
   args?: Record<string, unknown>;
   result?: unknown;
@@ -36,7 +39,9 @@ export type SseEvent = {
   maxIterations?: number;
   mode?: string;
   approvalMode?: string;
+  configuredMaxIterations?: number;
   dangerouslySkipPermissions?: boolean;
+  economyMode?: boolean;
   sessionId?: string;
   thinking?: string;
   reasoningVisibility?: string;

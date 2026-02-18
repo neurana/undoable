@@ -1,4 +1,6 @@
-import { execSync } from "node:child_process";
+import * as fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { AgentTool } from "../tools/types.js";
 import type { ActionLog } from "./action-log.js";
 import type { ApprovalGate } from "./approval-gate.js";
@@ -12,19 +14,38 @@ export type ToolMiddlewareOptions = {
   runId?: string;
 };
 
+const HOME = os.homedir();
+
+function resolveFilePath(input: string): string {
+  const raw = input.trim();
+  if (raw === "~") return HOME;
+  if (raw.startsWith("~/")) return path.join(HOME, raw.slice(2));
+  if (path.isAbsolute(raw)) return raw;
+  return path.resolve(HOME, raw);
+}
+
 function captureFileState(args: Record<string, unknown>): FileUndoData | undefined {
   const filePath = args.path as string | undefined;
   if (!filePath) return undefined;
+  const resolvedPath = resolveFilePath(filePath);
 
   try {
-    const content = execSync(`cat ${JSON.stringify(filePath)}`, {
-      encoding: "utf-8",
-      timeout: 5000,
-      maxBuffer: 2 * 1024 * 1024,
-    });
-    return { type: "file", path: filePath, previousContent: content, previousExisted: true };
+    const buffer = fs.readFileSync(resolvedPath);
+    return {
+      type: "file",
+      path: resolvedPath,
+      previousContent: buffer.toString("utf-8"),
+      previousContentBase64: buffer.toString("base64"),
+      previousExisted: true,
+    };
   } catch {
-    return { type: "file", path: filePath, previousContent: null, previousExisted: false };
+    return {
+      type: "file",
+      path: resolvedPath,
+      previousContent: null,
+      previousContentBase64: null,
+      previousExisted: false,
+    };
   }
 }
 

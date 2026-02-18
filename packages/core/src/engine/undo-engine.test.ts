@@ -25,6 +25,7 @@ describe("UndoEngine", () => {
       const backup = await engine.backupFile(filePath);
       expect(backup.existed).toBe(true);
       expect(backup.content).toBe("original");
+      expect(backup.contentBase64).toBe(Buffer.from("original", "utf-8").toString("base64"));
       expect(backup.path).toBe(filePath);
     });
 
@@ -32,6 +33,7 @@ describe("UndoEngine", () => {
       const backup = await engine.backupFile(path.join(tmpDir, "nope.txt"));
       expect(backup.existed).toBe(false);
       expect(backup.content).toBeNull();
+      expect(backup.contentBase64).toBeNull();
     });
   });
 
@@ -107,6 +109,20 @@ describe("UndoEngine", () => {
 
       expect(await fs.readFile(f1, "utf-8")).toBe("one");
       expect(await fs.readFile(f2, "utf-8")).toBe("two");
+    });
+
+    it("restores binary files from base64 backup", async () => {
+      const filePath = path.join(tmpDir, "binary.pdf");
+      const original = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0xff, 0x00, 0x7f]);
+      await fs.writeFile(filePath, original);
+      const backup = await engine.backupFile(filePath);
+
+      await fs.writeFile(filePath, Buffer.from("not-a-pdf", "utf-8"));
+      const result = await engine.undoWithFileRestore([backup]);
+
+      expect(result.success).toBe(true);
+      const restored = await fs.readFile(filePath);
+      expect(restored.equals(original)).toBe(true);
     });
   });
 });

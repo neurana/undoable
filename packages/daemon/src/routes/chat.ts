@@ -21,6 +21,14 @@ import { createSubagentTools } from "../tools/subagent-tools.js";
 import type { HeartbeatService } from "../services/heartbeat-service.js";
 import type { SwarmService } from "../services/swarm-service.js";
 import {
+  type EconomyModeInput,
+  type EconomyModeConfig,
+  resolveEconomyMode,
+  effectiveMaxIterations,
+  effectiveToolResultLimit,
+  effectiveCanThink,
+} from "../services/economy-mode.js";
+import {
   type ThinkLevel,
   type ReasoningVisibility,
   type ThinkingConfig,
@@ -34,6 +42,9 @@ import {
   stripThinkingTags,
 } from "../services/thinking.js";
 import { parseDirectives, DIRECTIVE_HELP } from "../services/directive-parser.js";
+import type { TtsService } from "../services/tts-service.js";
+import type { SttService } from "../services/stt-service.js";
+import type { SkillsService } from "../services/skills-service.js";
 
 const MAX_TOOL_RESULT_CHARS = 30_000;
 const DEFAULT_MAX_ITERATIONS = 10;
@@ -50,6 +61,62 @@ class LLMApiError extends Error {
   get retryable(): boolean {
     return isRetryableError(this.status);
   }
+}
+
+type ChatFailure = {
+  message: string;
+  recovery?: string;
+  status?: number;
+};
+
+function describeChatFailure(err: unknown): ChatFailure {
+  if (err instanceof LLMApiError) {
+    if (err.status === 401 || err.status === 403) {
+      return {
+        message: "Model provider authentication failed.",
+        recovery: "Update your provider API key in settings, then retry.",
+        status: err.status,
+      };
+    }
+    if (err.status === 429) {
+      return {
+        message: "Model provider rate limited the request.",
+        recovery: "Wait a few seconds and retry.",
+        status: err.status,
+      };
+    }
+    if (err.status >= 500) {
+      return {
+        message: "Model provider is temporarily unavailable.",
+        recovery: "Retry shortly or switch to another model/provider.",
+        status: err.status,
+      };
+    }
+    return {
+      message: `Model request failed (${err.status}).`,
+      recovery: "Check provider settings and model availability, then retry.",
+      status: err.status,
+    };
+  }
+
+  const name = err instanceof Error ? err.name : "";
+  const message = err instanceof Error ? err.message : String(err);
+
+  if (name === "AbortError") {
+    return {
+      message: "Request timed out.",
+      recovery: "Retry with a shorter prompt or fewer attachments.",
+    };
+  }
+
+  if (/No STT provider configured/i.test(message)) {
+    return {
+      message,
+      recovery: "Configure an STT provider key in settings and retry.",
+    };
+  }
+
+  return { message: message || "Unknown error" };
 }
 
 type ActiveChatRun = {
@@ -77,6 +144,7 @@ export type ChatRouteConfig = {
   provider?: string;
   runMode?: RunModeConfig;
   thinking?: ThinkingConfig;
+  economy?: EconomyModeInput;
 };
 
 type StreamDelta = {
@@ -153,7 +221,7 @@ export function chatRoutes(
   runManager: RunManager,
   scheduler: SchedulerService,
   browserSvc: BrowserService,
-  skillsService?: { getPrompt(): string },
+  skillsService?: SkillsService,
   providerService?: ProviderService,
   agentRegistry?: import("@undoable/core").AgentRegistry,
   instructionsStore?: import("../services/instructions-store.js").InstructionsStore,
@@ -162,8 +230,11 @@ export function chatRoutes(
   heartbeatService?: HeartbeatService,
   swarmService?: SwarmService,
   usageService?: import("../services/usage-service.js").UsageService,
+  ttsService?: TtsService,
+  sttService?: SttService,
 ) {
   let runModeConfig = config.runMode ?? resolveRunMode();
+  let economyMode: EconomyModeConfig = resolveEconomyMode(config.economy);
   const approvalMode = shouldAutoApprove(runModeConfig) ? "off" as const : undefined;
   const registry = createToolRegistry({
     runManager,
@@ -173,8 +244,13 @@ export function chatRoutes(
     swarmService: swarmService ?? undefined,
     sandboxExec: sandboxExec ?? undefined,
     approvalMode,
+    skillsService: skillsService ?? undefined,
   });
-  let maxIterations = runModeConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+  let configuredMaxIterations = runModeConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+  let priorThinkingBeforeEconomy: ThinkLevel | null = null;
+  if (economyMode.enabled) {
+    priorThinkingBeforeEconomy = DEFAULT_THINKING_CONFIG.level;
+  }
 
   if (agentRegistry) {
     const boundCallLLM = (msgs: unknown[], defs: unknown[], stream: boolean) => {
@@ -190,6 +266,11 @@ export function chatRoutes(
     }));
   }
   let thinkingConfig: ThinkingConfig = config.thinking ?? { ...DEFAULT_THINKING_CONFIG };
+  if (economyMode.enabled) {
+    priorThinkingBeforeEconomy = thinkingConfig.level;
+    thinkingConfig.level = "off";
+    if (thinkingConfig.visibility !== "off") thinkingConfig.visibility = "off";
+  }
 
   const getActiveConfig = () => {
     if (providerService) return providerService.getActiveConfig();
@@ -203,9 +284,46 @@ export function chatRoutes(
     if (providerService) return providerService.modelSupportsThinking();
     return supportsReasoningEffort(getActiveConfig().model);
   };
+  const canThinkNow = () => effectiveCanThink(canThink(), economyMode);
+  const getMaxIterationsForRun = () =>
+    effectiveMaxIterations(configuredMaxIterations, economyMode);
+  const getToolResultLimit = () =>
+    effectiveToolResultLimit(MAX_TOOL_RESULT_CHARS, economyMode);
+  const setEconomyMode = (enabled: boolean) => {
+    if (enabled === economyMode.enabled) return;
+    economyMode = resolveEconomyMode({ ...economyMode, enabled });
+    if (enabled) {
+      priorThinkingBeforeEconomy = thinkingConfig.level;
+      thinkingConfig.level = "off";
+      if (thinkingConfig.visibility !== "off") thinkingConfig.visibility = "off";
+      return;
+    }
+    if (priorThinkingBeforeEconomy !== null && thinkingConfig.level === "off") {
+      thinkingConfig.level = priorThinkingBeforeEconomy;
+      if (thinkingConfig.level !== "off" && thinkingConfig.visibility === "off") {
+        thinkingConfig.visibility = "stream";
+      }
+    }
+    priorThinkingBeforeEconomy = null;
+  };
   const shouldDisableStreaming = (model: string) => {
     if (providerService) return providerService.shouldDisableStreaming(model);
     return false;
+  };
+  const syncOpenAIVoiceKeys = () => {
+    if (!providerService) return;
+    const openaiConfig = providerService.getProviderConfig("openai");
+    if (!openaiConfig) return;
+    const apiKey = openaiConfig.apiKey ?? "";
+    const baseUrl = openaiConfig.baseUrl || "https://api.openai.com/v1";
+    if (ttsService) {
+      ttsService.setApiKey("openai", apiKey);
+      ttsService.setBaseUrl("openai", baseUrl);
+    }
+    if (sttService) {
+      sttService.setApiKey("openai", apiKey);
+      sttService.setBaseUrl("openai", baseUrl);
+    }
   };
 
   const driftDetector = new DriftDetector();
@@ -270,52 +388,82 @@ export function chatRoutes(
     return { agents, defaultId };
   });
 
-  app.get("/chat/run-config", async () => {
+  const buildRunConfigResponse = () => {
     const active = getActiveConfig();
     return {
-      mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode(),
+      mode: runModeConfig.mode,
+      maxIterations: getMaxIterationsForRun(),
+      configuredMaxIterations,
+      approvalMode: registry.approvalGate.getMode(),
       dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
-      thinking: thinkingConfig.level, reasoningVisibility: thinkingConfig.visibility,
-      model: active.model, provider: active.provider,
-      canThink: canThink(),
+      thinking: thinkingConfig.level,
+      reasoningVisibility: thinkingConfig.visibility,
+      model: active.model,
+      provider: active.provider,
+      canThink: canThinkNow(),
+      economyMode: economyMode.enabled,
+      economy: {
+        maxIterationsCap: economyMode.maxIterationsCap,
+        toolResultMaxChars: economyMode.toolResultMaxChars,
+        contextMaxTokens: economyMode.compaction.maxTokens,
+        contextThreshold: economyMode.compaction.threshold,
+      },
     };
+  };
+
+  app.get("/chat/run-config", async () => {
+    return buildRunConfigResponse();
   });
 
-  app.post<{ Body: { mode?: string; maxIterations?: number } }>("/chat/run-config", async (req, reply) => {
-    const { mode, maxIterations: newMax } = req.body;
+  app.post<{ Body: { mode?: string; maxIterations?: number; economyMode?: boolean } }>("/chat/run-config", async (req, reply) => {
+    const { mode, maxIterations: newMax, economyMode: nextEconomyMode } = req.body;
+    const nextMaxIterations =
+      newMax === undefined
+        ? undefined
+        : Number.isFinite(newMax) && newMax > 0
+          ? Math.floor(newMax)
+          : null;
+    if (newMax !== undefined && nextMaxIterations === null) {
+      return reply.code(400).send({ error: "maxIterations must be a positive number" });
+    }
     if (mode !== undefined) {
       if (!["interactive", "autonomous", "supervised"].includes(mode)) {
         return reply.code(400).send({ error: "mode must be interactive, autonomous, or supervised" });
       }
       const newConfig = resolveRunMode({
         mode: mode as "interactive" | "autonomous" | "supervised",
-        maxIterations: newMax ?? maxIterations,
+        maxIterations: nextMaxIterations ?? configuredMaxIterations,
         dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
       });
       runModeConfig = newConfig;
-      maxIterations = newConfig.maxIterations;
+      configuredMaxIterations = newConfig.maxIterations;
       if (shouldAutoApprove(newConfig)) {
         registry.approvalGate.setMode("off");
       }
     }
-    if (newMax !== undefined && newMax > 0) {
-      maxIterations = newMax;
+    if (typeof nextMaxIterations === "number") {
+      configuredMaxIterations = nextMaxIterations;
       runModeConfig = {
         ...runModeConfig,
-        maxIterations: newMax,
+        maxIterations: configuredMaxIterations,
       };
+    }
+    if (typeof nextEconomyMode === "boolean") {
+      setEconomyMode(nextEconomyMode);
     }
     return {
       ok: true,
-      mode: runModeConfig.mode,
-      maxIterations,
-      approvalMode: registry.approvalGate.getMode(),
-      dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
+      ...buildRunConfigResponse(),
     };
   });
 
   app.get("/chat/thinking", async () => {
-    return { level: thinkingConfig.level, visibility: thinkingConfig.visibility, canThink: canThink() };
+    return {
+      level: thinkingConfig.level,
+      visibility: thinkingConfig.visibility,
+      canThink: canThinkNow(),
+      economyMode: economyMode.enabled,
+    };
   });
 
   app.post<{ Body: { level?: string; visibility?: string } }>("/chat/thinking", async (req, reply) => {
@@ -323,7 +471,7 @@ export function chatRoutes(
     if (level !== undefined) {
       const normalized = normalizeThinkLevel(level);
       if (!normalized) return reply.code(400).send({ error: "level must be off, low, medium, or high" });
-      thinkingConfig.level = normalized;
+      thinkingConfig.level = economyMode.enabled ? "off" : normalized;
     }
     if (visibility !== undefined) {
       if (!["off", "on", "stream"].includes(visibility)) {
@@ -331,7 +479,17 @@ export function chatRoutes(
       }
       thinkingConfig.visibility = visibility as ReasoningVisibility;
     }
-    return { ok: true, level: thinkingConfig.level, visibility: thinkingConfig.visibility, canThink: canThink() };
+    if (economyMode.enabled) {
+      thinkingConfig.level = "off";
+      if (thinkingConfig.visibility !== "off") thinkingConfig.visibility = "off";
+    }
+    return {
+      ok: true,
+      level: thinkingConfig.level,
+      visibility: thinkingConfig.visibility,
+      canThink: canThinkNow(),
+      economyMode: economyMode.enabled,
+    };
   });
 
   // ── Model & Provider endpoints ──
@@ -372,6 +530,9 @@ export function chatRoutes(
     const { provider, apiKey, baseUrl } = req.body;
     if (!provider) return reply.code(400).send({ error: "provider required" });
     await providerService.setProviderKey(provider, apiKey, baseUrl);
+    if (provider === "openai") {
+      syncOpenAIVoiceKeys();
+    }
     return { ok: true };
   });
 
@@ -380,6 +541,9 @@ export function chatRoutes(
     const { provider } = req.body;
     if (!provider) return reply.code(400).send({ error: "provider required" });
     await providerService.removeProviderKey(provider);
+    if (provider === "openai") {
+      syncOpenAIVoiceKeys();
+    }
     return { ok: true };
   });
 
@@ -441,7 +605,9 @@ export function chatRoutes(
       mode: registry.approvalGate.getMode(),
       runMode: runModeConfig.mode,
       dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
-      maxIterations,
+      maxIterations: getMaxIterationsForRun(),
+      configuredMaxIterations,
+      economyMode: economyMode.enabled,
       actions: recent.map((r) => ({
         id: r.id, tool: r.toolName, category: r.category,
         approval: r.approval, undoable: r.undoable,
@@ -508,6 +674,7 @@ export function chatRoutes(
       skillsPrompt: skillsService?.getPrompt(),
       toolDefinitions: agentToolDefs,
       contextFiles,
+      economyMode: economyMode.enabled,
       workspaceDir,
       runtime: {
         model: agentModelOverride ?? activeConf.model,
@@ -521,8 +688,24 @@ export function chatRoutes(
     // Store the clean message (directives stripped) in chat history
     const messageToStore = cleanMessage || message;
     if (attachments && attachments.length > 0) {
-      const parsed = parseAttachments(attachments);
-      await chatService.addUserMessageWithImages(sessionId, messageToStore ?? "", parsed.images, parsed.textBlocks);
+      let parsed: ReturnType<typeof parseAttachments>;
+      try {
+        parsed = parseAttachments(attachments);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return reply.code(400).send({
+          error: `Attachment validation failed: ${reason}`,
+          code: "CHAT_ATTACHMENT_INVALID",
+          recovery:
+            "Use a smaller image/text file, verify the file is not corrupted, and retry.",
+        });
+      }
+      await chatService.addUserMessageWithImages(
+        sessionId,
+        messageToStore ?? "",
+        parsed.images,
+        parsed.textBlocks,
+      );
     } else {
       await chatService.addUserMessage(sessionId, messageToStore);
     }
@@ -559,10 +742,12 @@ export function chatRoutes(
 
     sse({
       type: "session_info", sessionId: isNewSession ? sessionId : undefined,
-      mode: runModeConfig.mode, maxIterations, approvalMode: registry.approvalGate.getMode(),
+      mode: runModeConfig.mode, maxIterations: getMaxIterationsForRun(), approvalMode: registry.approvalGate.getMode(),
+      configuredMaxIterations,
       dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
+      economyMode: economyMode.enabled,
       thinking: thinkingConfig.level, reasoningVisibility: thinkingConfig.visibility,
-      model: activeConf.model, provider: activeConf.provider, canThink: canThink(),
+      model: activeConf.model, provider: activeConf.provider, canThink: canThinkNow(),
     });
 
     // Handle directive-only messages (no LLM call needed)
@@ -575,7 +760,17 @@ export function chatRoutes(
           handled = true;
         } else if (d.type === "status") {
           const ac = getActiveConfig();
-          sse({ type: "status", model: ac.model, provider: ac.provider, thinking: thinkingConfig.level, visibility: thinkingConfig.visibility, mode: runModeConfig.mode });
+          sse({
+            type: "status",
+            model: ac.model,
+            provider: ac.provider,
+            thinking: thinkingConfig.level,
+            visibility: thinkingConfig.visibility,
+            mode: runModeConfig.mode,
+            economyMode: economyMode.enabled,
+            maxIterations: getMaxIterationsForRun(),
+            configuredMaxIterations,
+          });
           handled = true;
         } else if (d.type === "help") {
           sse({ type: "help", content: DIRECTIVE_HELP });
@@ -589,7 +784,13 @@ export function chatRoutes(
         }
       }
       if (handled) {
-        sse({ type: "done", content: "", iterations: 0, maxIterations, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } });
+        sse({
+          type: "done",
+          content: "",
+          iterations: 0,
+          maxIterations: getMaxIterationsForRun(),
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        });
         activeChatRuns.delete(runId);
         activeSse = null;
         if (heartbeatService) heartbeatService.unregister(sessionId);
@@ -609,6 +810,8 @@ export function chatRoutes(
 
     try {
       let loops = 0;
+      const maxIterations = getMaxIterationsForRun();
+      const compactionConfig = economyMode.enabled ? economyMode.compaction : undefined;
       const totalUsage: UsageAccumulator = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
       while (loops < maxIterations) {
         if (abortController.signal.aborted) {
@@ -621,11 +824,11 @@ export function chatRoutes(
         if (messages.length > 0 && messages[0]?.role === "system") {
           messages[0] = { role: "system" as const, content: dynamicSystemPrompt };
         }
-        if (needsCompaction(messages)) {
-          messages = compactMessages(messages);
+        if (needsCompaction(messages, compactionConfig)) {
+          messages = compactMessages(messages, compactionConfig);
           sse({ type: "compaction", messageCount: messages.length });
         }
-        const activeThinkLevel = canThink() ? thinkingConfig.level : "off";
+        const activeThinkLevel = canThinkNow() ? thinkingConfig.level : "off";
         const baseConf: ChatRouteConfig = { ...config, ...getActiveConfig(), ...(agentModelOverride ? { model: agentModelOverride } : {}) };
         const modelsToTry = [baseConf.model, ...agentFallbacks];
 
@@ -794,7 +997,10 @@ export function chatRoutes(
 
           try {
             const result = await registry.execute(tc.function.name, args);
-            const resultStr = truncateToolResult(JSON.stringify(result), MAX_TOOL_RESULT_CHARS);
+            const resultStr = truncateToolResult(
+              JSON.stringify(result),
+              getToolResultLimit(),
+            );
             await chatService.addToolResult(sessionId, tc.id, resultStr);
             sse({ type: "tool_result", name: tc.function.name, result });
           } catch (err) {
@@ -817,7 +1023,13 @@ export function chatRoutes(
       if (abortController.signal.aborted) {
         sse({ type: "aborted", runId });
       } else {
-        sse({ type: "error", content: String(err) });
+        const failure = describeChatFailure(err);
+        sse({
+          type: "error",
+          content: failure.message,
+          recovery: failure.recovery,
+          status: failure.status,
+        });
       }
     } finally {
       activeChatRuns.delete(runId);

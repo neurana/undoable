@@ -12,8 +12,10 @@ echo "│      Undoable Docker Launcher        │"
 echo "╰──────────────────────────────────────╯"
 echo ""
 
-# Check for .env file
-if [[ ! -f "$ROOT_DIR/.env" ]]; then
+ensure_env_file() {
+    if [[ -f "$ROOT_DIR/.env" ]]; then
+        return 0
+    fi
     echo "Creating .env file..."
     cat > "$ROOT_DIR/.env" <<EOF
 DATABASE_URL=postgresql://undoable:undoable_dev@postgres:5432/undoable
@@ -21,10 +23,11 @@ OPENAI_API_KEY=${OPENAI_API_KEY:-}
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 EOF
     echo "✓ Created .env file"
-fi
+}
 
 # Parse arguments
 MODE="prod"
+ACTION="up"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dev|-d)
@@ -36,21 +39,20 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --down)
-            echo "Stopping containers..."
-            if [[ "$MODE" == "dev" ]]; then
-                docker compose -f docker-compose.dev.yml down
-            else
-                docker compose down
-            fi
-            exit 0
+            ACTION="down"
+            shift
             ;;
         --logs|-l)
-            if [[ "$MODE" == "dev" ]]; then
-                docker compose -f docker-compose.dev.yml logs -f
-            else
-                docker compose logs -f
-            fi
+            ACTION="logs"
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: ./start.sh [--dev] [--build] [--up|--down|--logs]"
             exit 0
+            ;;
+        --up)
+            ACTION="up"
+            shift
             ;;
         *)
             shift
@@ -68,6 +70,19 @@ else
     COMPOSE_FILE="docker-compose.yml"
 fi
 
+if [[ "$ACTION" == "down" ]]; then
+    echo "Stopping containers..."
+    docker compose -f "$COMPOSE_FILE" down
+    exit 0
+fi
+
+if [[ "$ACTION" == "logs" ]]; then
+    docker compose -f "$COMPOSE_FILE" logs -f
+    exit 0
+fi
+
+ensure_env_file
+
 if [[ "$BUILD" == "1" ]]; then
     echo "Building containers..."
     docker compose -f "$COMPOSE_FILE" build
@@ -83,6 +98,7 @@ echo "├───────────────────────�
 echo "│  UI:     http://localhost:5173       │"
 echo "│  API:    http://localhost:7433       │"
 echo "│  DB:     localhost:5432              │"
+echo "│  Skills: persisted in Docker volume  │"
 echo "╰──────────────────────────────────────╯"
 echo ""
 echo "Commands:"

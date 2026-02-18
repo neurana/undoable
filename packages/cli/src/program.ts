@@ -18,6 +18,7 @@ import { doctorCommand } from "./commands/doctor.js";
 import { swarmCommand } from "./commands/swarm.js";
 import { chatCommand } from "./commands/chat.js";
 import { pluginCommand } from "./commands/plugin.js";
+import { quickstartCommand } from "./commands/quickstart.js";
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -28,6 +29,7 @@ export function buildProgram(): Command {
     .version("0.1.0");
 
   program.addCommand(setupCommand());
+  program.addCommand(quickstartCommand());
   program.addCommand(onboardCommand());
   program.addCommand(startCommand());
   program.addCommand(statusCommand());

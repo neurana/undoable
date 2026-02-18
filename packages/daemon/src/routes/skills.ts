@@ -38,9 +38,33 @@ export function skillsRoutes(app: FastifyInstance, skillsService: SkillsService)
     return skillsService.searchRegistry(query);
   });
 
+  app.post<{ Body: { reference: string; global?: boolean; agents?: string[] } }>("/skills/preflight", async (req, reply) => {
+    const reference = req.body?.reference;
+    if (typeof reference !== "string" || !reference.trim()) {
+      return reply.code(400).send({ error: "reference is required" });
+    }
+    const agents = Array.isArray(req.body?.agents)
+      ? req.body.agents
+        .map((agent) => String(agent).trim())
+        .filter(Boolean)
+      : undefined;
+    const result = await skillsService.preflightInstallFromRegistry(reference.trim(), {
+      global: req.body?.global !== false,
+      agents,
+    });
+    if (!result.ok) {
+      return reply.code(400).send(result);
+    }
+    return result;
+  });
+
   app.post<{ Body: { page?: number; limit?: number } }>("/skills/discover", async (req) => {
-    const page = typeof req.body?.page === "number" ? req.body.page : 0;
-    const limit = typeof req.body?.limit === "number" ? Math.min(req.body.limit, 50) : 10;
+    const page = typeof req.body?.page === "number"
+      ? Math.max(0, Math.floor(req.body.page))
+      : 0;
+    const limit = typeof req.body?.limit === "number"
+      ? Math.max(1, Math.min(Math.floor(req.body.limit), 50))
+      : 10;
     return skillsService.discoverSkills(page, limit);
   });
 
@@ -49,11 +73,25 @@ export function skillsRoutes(app: FastifyInstance, skillsService: SkillsService)
     if (typeof reference !== "string" || !reference.trim()) {
       return reply.code(400).send({ error: "reference is required" });
     }
+    const agents = Array.isArray(req.body?.agents)
+      ? req.body.agents
+        .map((agent) => String(agent).trim())
+        .filter(Boolean)
+      : undefined;
     const result = await skillsService.installFromRegistry(reference.trim(), {
       global: req.body?.global !== false,
-      agents: Array.isArray(req.body?.agents) ? req.body.agents : undefined,
+      agents,
     });
     if (!result.ok) {
+      if (result.preflight && !result.preflight.ok) {
+        return reply.code(400).send(result);
+      }
+      if (
+        result.message.includes("invalid reference format") ||
+        result.message.includes("select at least one agent target")
+      ) {
+        return reply.code(400).send(result);
+      }
       return reply.code(502).send(result);
     }
     return result;

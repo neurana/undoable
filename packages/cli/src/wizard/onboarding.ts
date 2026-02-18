@@ -24,6 +24,9 @@ export type OnboardOptions = {
   acceptRisk?: boolean;
   reset?: boolean;
   nonInteractive?: boolean;
+  mode?: "local" | "remote";
+  remoteUrl?: string;
+  remoteToken?: string;
 };
 
 type WizardFlow = "quickstart" | "advanced";
@@ -160,6 +163,44 @@ export async function runOnboardingWizard(
 
   ensureWorkspace(workspace);
 
+  let mode: "local" | "remote" = opts.mode === "remote" ? "remote" : "local";
+  if (!opts.mode && flow === "advanced") {
+    mode = await prompter.select<"local" | "remote">({
+      message: "Gateway mode",
+      options: [
+        { value: "local", label: "Local", hint: "Run daemon on this machine" },
+        { value: "remote", label: "Remote", hint: "Connect to an existing remote gateway" },
+      ],
+      initialValue: "local",
+    });
+  }
+
+  let remoteUrl = opts.remoteUrl?.trim() ?? "";
+  if (mode === "remote" && !remoteUrl) {
+    remoteUrl = await prompter.text({
+      message: "Remote gateway URL",
+      placeholder: "https://gateway.example.com",
+      validate: (value) => {
+        const trimmed = value.trim();
+        if (!trimmed) return "Remote URL is required";
+        try {
+          void new URL(trimmed);
+          return undefined;
+        } catch {
+          return "Enter a valid URL (e.g. https://gateway.example.com)";
+        }
+      },
+    });
+  }
+
+  let remoteToken = opts.remoteToken?.trim() ?? "";
+  if (mode === "remote" && flow === "advanced" && !remoteToken) {
+    remoteToken = await prompter.text({
+      message: "Remote gateway token (optional)",
+      placeholder: "Bearer token",
+    });
+  }
+
   const providerSelection = await setupProviders(prompter);
 
   let channelConfigs: unknown[] = [];
@@ -214,7 +255,9 @@ export async function runOnboardingWizard(
         ...(existingDefault ?? {}),
         default: true,
         workspace,
-        mode: "local",
+        mode,
+        ...(mode === "remote" && remoteUrl ? { remoteUrl } : {}),
+        ...(mode === "remote" && remoteToken ? { remoteToken } : {}),
       },
     },
     daemon: {
@@ -233,6 +276,8 @@ export async function runOnboardingWizard(
   await prompter.note(
     [
       `Workspace: ${shortenHome(workspace)}`,
+      `Mode: ${mode}`,
+      ...(mode === "remote" ? [`Remote URL: ${remoteUrl}`] : []),
       ...(providerSelection
         ? [
             `Provider: ${providerSelection.providerName}`,

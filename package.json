@@ -8,6 +8,8 @@
   "private": true,
   "scripts": {
     "build": "tsdown",
+    "start": "node dist/daemon/index.mjs",
+    "cli": "node --import tsx packages/cli/src/index.ts",
     "check": "pnpm lint",
     "dev": "node --import tsx packages/daemon/src/index.ts",
     "lint": "oxlint",

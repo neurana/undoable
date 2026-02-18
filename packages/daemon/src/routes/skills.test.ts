@@ -5,6 +5,8 @@ import { skillsRoutes } from "./skills.js";
 
 describe("skills routes", () => {
   const app = Fastify();
+  let lastInstallAgents: string[] | undefined;
+  let lastPreflightAgents: string[] | undefined;
 
   const warning = {
     title: "Third-party skills can be dangerous",
@@ -45,13 +47,63 @@ describe("skills routes", () => {
         recommended: true,
       }],
     }),
-    installFromRegistry: async (_reference: string, opts?: { agents?: string[] }) => ({
-      ok: Array.isArray(opts?.agents) && opts.agents.length > 0,
-      installed: true,
-      reference: "vercel-labs/skills@find-skills",
-      message: "installed",
-      warning,
-    }),
+    preflightInstallFromRegistry: async (_reference: string, opts?: { agents?: string[] }) => {
+      lastPreflightAgents = opts?.agents;
+      if (!Array.isArray(opts?.agents) || opts.agents.length === 0) {
+        return {
+          ok: false,
+          reference: "vercel-labs/skills@find-skills",
+          global: true,
+          agents: [],
+          checks: [
+            {
+              id: "agents",
+              label: "Target agents",
+              status: "fail",
+              message: "select at least one agent target",
+            },
+          ],
+          errors: ["select at least one agent target"],
+          warning,
+        };
+      }
+      return {
+        ok: true,
+        reference: "vercel-labs/skills@find-skills",
+        normalizedReference: "vercel-labs/skills@find-skills",
+        global: true,
+        agents: opts.agents,
+        checks: [
+          {
+            id: "agents",
+            label: "Target agents",
+            status: "pass",
+            message: "ready",
+          },
+        ],
+        errors: [],
+        warning,
+      };
+    },
+    installFromRegistry: async (_reference: string, opts?: { agents?: string[] }) => {
+      lastInstallAgents = opts?.agents;
+      if (!Array.isArray(opts?.agents) || opts.agents.length === 0) {
+        return {
+          ok: false,
+          installed: false,
+          reference: "vercel-labs/skills@find-skills",
+          message: "select at least one agent target (claude-code, codex, cursor, windsurf, opencode)",
+          warning,
+        };
+      }
+      return {
+        ok: true,
+        installed: true,
+        reference: "vercel-labs/skills@find-skills",
+        message: "installed",
+        warning,
+      };
+    },
     listInstalled: async () => ({
       ok: true,
       command: "npx -y skills list",
@@ -115,11 +167,27 @@ describe("skills routes", () => {
     expect(search.statusCode).toBe(200);
     expect(search.json().ok).toBe(true);
 
-    const installFail = await app.inject({ method: "POST", url: "/skills/install", payload: { reference: "vercel-labs/skills@find-skills" } });
-    expect(installFail.statusCode).toBe(502);
+    const preflightFail = await app.inject({ method: "POST", url: "/skills/preflight", payload: { reference: "vercel-labs/skills@find-skills" } });
+    expect(preflightFail.statusCode).toBe(400);
 
-    const installOk = await app.inject({ method: "POST", url: "/skills/install", payload: { reference: "vercel-labs/skills@find-skills", agents: ["codex"] } });
+    const preflightOk = await app.inject({
+      method: "POST",
+      url: "/skills/preflight",
+      payload: { reference: "vercel-labs/skills@find-skills", agents: [" codex ", ""] },
+    });
+    expect(preflightOk.statusCode).toBe(200);
+    expect(lastPreflightAgents).toEqual(["codex"]);
+
+    const installFail = await app.inject({ method: "POST", url: "/skills/install", payload: { reference: "vercel-labs/skills@find-skills" } });
+    expect(installFail.statusCode).toBe(400);
+
+    const installOk = await app.inject({
+      method: "POST",
+      url: "/skills/install",
+      payload: { reference: "vercel-labs/skills@find-skills", agents: [" codex ", ""] },
+    });
     expect(installOk.statusCode).toBe(200);
+    expect(lastInstallAgents).toEqual(["codex"]);
 
     const list = await app.inject({ method: "POST", url: "/skills/list", payload: {} });
     expect(list.statusCode).toBe(200);

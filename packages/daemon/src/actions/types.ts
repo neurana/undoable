@@ -28,6 +28,7 @@ export type FileUndoData = {
   type: "file";
   path: string;
   previousContent: string | null;
+  previousContentBase64?: string | null;
   previousExisted: boolean;
 };
 
@@ -72,6 +73,16 @@ export const TOOL_CATEGORIES: ToolCategoryMap = {
   toggle_job: "mutate",
   run_job: "exec",
   scheduler_status: "read",
+
+  skills_list: "read",
+  skills_search: "network",
+  skills_discover: "network",
+  skills_install: "mutate",
+  skills_installed: "read",
+  skills_check_updates: "network",
+  skills_update: "mutate",
+  skills_remove: "mutate",
+  skills_toggle: "mutate",
 };
 
 export function getToolCategory(toolName: string): ActionCategory {
