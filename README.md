@@ -19,8 +19,10 @@
 - [Requirements](#requirements)
 - [Install](#install)
 - [First Run](#first-run)
+- [24/7 Operation](#247-operation)
 - [UI and API Endpoints](#ui-and-api-endpoints)
 - [CLI Overview](#cli-overview)
+- [Settings Console (UI + CLI)](#settings-console-ui--cli)
 - [Undo and Redo](#undo-and-redo)
 - [SWARM Workflows](#swarm-workflows)
 - [Skills](#skills)
@@ -70,10 +72,12 @@ Important scope boundary:
 
 ## Requirements
 
-- Node.js `>=22.12.0`
+- Node.js `>=20.10.0`
 - pnpm `>=10`
 - PostgreSQL `16+` (native mode)
 - Docker + Docker Compose (docker mode)
+
+`pnpm build` enforces the Node minimum and exits early with a clear message if your version is too old.
 
 ## Install
 
@@ -144,6 +148,46 @@ undoable start --no-ui
 undoable-daemon
 ```
 
+## 24/7 Operation
+
+For long-running production usage, use one of these modes:
+
+- Docker mode (`restart: unless-stopped`) for server deployments
+- Native daemon supervisor mode (`nrn daemon start`) for local/VM installs
+
+Native daemon lifecycle:
+
+```bash
+nrn daemon start
+nrn daemon status
+nrn daemon stop
+```
+
+Notes:
+
+- `nrn daemon start` now runs in supervised mode by default and auto-restarts after crashes
+- Use `nrn daemon start --no-supervise` only if you explicitly want direct unmanaged mode
+- Daemon logs are written to `~/.undoable/logs/daemon.log`
+- Health endpoint remains `http://127.0.0.1:7433/health` (or your configured port)
+
+OS service lifecycle (recommended for native 24/7):
+
+```bash
+nrn daemon service install --port 7433
+nrn daemon service status
+nrn daemon service restart
+nrn daemon service uninstall
+```
+
+- macOS: uses `launchd` user agent
+- Linux: uses `systemd --user` unit
+- Service install expects built artifacts (`pnpm build`) so it can run `dist/daemon/index.mjs`
+- On Linux, enable linger for true logout-proof 24/7 operation:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
 ### Development Hot Reload
 
 ```bash
@@ -179,7 +223,7 @@ Main command groups:
 
 - `setup`, `quickstart`, `onboard`, `start`, `status`, `doctor`, `daemon`
 - `chat`, `agent`, `swarm`, `run`, `undo`
-- `plan`, `shadow`, `apply`, `verify`, `receipt`, `stream`
+- `plan`, `shadow`, `apply`, `verify`, `receipt`, `stream`, `settings`
 - `channels`, `pairing`, `config`, `plugin`
 
 Useful daemon lifecycle commands:
@@ -204,6 +248,36 @@ Inside chat:
 - `/economy on|off|status`
 - `/thinking on|off`
 - `/abort`
+
+## Settings Console (UI + CLI)
+
+Undoable now has a standalone settings console at:
+
+- UI route: `http://localhost:5173/settings`
+- Sidebar: click `Settings` to open the full page (not modal)
+
+Sections include Runtime, Advanced, Gateway, Config Console, Models, API Keys, Undo, Voice, and Browser.
+
+Gateway section supports editing daemon profile values:
+
+- bind mode (`loopback|all|custom`)
+- host
+- port
+- auth mode (`open|token`) + token rotate
+- security policy (`strict|balanced|permissive`)
+
+When a gateway change needs restart, UI shows `restart required`.
+
+CLI parity:
+
+```bash
+nrn settings status
+nrn settings set --preset economy
+
+nrn settings daemon status
+nrn settings daemon set --bind loopback --auth token --rotate-token
+nrn settings daemon set --port 7433 --security strict
+```
 
 ## Undo and Redo
 
@@ -403,6 +477,7 @@ cd docker
 Other operations:
 
 ```bash
+./start.sh --check
 ./start.sh --logs
 ./start.sh --down
 ./start.sh --dev
@@ -442,8 +517,26 @@ UNDOABLE_ALLOW_IRREVERSIBLE_ACTIONS=1
 
 ```bash
 cd docker
+./start.sh --check
 ./start.sh --down
 ./start.sh --build
+```
+
+### 6) `pnpm build` fails immediately with Node version error
+
+- Run `node -v`
+- Install/activate Node `20.10+`
+- Retry `pnpm build`
+
+### 7) `nrn daemon start` reports process running but unhealthy
+
+- Run `nrn daemon status`
+- Inspect `~/.undoable/logs/daemon.log`
+- Restart cleanly:
+
+```bash
+nrn daemon stop
+nrn daemon start
 ```
 
 ## Development

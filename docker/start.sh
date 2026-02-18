@@ -25,6 +25,33 @@ EOF
     echo "✓ Created .env file"
 }
 
+require_docker_cli() {
+    if command -v docker >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "✗ Docker CLI not found in PATH."
+    echo "  Install Docker Desktop (macOS) or Docker Engine (Linux), then retry."
+    exit 1
+}
+
+require_compose_plugin() {
+    if docker compose version >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "✗ Docker Compose plugin is not available."
+    echo "  Install or enable Docker Compose v2, then retry."
+    exit 1
+}
+
+require_docker_runtime() {
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "✗ Docker is installed but not running."
+    echo "  Start Docker Desktop/Engine, then retry."
+    exit 1
+}
+
 # Parse arguments
 MODE="prod"
 ACTION="up"
@@ -46,8 +73,12 @@ while [[ $# -gt 0 ]]; do
             ACTION="logs"
             shift
             ;;
+        --check)
+            ACTION="check"
+            shift
+            ;;
         --help|-h)
-            echo "Usage: ./start.sh [--dev] [--build] [--up|--down|--logs]"
+            echo "Usage: ./start.sh [--dev] [--build] [--up|--down|--logs|--check]"
             exit 0
             ;;
         --up)
@@ -70,6 +101,16 @@ else
     COMPOSE_FILE="docker-compose.yml"
 fi
 
+require_docker_cli
+require_compose_plugin
+
+if [[ "$ACTION" == "check" ]]; then
+    ensure_env_file
+    docker compose -f "$COMPOSE_FILE" config >/dev/null
+    echo "✓ Docker Compose configuration is valid ($COMPOSE_FILE)"
+    exit 0
+fi
+
 if [[ "$ACTION" == "down" ]]; then
     echo "Stopping containers..."
     docker compose -f "$COMPOSE_FILE" down
@@ -80,6 +121,8 @@ if [[ "$ACTION" == "logs" ]]; then
     docker compose -f "$COMPOSE_FILE" logs -f
     exit 0
 fi
+
+require_docker_runtime
 
 ensure_env_file
 

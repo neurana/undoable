@@ -31,7 +31,7 @@ function createScheduler() {
         const updated: ScheduledJob = {
           ...jobs[idx]!,
           ...patch,
-          state: { ...(jobs[idx]!.state ?? {}), ...(patch.state ?? {}) },
+          state: { ...jobs[idx]!.state, ...patch.state },
           updatedAtMs: Date.now(),
         };
         jobs[idx] = updated;

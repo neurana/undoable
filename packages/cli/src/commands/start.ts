@@ -1,10 +1,12 @@
 import { Command } from "commander";
 import { spawn } from "node:child_process";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const GREEN = "\x1b[32m";
 const BOLD = "\x1b[1m";
 const NC = "\x1b[0m";
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 export function startCommand(): Command {
   return new Command("start")
@@ -17,7 +19,7 @@ export function startCommand(): Command {
     .option("--economy", "Enable economy mode for lower token usage")
     .option("--dangerously-skip-permissions", "Skip all permission checks (autonomous mode)")
     .action((opts) => {
-      const rootDir = path.resolve(import.meta.dirname, "../../../..");
+      const rootDir = path.resolve(MODULE_DIR, "../../../..");
       const daemonEntry = path.join(rootDir, "packages/daemon/src/index.ts");
       const uiDir = path.join(rootDir, "ui");
 

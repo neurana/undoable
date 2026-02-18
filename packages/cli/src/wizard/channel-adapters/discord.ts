@@ -40,7 +40,7 @@ export const discordAdapter: ChannelOnboardingAdapter = {
         channelId: "discord",
         enabled: true,
         token,
-        extra: { ...(existing?.extra ?? {}) },
+        extra: { ...existing?.extra },
       },
       policy,
       allowlist,

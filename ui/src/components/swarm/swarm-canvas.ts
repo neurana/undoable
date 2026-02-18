@@ -493,7 +493,7 @@ export class SwarmCanvas extends LitElement {
     }
 
     const validNodeIds = new Set(workflow.nodes.map((node) => node.id));
-    for (const existing of [...this.animatedNodeIds]) {
+    for (const existing of this.animatedNodeIds) {
       if (!validNodeIds.has(existing)) this.animatedNodeIds.delete(existing);
     }
 

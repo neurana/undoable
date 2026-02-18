@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { SpawnSyncReturns } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-const ROOT_DIR = path.resolve(import.meta.dirname, "../../../..");
+const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const CLI_ENTRY = path.join(ROOT_DIR, "packages/cli/src/index.ts");
 const TSX_LOADER = path.join(ROOT_DIR, "node_modules/tsx/dist/loader.mjs");
 

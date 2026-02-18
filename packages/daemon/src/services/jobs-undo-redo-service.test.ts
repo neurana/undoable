@@ -42,7 +42,7 @@ function createSchedulerHarness(seed: ScheduledJob[]) {
         const next: ScheduledJob = {
           ...jobs[idx]!,
           ...patch,
-          state: { ...(jobs[idx]!.state ?? {}), ...(patch.state ?? {}) },
+          state: { ...jobs[idx]!.state, ...patch.state },
           updatedAtMs: Date.now(),
         };
         jobs[idx] = next;

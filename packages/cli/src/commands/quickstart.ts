@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createClackPrompter } from "../wizard/clack-prompter.js";
 import { runNonInteractiveOnboard } from "./onboard.js";
 
@@ -14,6 +15,7 @@ type QuickstartOptions = {
   yes?: boolean;
   acceptRisk?: boolean;
 };
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 function normalizeMode(raw: string | undefined): "local" | "remote" {
   const mode = raw?.trim().toLowerCase() ?? "local";
@@ -52,7 +54,7 @@ async function resolveRiskAck(opts: QuickstartOptions): Promise<boolean> {
 }
 
 function startDaemon(port: number) {
-  const rootDir = path.resolve(import.meta.dirname, "../../../..");
+  const rootDir = path.resolve(MODULE_DIR, "../../../..");
   const cliEntry = path.join(rootDir, "packages/cli/src/index.ts");
   const result = spawnSync(
     "node",

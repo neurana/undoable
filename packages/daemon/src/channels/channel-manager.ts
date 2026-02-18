@@ -24,6 +24,11 @@ const CHANNEL_SYSTEM_PROMPT = [
   "Keep responses concise and conversational - this is a chat platform, not a code editor.",
   "Format responses as plain text (no markdown) unless the platform supports it.",
   "",
+  "Capability grounding:",
+  "- Treat listed tools as available. Do not claim a capability is unavailable until a relevant tool call fails.",
+  "- Prefer Undoable-native tooling over external platforms unless the user explicitly asks for external tools.",
+  "- If a tool fails, report what failed, why (exact blocker), and one concrete recovery step.",
+  "",
   "You have full access to the user's system via tools:",
   "- web_search: Search the web. Use this when asked to find, research, or look up anything.",
   "- browse_page / web_fetch: Read a specific URL or make HTTP requests.",
@@ -35,13 +40,17 @@ const CHANNEL_SYSTEM_PROMPT = [
   "- telegram_actions / discord_actions / slack_actions / whatsapp_actions: Perform actions on messaging platforms.",
   "- sessions_list / sessions_history / sessions_send / sessions_spawn: Interact with other sessions.",
   "- media: Download, inspect, resize, describe (image->text), transcribe (audio->text) media files.",
+  "- undo / actions: Inspect action history, undo/redo changes, and report reliability status.",
   "",
   "Automation policy:",
   "- For requests like automation/workflow/SDR/24-7 agent, propose or execute an Undoable-native workflow first.",
   "- Do not default to external services (Zapier/Make/n8n) unless the user explicitly asks for those.",
   "- If a platform has no dedicated tool (for example email/Gmail), implement via exec/web_fetch inside Undoable and ask only for missing credentials.",
   "",
-  "Act immediately when asked. Do not ask clarifying questions unless truly ambiguous.",
+  "Execution policy:",
+  "- Act immediately when asked; ask clarifying questions only when blocked (missing credentials/IDs or ambiguous intent).",
+  "- For mutating tasks, prefer undoable flows (write_file/edit_file). Use undo list when the user asks for audit/reliability checks.",
+  "- Verify user-visible outputs before claiming success (for example, read files after writing).",
 ].join("\n");
 
 type DmPolicy = "pairing" | "allowlist" | "open" | "disabled";
@@ -1045,7 +1054,7 @@ export class ChannelManager {
   }
 
   private async resolveWhatsAppTarget(input: string, kind: ResolveKind): Promise<ChannelResolveEntry> {
-    if (/@s\.whatsapp\.net$/.test(input) || /@g\.us$/.test(input)) {
+    if (input.endsWith("@s.whatsapp.net") || input.endsWith("@g.us")) {
       return {
         input,
         resolved: input,
@@ -1306,7 +1315,12 @@ export class ChannelManager {
 
       await this.deps.chatService.addUserMessage(sessionId, userText);
 
-      const messages = await this.deps.chatService.buildApiMessages(sessionId);
+      let messages = await this.deps.chatService.buildApiMessages(sessionId);
+      if (messages.length > 0 && messages[0]?.role === "system") {
+        messages[0] = { role: "system", content: CHANNEL_SYSTEM_PROMPT };
+      } else {
+        messages = [{ role: "system", content: CHANNEL_SYSTEM_PROMPT }, ...messages];
+      }
       const response = await this.deps.callLLM(messages, this.deps.registry.definitions, false);
 
       let replyText: string;

@@ -45,6 +45,14 @@ export class LocalConnector implements Connector {
     };
   }
 
+  private safeUptime(): number | null {
+    try {
+      return os.uptime();
+    } catch {
+      return null;
+    }
+  }
+
   async exec(command: string, opts?: ExecOptions): Promise<ExecResult> {
     const cwd = opts?.cwd ?? os.homedir();
     const timeout = opts?.timeout ?? 30_000;
@@ -110,7 +118,7 @@ export class LocalConnector implements Connector {
             cpus: os.cpus().length,
             totalMemory: os.totalmem(),
             freeMemory: os.freemem(),
-            uptime: os.uptime(),
+            uptime: this.safeUptime(),
             homeDir: os.homedir(),
             shell: process.env.SHELL,
             nodeVersion: process.version,

@@ -70,6 +70,8 @@ import {
   initDatabase,
   isDatabaseEnabled,
 } from "../services/database-service.js";
+import { DaemonSettingsService } from "../services/daemon-settings-service.js";
+import { settingsRoutes } from "../routes/settings.js";
 
 export type ServerOptions = {
   port: number;
@@ -433,6 +435,7 @@ export async function createServer(opts: ServerOptions) {
   }
 
   const usageService = new UsageService();
+  const daemonSettingsService = new DaemonSettingsService();
   await usageService.init();
 
   const { createToolRegistry } = await import("../tools/index.js");
@@ -642,6 +645,7 @@ export async function createServer(opts: ServerOptions) {
   const { usageRoutes } = await import("../routes/usage.js");
   usageRoutes(app, usageService);
   pluginRoutes(app, pluginRegistry, pluginCtx);
+  settingsRoutes(app, daemonSettingsService);
   gatewayRoutes(app, {
     scheduler,
     cronRuns,

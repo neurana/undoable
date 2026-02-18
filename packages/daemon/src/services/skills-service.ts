@@ -4,6 +4,7 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import dns from "node:dns/promises";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import {
   loadAllSkills,
   resolveSkillStatus,
@@ -17,11 +18,12 @@ import {
 } from "./skills-security.js";
 
 const execFileAsync = promisify(execFile);
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const UNDOABLE_DIR = path.join(os.homedir(), ".undoable");
 const CONFIG_FILE = path.join(UNDOABLE_DIR, "skills.json");
 const USER_SKILLS_DIR = path.join(UNDOABLE_DIR, "skills");
 const BUNDLED_SKILLS_DIR = path.join(
-  path.resolve(import.meta.dirname, "../.."),
+  path.resolve(MODULE_DIR, "../.."),
   "skills",
 );
 const SKILLS_DOCS_URL = "https://skills.sh/docs";
@@ -957,7 +959,7 @@ export class SkillsService {
       return {
         ok: true,
         installed: false,
-        message: `skill \"${trimmed}\" already installed`,
+        message: `skill "${trimmed}" already installed`,
         skill: existing,
       };
     }
@@ -980,7 +982,7 @@ export class SkillsService {
       return {
         ok: true,
         installed: true,
-        message: `installed skill \"${trimmed}\"`,
+        message: `installed skill "${trimmed}"`,
         skill: installed,
       };
     } catch (err) {

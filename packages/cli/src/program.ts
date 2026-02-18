@@ -21,6 +21,7 @@ import { pluginCommand } from "./commands/plugin.js";
 import { quickstartCommand } from "./commands/quickstart.js";
 import { channelsCommand } from "./commands/channels.js";
 import { pairingCommand } from "./commands/pairing.js";
+import { settingsCommand } from "./commands/settings.js";
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -50,6 +51,7 @@ export function buildProgram(): Command {
   program.addCommand(channelsCommand());
   program.addCommand(pairingCommand());
   program.addCommand(configCommand());
+  program.addCommand(settingsCommand());
   program.addCommand(pluginCommand());
   program.addCommand(doctorCommand());
 

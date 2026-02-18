@@ -281,7 +281,7 @@ function buildPatchFromOptions(params: {
   allowlist?: string[];
 }): Partial<ChannelOnboardingConfig> {
   const { channel, current, botToken, appToken, dmPolicy, allowlist } = params;
-  const extra = { ...(current.extra ?? {}) };
+  const extra = { ...current.extra };
   if (dmPolicy) extra.dmPolicy = dmPolicy;
   if (allowlist) extra.allowlist = allowlist;
   if (channel === "slack" && appToken) extra.appToken = appToken;

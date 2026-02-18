@@ -10,3 +10,4 @@ import "./components/nodes-panel.js";
 import "./components/channels.js";
 import "./components/swarm-page.js";
 import "./components/sessions.js";
+import "./components/settings-page.js";

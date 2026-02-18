@@ -446,7 +446,41 @@ export function killSession(session: ProcessSession) {
 
 /** Strip DSR (Device Status Report) escape sequences from PTY output. */
 export function stripDsrSequences(input: string): string {
-  return input.replace(/\x1b\[\d+;\d+R/g, "");
+  const esc = "\u001B";
+  let output = "";
+
+  for (let i = 0; i < input.length; i++) {
+    if (input.charAt(i) !== esc || input.charAt(i + 1) !== "[") {
+      output += input.charAt(i);
+      continue;
+    }
+
+    let j = i + 2;
+    let firstDigits = 0;
+    while (j < input.length && input.charAt(j) >= "0" && input.charAt(j) <= "9") {
+      firstDigits++;
+      j++;
+    }
+    if (firstDigits === 0 || input.charAt(j) !== ";") {
+      output += input.charAt(i);
+      continue;
+    }
+
+    j++;
+    let secondDigits = 0;
+    while (j < input.length && input.charAt(j) >= "0" && input.charAt(j) <= "9") {
+      secondDigits++;
+      j++;
+    }
+    if (secondDigits === 0 || input.charAt(j) !== "R") {
+      output += input.charAt(i);
+      continue;
+    }
+
+    i = j;
+  }
+
+  return output;
 }
 
 export function waitForExit(sessionId: string, timeoutMs: number): Promise<boolean> {

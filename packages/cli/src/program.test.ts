@@ -36,16 +36,17 @@ describe("buildProgram", () => {
     expect(commandNames).toContain("channels");
     expect(commandNames).toContain("pairing");
     expect(commandNames).toContain("config");
+    expect(commandNames).toContain("settings");
     expect(commandNames).toContain("plugin");
     expect(commandNames).toContain("doctor");
   });
 
-  it("has exactly 22 commands", () => {
+  it("has exactly 23 commands", () => {
     const program = buildProgram();
-    expect(program.commands).toHaveLength(22);
+    expect(program.commands).toHaveLength(23);
   });
 
-  it("daemon command has start/stop/status subcommands", () => {
+  it("daemon command has lifecycle and service subcommands", () => {
     const program = buildProgram();
     const daemon = program.commands.find((c) => c.name() === "daemon");
     const subNames = daemon?.commands.map((c) => c.name());
@@ -53,6 +54,7 @@ describe("buildProgram", () => {
     expect(subNames).toContain("start");
     expect(subNames).toContain("stop");
     expect(subNames).toContain("status");
+    expect(subNames).toContain("service");
   });
 
   it("agent command has list/status subcommands", () => {

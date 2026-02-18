@@ -47,7 +47,7 @@ export class SwarmService {
     const now = nowISO();
     const workflowId = cleanOptionalString(input.id) ?? generateId();
     if (this.workflows.has(workflowId)) {
-      throw new Error(`workflow \"${workflowId}\" already exists`);
+      throw new Error(`workflow "${workflowId}" already exists`);
     }
 
     const workflow: SwarmWorkflow = {
@@ -309,7 +309,7 @@ export class SwarmService {
     if (prompt) return prompt;
 
     const lines = [
-      `Execute SWARM node \"${node.name}\" (${node.type}) from workflow \"${workflow.name}\".`,
+      `Execute SWARM node "${node.name}" (${node.type}) from workflow "${workflow.name}".`,
       "Act autonomously and return concise structured output for downstream nodes.",
     ];
 

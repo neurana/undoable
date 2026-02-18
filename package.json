@@ -7,7 +7,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "tsdown",
+    "build": "node scripts/check-node-version.mjs && tsdown",
     "start": "node dist/daemon/index.mjs",
     "cli": "node --import tsx packages/cli/src/index.ts",
     "check": "pnpm lint",
@@ -31,7 +31,7 @@
     "vitest": "^4.0.18"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=20.10.0"
   },
   "packageManager": "pnpm@10.23.0",
   "dependencies": {

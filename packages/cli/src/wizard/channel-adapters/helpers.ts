@@ -48,7 +48,7 @@ export function applyDmPolicy(
   dmPolicy: DmPolicy,
   allowlist: string[],
 ): ChannelOnboardingConfig {
-  const extra = { ...(base.extra ?? {}), dmPolicy, allowlist };
+  const extra = { ...base.extra, dmPolicy, allowlist };
   return {
     ...base,
     extra,

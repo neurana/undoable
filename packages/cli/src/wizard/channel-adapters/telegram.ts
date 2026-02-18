@@ -40,7 +40,7 @@ export const telegramAdapter: ChannelOnboardingAdapter = {
         channelId: "telegram",
         enabled: true,
         token,
-        extra: { ...(existing?.extra ?? {}) },
+        extra: { ...existing?.extra },
       },
       policy,
       allowlist,

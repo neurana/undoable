@@ -138,7 +138,7 @@ export function runCommand(): Command {
         await runSafe(async () => {
           const allowed = new Set(["pause", "resume", "cancel", "apply", "undo"]);
           if (!allowed.has(action)) {
-            throw new Error(`Unsupported action \"${action}\". Allowed: pause, resume, cancel, apply, undo`);
+            throw new Error(`Unsupported action "${action}". Allowed: pause, resume, cancel, apply, undo`);
           }
 
           const out = await daemonRequest(`/runs/${encodeURIComponent(runId)}/${encodeURIComponent(action)}`, {

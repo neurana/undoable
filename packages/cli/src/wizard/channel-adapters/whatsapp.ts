@@ -31,7 +31,7 @@ export const whatsappAdapter: ChannelOnboardingAdapter = {
       {
         channelId: "whatsapp",
         enabled: true,
-        extra: { ...(existing?.extra ?? {}) },
+        extra: { ...existing?.extra },
       },
       policy,
       allowlist,

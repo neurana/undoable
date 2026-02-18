@@ -50,7 +50,7 @@ export const slackAdapter: ChannelOnboardingAdapter = {
         channelId: "slack",
         enabled: true,
         token,
-        extra: { ...(existing?.extra ?? {}), appToken },
+        extra: { ...existing?.extra, appToken },
       },
       policy,
       allowlist,

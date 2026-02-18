@@ -252,7 +252,7 @@ export async function runOnboardingWizard(
     agents: {
       ...(baseConfig.agents as Record<string, unknown> | undefined),
       default: {
-        ...(existingDefault ?? {}),
+        ...existingDefault,
         default: true,
         workspace,
         mode,

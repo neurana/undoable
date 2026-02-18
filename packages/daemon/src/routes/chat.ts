@@ -1375,7 +1375,50 @@ export function chatRoutes(
   });
 
   app.post<{ Body: { title?: string; agentId?: string } }>("/chat/sessions", async (req) => {
-    const session = await chatService.createSession({ title: req.body.title, agentId: req.body.agentId });
+    const agentId = req.body.agentId;
+    let agentName: string | undefined;
+    let agentInstructions: string | undefined;
+    let agentWorkspace: string | undefined;
+    let agentModel: string | undefined;
+    let agentToolDefs = registry.definitions;
+
+    if (agentId && agentRegistry) {
+      const agent = agentRegistry.get(agentId);
+      if (agent?.name) agentName = agent.name;
+      if (agent?.workspace) agentWorkspace = agent.workspace;
+      if (agent?.model) agentModel = agent.model;
+      if (agent?.tools) agentToolDefs = filterToolsByPolicy(registry.definitions, agent.tools);
+      if (instructionsStore) {
+        agentInstructions = (await instructionsStore.getCurrent(agentId)) ?? undefined;
+      }
+    }
+
+    const activeConf = getActiveConfig();
+    const workspaceDir = agentWorkspace || os.homedir();
+    const contextFiles = loadContextFiles(workspaceDir);
+    const sessionSystemPrompt = buildSystemPrompt({
+      agentName,
+      agentInstructions,
+      skillsPrompt: skillsService?.getPrompt(),
+      toolDefinitions: agentToolDefs,
+      contextFiles,
+      economyMode: economyMode.enabled,
+      undoGuaranteeEnabled: !allowIrreversibleActions,
+      workspaceDir,
+      runtime: {
+        model: agentModel ?? activeConf.model,
+        provider: activeConf.provider,
+        os: `${os.platform()} ${os.release()}`,
+        arch: os.arch(),
+        node: process.version,
+      },
+    });
+
+    const session = await chatService.createSession({
+      title: req.body.title,
+      agentId,
+      systemPrompt: sessionSystemPrompt,
+    });
     return { id: session.id, title: session.title, agentId: session.agentId, createdAt: session.createdAt };
   });
 

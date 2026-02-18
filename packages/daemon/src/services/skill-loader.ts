@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 
 // ---------- types ----------
 
@@ -137,6 +138,7 @@ export function loadSkillsFromDir(dir: string, source: LoadedSkill["source"]): L
 // ---------- multi-source loader ----------
 
 const UNDOABLE_DIR = path.join(os.homedir(), ".undoable");
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_AGENT_SKILLS_DIRS = [
   path.join(os.homedir(), ".codex", "skills"),
   path.join(os.homedir(), ".claude", "skills"),
@@ -154,7 +156,7 @@ export function loadAllSkills(opts?: {
   extraUserDirs?: string[];
   includeBundled?: boolean;
 }): LoadedSkill[] {
-  const bundledDir = opts?.bundledDir ?? path.join(path.resolve(import.meta.dirname, "../.."), "skills");
+  const bundledDir = opts?.bundledDir ?? path.join(path.resolve(MODULE_DIR, "../.."), "skills");
   const userDir = opts?.userDir ?? path.join(UNDOABLE_DIR, "skills");
   const candidateUserDirs = opts?.extraUserDirs ?? (opts?.userDir ? [] : DEFAULT_AGENT_SKILLS_DIRS);
   const userDirs = Array.from(

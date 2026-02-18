@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { daemonRequest, resolveDaemonBaseUrl, resolveDaemonToken } from "./daemon-client.js";
 
 type ChatOptions = {
@@ -56,6 +57,7 @@ type ChatSseEvent = {
 
 const DEFAULT_PORT = 7433;
 const PID_FILE = path.join(os.homedir(), ".undoable", "daemon.pid.json");
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 type DaemonState = {
   pid: number;
@@ -145,7 +147,7 @@ async function ensureLocalDaemon(baseUrl: string): Promise<void> {
     if (ready) return;
   }
 
-  const rootDir = path.resolve(import.meta.dirname, "../../../..");
+  const rootDir = path.resolve(MODULE_DIR, "../../../..");
   const daemonEntry = path.join(rootDir, "packages/daemon/src/index.ts");
   const child = spawn("node", ["--import", "tsx", daemonEntry], {
     cwd: rootDir,

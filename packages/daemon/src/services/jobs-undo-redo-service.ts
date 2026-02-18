@@ -78,7 +78,7 @@ export class JobsUndoRedoService {
     this.pushUndo({
       id: randomUUID(),
       kind: "create",
-      label: `Created job \"${job.name}\"`,
+      label: `Created job "${job.name}"`,
       createdAtMs: Date.now(),
       currentJobId: job.id,
       after: cloneSnapshot(job),
@@ -89,7 +89,7 @@ export class JobsUndoRedoService {
     this.pushUndo({
       id: randomUUID(),
       kind: "update",
-      label: `Updated job \"${after.name}\"`,
+      label: `Updated job "${after.name}"`,
       createdAtMs: Date.now(),
       currentJobId: after.id,
       before: cloneSnapshot(before),
@@ -101,7 +101,7 @@ export class JobsUndoRedoService {
     this.pushUndo({
       id: randomUUID(),
       kind: "delete",
-      label: `Deleted job \"${job.name}\"`,
+      label: `Deleted job "${job.name}"`,
       createdAtMs: Date.now(),
       currentJobId: null,
       before: cloneSnapshot(job),

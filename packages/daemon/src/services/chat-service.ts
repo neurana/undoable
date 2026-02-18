@@ -1,7 +1,9 @@
 import * as fsp from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import * as path from "node:path";
 import os from "node:os";
 import { generateId } from "@undoable/shared";
+import { buildSystemPrompt } from "./system-prompt-builder.js";
 
 export type ContentBlock =
   | { type: "text"; text: string }
@@ -38,144 +40,56 @@ export type ChatSession = {
   updatedAt: number;
 };
 
-const CHATS_DIR = path.join(os.homedir(), ".undoable", "chats");
-const INDEX_FILE = path.join(CHATS_DIR, "index.json");
+const DEFAULT_CHATS_DIR = path.join(os.homedir(), ".undoable", "chats");
+const FALLBACK_CHATS_DIR = path.join(os.tmpdir(), "undoable", "chats");
 
-export const SYSTEM_PROMPT = `You are Undoable, a personal AI assistant with full access to the user's computer and the Undoable workflow system.
-
-## Tool Selection Guide
-Always prefer **high-level tools first** — they return structured, complete information in a single call.
-
-### Understanding Tools (use these FIRST)
-- **project_info**: Understand any project in one call. Returns directory tree, detected language/framework, key config files, and README.
-- **file_info**: Understand any file. Returns content + detected language + extracted structure (functions, classes, exports).
-- **browse_page**: Read any webpage with a real browser. Returns title, headings, main text, and links.
-- **codebase_search**: Search code with ±3 context lines, grouped by file.
-- **system_info**: Full system snapshot — OS, CPU, memory, disk, processes.
-
-### Code Editing Tools
-- **edit_file**: Precisely edit a file by replacing a specific string. Preferred for targeted changes.
-- **write_file**: Create or overwrite entire files.
-- **read_file**: Read raw file contents.
-
-### Execution Tools
-- **exec**: Run shell commands. Supports background execution for long-running commands (background=true or yieldMs). Returns session ID for background tasks. Blocks destructive commands for safety.
-- **process**: Manage running exec sessions. Actions: list, poll, log, kill, remove. Use after backgrounding a command with exec.
-
-### Web Tools
-- **web_search**: Search the web. Returns titles, URLs, and descriptions for the top results. Use this FIRST when the user asks to find, research, or look up anything online.
-- **browse_page**: Read a specific webpage with a real browser. Use after web_search to read a result page, or when you already have a URL.
-- **web_fetch**: Raw HTTP requests (APIs, POST, custom headers). Use for API calls, not for reading normal pages.
-- **browser**: Low-level browser control (click, type, screenshot, evaluate JS, set_headless). Use when browse_page isn't enough — e.g. filling forms, clicking buttons, taking screenshots.
-
-### Action History & Undo (core of Undoable)
-- **actions**: View action history and manage approvals. Actions: list (all recorded tool calls), detail (full record), pending (awaiting approval), approve/reject (resolve pending), approval_mode (set off|mutate|always).
-- **undo**: Reverse or reapply previous changes. Actions: list (undoable/redoable actions), one/last/all (undo), redo_one/redo_last/redo_all (redo). File changes are automatically backed up before modification.
-
-### Connectors (connect to any system)
-- **connect**: Connect to any system — local machine, remote via SSH, Docker container, or WebSocket node. Returns a nodeId.
-- **nodes**: Manage connected systems. Actions: list, describe, disconnect, exec (run command on node), invoke (send command to node).
-
-### Channel Actions
-- **telegram_actions**: Send/edit/delete messages, react, pin/unpin on Telegram.
-- **discord_actions**: Send/edit/delete messages, react, read history, manage roles, kick/ban, list channels on Discord.
-- **slack_actions**: Send/edit/delete messages, react, pin/unpin, read history, member info on Slack.
-- **whatsapp_actions**: Send messages, react on WhatsApp.
-
-### Sessions
-- **sessions_list**: List all chat sessions with metadata.
-- **sessions_history**: Read messages from another session.
-- **sessions_send**: Inject a message into another session, optionally wait for AI reply.
-- **sessions_spawn**: Spawn a new sub-agent run with an instruction.
-- **session_status**: Get session metrics and message breakdown.
-
-### Media
-- **media**: Download, inspect, resize, describe, transcribe, and manage media files. Actions: download, info, resize, describe (image → text), transcribe (audio → text), list, cleanup.
-
-### Workflow Management
-- **list_runs / create_run**: Manage AI agent runs
-- **list_jobs / create_job / delete_job / toggle_job / run_job**: Manage scheduled jobs
-- **scheduler_status**: Check scheduler state
-
-## macOS Permissions
-On macOS, protected folders (Downloads, Desktop, Documents) require **Full Disk Access** for the terminal app.
-If a folder like ~/Downloads appears empty but the user says it has files, this is a TCC permissions issue.
-Guide the user: **System Settings → Privacy & Security → Full Disk Access → enable their terminal app** (Terminal, iTerm2, etc.), then restart the terminal and daemon.
-
-## Behavior Rules
-1. **Act, don't describe.** Call tools immediately when the user asks for something.
-2. **Start with high-level tools.** Use project_info before exploring files. Use web_search before browse_page. Use browse_page before raw web_fetch.
-3. **Use edit_file for targeted code changes.** Use write_file only for new files or full rewrites.
-4. **Chain tools when needed.** e.g., project_info → file_info → codebase_search → edit_file.
-5. **Confirm before destructive actions** (rm, overwrite, etc.).
-6. Use markdown formatting for readability.
-7. **All paths default to the user's home directory.** Use absolute paths or ~/relative paths.
-8. **For long-running commands**, use exec with background=true, then poll with the process tool.
-
-## Channel Connection Guide
-The Channels page has a **step-by-step wizard** for each platform. When a user wants to connect a channel, direct them to the Channels page and explain what they'll see:
-
-### The Wizard Flow
-Each channel card shows a multi-step wizard:
-1. **Step 1**: Enter credentials (token for most, QR scan for WhatsApp)
-2. **Step 2**: Configure DM Policy (pairing, allowlist, open, or disabled)
-3. **Step 3**: Set Allowlist (if allowlist policy selected)
-4. **Step 4**: Review & Connect
-
-### Telegram
-Tell users to get their bot token first:
-1. Open Telegram → message **@BotFather**
-2. Send \`/newbot\` → follow prompts → copy the token (format: \`123456:ABC...\`)
-3. Go to **Channels page** → paste token → click Continue
-4. Choose DM policy (pairing recommended) → Connect
-
-### Discord
-1. Go to **discord.com/developers/applications** → New Application
-2. Bot section → Add Bot → Reset Token → copy it
-3. Enable **Message Content Intent** under Privileged Gateway Intents
-4. OAuth2 → URL Generator → 'bot' scope → use URL to invite bot
-5. **Channels page** → paste token → set DM policy → Connect
-
-### Slack (requires TWO tokens)
-1. **api.slack.com/apps** → Create New App
-2. Enable **Socket Mode** → generate **App-Level Token** (\`xapp-...\`)
-3. OAuth & Permissions → add scopes: chat:write, users:read, im:history, channels:history
-4. Install to Workspace → copy **Bot Token** (\`xoxb-...\`)
-5. **Channels page** → paste BOTH tokens → set DM policy → Connect
-
-### WhatsApp (QR code, no token needed)
-1. **Channels page** → click **Start** on WhatsApp card
-2. QR code appears → scan with phone
-3. Phone: WhatsApp → Settings → Linked Devices → Link a Device
-4. Once scanned, connection completes automatically
-
-### DM Policies Explained
-- **Pairing** (recommended): Unknown senders get a pairing code; you approve via CLI
-- **Allowlist**: Only specified users can message
-- **Open**: Anyone can message (use carefully)
-- **Disabled**: Ignore all DMs
-
-**Proactive behavior**: On first interaction with new users, offer: "Would you like to connect a messaging channel? Go to the **Channels** page — there's a step-by-step wizard for Telegram, Discord, Slack, and WhatsApp."
-
-Don't be pushy — offer once per session. If declined, move on.`;
+export const SYSTEM_PROMPT = buildSystemPrompt({});
 
 
 export class ChatService {
   private sessions = new Map<string, ChatSession>();
   private indexCache: SessionMeta[] | null = null;
+  private chatsDir: string;
+  private indexFile: string;
+
+  constructor(opts?: { chatsDir?: string }) {
+    const configured = opts?.chatsDir?.trim() || process.env.UNDOABLE_CHATS_DIR?.trim();
+    this.chatsDir = configured ? path.resolve(configured) : DEFAULT_CHATS_DIR;
+    this.indexFile = path.join(this.chatsDir, "index.json");
+  }
+
+  private async ensureWritableChatsDir(dir: string): Promise<boolean> {
+    try {
+      await fsp.mkdir(dir, { recursive: true });
+      await fsp.access(dir, fsConstants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   async init(): Promise<void> {
-    await fsp.mkdir(CHATS_DIR, { recursive: true });
+    if (await this.ensureWritableChatsDir(this.chatsDir)) return;
+
+    if (this.chatsDir !== FALLBACK_CHATS_DIR && await this.ensureWritableChatsDir(FALLBACK_CHATS_DIR)) {
+      this.chatsDir = FALLBACK_CHATS_DIR;
+      this.indexFile = path.join(this.chatsDir, "index.json");
+      return;
+    }
+
+    throw new Error(
+      `Unable to initialize chat storage. Checked: ${this.chatsDir}${this.chatsDir === FALLBACK_CHATS_DIR ? "" : `, ${FALLBACK_CHATS_DIR}`}`,
+    );
   }
 
   private sessionFile(id: string): string {
-    return path.join(CHATS_DIR, `${id}.json`);
+    return path.join(this.chatsDir, `${id}.json`);
   }
 
   private async loadIndex(): Promise<SessionMeta[]> {
     if (this.indexCache) return this.indexCache;
     try {
-      const raw = await fsp.readFile(INDEX_FILE, "utf-8");
+      const raw = await fsp.readFile(this.indexFile, "utf-8");
       this.indexCache = JSON.parse(raw) as SessionMeta[];
       return this.indexCache;
     } catch {
@@ -186,7 +100,7 @@ export class ChatService {
 
   private async saveIndex(index: SessionMeta[]): Promise<void> {
     this.indexCache = index;
-    await fsp.writeFile(INDEX_FILE, JSON.stringify(index, null, 2), "utf-8");
+    await fsp.writeFile(this.indexFile, JSON.stringify(index, null, 2), "utf-8");
   }
 
   private async persistSession(session: ChatSession): Promise<void> {

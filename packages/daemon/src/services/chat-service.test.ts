@@ -21,6 +21,7 @@ describe("ChatService", () => {
       expect(session.messages).toHaveLength(1);
       expect(session.messages[0]!.role).toBe("system");
       expect(session.messages[0]!.content).toBe(SYSTEM_PROMPT);
+      expect(SYSTEM_PROMPT).toContain("## Capability Grounding");
     });
 
     it("creates a session with custom system prompt", async () => {

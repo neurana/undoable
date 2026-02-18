@@ -3,7 +3,7 @@ import { cleanOptionalString } from "./utils.js";
 
 export function assertNodeIdAvailable(workflow: SwarmWorkflow, nodeId: string): void {
   if (workflow.nodes.some((node) => node.id === nodeId)) {
-    throw new Error(`node \"${nodeId}\" already exists in workflow`);
+    throw new Error(`node "${nodeId}" already exists in workflow`);
   }
 }
 
@@ -20,10 +20,10 @@ export function normalizeEdge(workflow: SwarmWorkflow, edge: SwarmEdge): SwarmEd
 
   const nodeIds = new Set(workflow.nodes.map((node) => node.id));
   if (!nodeIds.has(from)) {
-    throw new Error(`edge source node \"${from}\" does not exist in workflow`);
+    throw new Error(`edge source node "${from}" does not exist in workflow`);
   }
   if (!nodeIds.has(to)) {
-    throw new Error(`edge target node \"${to}\" does not exist in workflow`);
+    throw new Error(`edge target node "${to}" does not exist in workflow`);
   }
 
   return {

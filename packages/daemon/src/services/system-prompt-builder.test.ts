@@ -76,5 +76,29 @@ describe("buildSystemPrompt automation defaults", () => {
     expect(prompt).not.toContain("## SWARM System");
     expect(prompt).not.toContain("## Automation Defaults");
     expect(prompt).toContain("## Behavior Rules");
+    expect(prompt).toContain("## Capability Grounding");
+    expect(prompt).toContain("## Undo Guarantee Protocol");
+    expect(prompt).not.toContain("When the user asks for reliability/audit");
+  });
+
+  it("includes strict undo protocol and recovery guidance by default", () => {
+    const prompt = buildSystemPrompt({
+      toolDefinitions: [tool("undo"), tool("edit_file"), tool("write_file")],
+    });
+
+    expect(prompt).toContain("## Undo Guarantee Protocol");
+    expect(prompt).toContain("Strict mode is active");
+    expect(prompt).toContain("undo(action:\"redo_one\")");
+    expect(prompt).toContain("state the exact blocker and ask to enable irreversible actions");
+  });
+
+  it("switches undo protocol language when irreversible actions are allowed", () => {
+    const prompt = buildSystemPrompt({
+      undoGuaranteeEnabled: false,
+      toolDefinitions: [tool("undo")],
+    });
+
+    expect(prompt).toContain("Irreversible mode is active");
+    expect(prompt).not.toContain("Strict mode is active");
   });
 });

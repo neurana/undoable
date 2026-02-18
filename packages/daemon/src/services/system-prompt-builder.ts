@@ -39,6 +39,21 @@ function buildIdentitySection(
   ];
 }
 
+function buildCapabilityGroundingSection(economyMode = false): string[] {
+  return [
+    "## Capability Grounding",
+    "Treat tools listed in this prompt as available for this run. Do not claim a capability is unavailable until a relevant tool call fails.",
+    "Prefer Undoable-native tools first. Do not default to external platforms or services unless the user explicitly asks.",
+    "When a tool fails, report: what failed, why (exact blocker), and the shortest recovery path.",
+    ...(economyMode
+      ? [
+          "In economy mode, avoid speculative probing; make focused, high-signal calls.",
+        ]
+      : []),
+    "",
+  ];
+}
+
 function buildSafetySection(): string[] {
   return [
     "## Safety",
@@ -150,6 +165,7 @@ function buildToolCallStyleSection(economyMode = false): string[] {
     "Default: do not narrate routine, low-risk tool calls (just call the tool).",
     "Narrate only when it helps: multi-step work, complex problems, sensitive actions (e.g., deletions), or when the user explicitly asks.",
     "Keep narration brief and value-dense; avoid repeating obvious steps.",
+    "Ask clarification questions only when they block execution (missing credentials/IDs, legal/safety constraints, or ambiguous intent).",
     ...(economyMode
       ? [
           "In economy mode, avoid exploratory calls unless required for task completion.",
@@ -172,6 +188,30 @@ function buildCanvasSection(toolDefs?: ToolDefinition[]): string[] {
     "Prefer Canvas output over external tools when the user asks for an in-product visual result.",
     "",
   ];
+}
+
+function buildUndoGuaranteeSection(
+  undoGuaranteeEnabled = true,
+  economyMode = false,
+): string[] {
+  const lines = [
+    "## Undo Guarantee Protocol",
+    undoGuaranteeEnabled
+      ? "Strict mode is active: mutating/exec tools without automatic reversal are blocked."
+      : "Irreversible mode is active: mutating/exec tools can run without automatic reversal.",
+    "For file changes, prefer `edit_file` for targeted edits and `write_file` for create/full rewrite.",
+    "For undo/redo operations, prefer `undo(action:\"last\", count:N)` and `undo(action:\"redo_one\")` when no specific id is required.",
+    "If the requested operation is blocked by policy, state the exact blocker and ask to enable irreversible actions for this run.",
+  ];
+
+  if (!economyMode) {
+    lines.push(
+      "When the user asks for reliability/audit, call `undo(action:\"list\")` and report `recordedCount`, `undoable`, `redoable`, and `nonUndoableRecent`.",
+    );
+  }
+
+  lines.push("");
+  return lines;
 }
 
 function buildWorkspaceSection(workspaceDir?: string): string[] {
@@ -286,8 +326,9 @@ function buildBehaviorSection(economyMode = false): string[] {
       "2. **Minimize tokens.** Keep responses concise and avoid unnecessary narration.",
       "3. **Minimize tool churn.** Prefer the fewest high-signal calls over broad exploration.",
       "4. **Use edit_file for targeted code changes.** Use write_file only for new files or full rewrites.",
-      "5. **Confirm before destructive actions** (rm, overwrite, etc.).",
-      "6. **For long-running commands**, use exec with background=true, then poll with process.",
+      "5. **Verify key outcomes.** After mutating actions, confirm outputs with targeted reads/checks.",
+      "6. **Confirm before destructive actions** (rm, overwrite, etc.).",
+      "7. **For long-running commands**, use exec with background=true, then poll with process.",
       "",
     ];
   }
@@ -306,6 +347,8 @@ function buildBehaviorSection(economyMode = false): string[] {
     "10. **Build a runnable minimal workflow first.** Create workflow, add nodes, set edges, enable/test. Avoid unnecessary clarification.",
     "11. **Use in-product tooling first.** Do not recommend external automation platforms unless the user asks for them.",
     "12. **Provide concrete examples immediately.** Use sensible defaults and state assumptions briefly.",
+    "13. **Verify outcomes for user-visible artifacts.** After creating/editing files, read/check them before declaring success.",
+    "14. **Report failures clearly.** Include what happened, likely cause, and exact next recovery step.",
     "",
   ];
 }
@@ -360,9 +403,11 @@ export function buildSystemPrompt(params: SystemPromptParams): string {
   const undoGuaranteeEnabled = params.undoGuaranteeEnabled !== false;
   const lines = [
     ...buildIdentitySection(params.agentName, undoGuaranteeEnabled),
+    ...buildCapabilityGroundingSection(economyMode),
     ...buildSafetySection(),
     ...buildToolingSection(params.toolDefinitions, economyMode),
     ...buildToolCallStyleSection(economyMode),
+    ...buildUndoGuaranteeSection(undoGuaranteeEnabled, economyMode),
     ...buildCanvasSection(params.toolDefinitions),
     ...(economyMode ? [] : buildSwarmSection()),
     ...(economyMode ? [] : buildAutomationDefaultsSection(params.toolDefinitions)),

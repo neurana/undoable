@@ -1,9 +1,11 @@
+import os from "node:os";
 import type { AgentTool } from "./types.js";
 import type { ChatService, ChatMessage } from "../services/chat-service.js";
 import type { RunManager } from "../services/run-manager.js";
 import type { EventBus } from "@undoable/core";
 import type { CallLLMFn } from "../services/run-executor.js";
 import type { ToolRegistry } from "./index.js";
+import { buildSystemPrompt } from "../services/system-prompt-builder.js";
 
 export type SessionToolsDeps = {
   chatService: ChatService;
@@ -30,6 +32,15 @@ function truncateContent(msg: ChatMessage): ChatMessage {
 
 export function createSessionTools(deps: SessionToolsDeps): AgentTool[] {
   const { chatService, runManager, eventBus, callLLM, registry } = deps;
+  const defaultSessionPrompt = buildSystemPrompt({
+    toolDefinitions: registry.definitions,
+    workspaceDir: os.homedir(),
+    runtime: {
+      os: `${os.platform()} ${os.release()}`,
+      arch: os.arch(),
+      node: process.version,
+    },
+  });
 
   return [
     {
@@ -143,6 +154,7 @@ export function createSessionTools(deps: SessionToolsDeps): AgentTool[] {
 
         if (!message?.trim()) return { error: "Message cannot be empty" };
 
+        await chatService.getOrCreate(sessionId, { systemPrompt: defaultSessionPrompt });
         await chatService.addUserMessage(sessionId, message);
 
         if (!wait) {
@@ -150,7 +162,12 @@ export function createSessionTools(deps: SessionToolsDeps): AgentTool[] {
         }
 
         try {
-          const messages = await chatService.buildApiMessages(sessionId);
+          let messages = await chatService.buildApiMessages(sessionId);
+          if (messages.length > 0 && messages[0]?.role === "system") {
+            messages[0] = { role: "system", content: defaultSessionPrompt };
+          } else {
+            messages = [{ role: "system", content: defaultSessionPrompt }, ...messages];
+          }
           const response = await callLLM(messages, registry.definitions, false);
 
           let replyText: string;

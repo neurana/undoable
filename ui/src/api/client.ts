@@ -5,7 +5,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     ...(opts.body ? { "Content-Type": "application/json" } : {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(opts.headers as Record<string, string> ?? {}),
+    ...(opts.headers as Record<string, string>),
   };
 
   const res = await fetch(`${BASE}${path}`, { ...opts, headers });
@@ -45,6 +45,26 @@ export const api = {
   },
   files: {
     open: (path: string) => request<{ opened: boolean; path: string }>("/files/open", { method: "POST", body: JSON.stringify({ path }) }),
+  },
+  chat: {
+    getRunConfig: () => request<ChatRunConfig>("/chat/run-config"),
+    updateRunConfig: (patch: ChatRunConfigPatch) =>
+      request<ChatRunConfig>("/chat/run-config", {
+        method: "POST",
+        body: JSON.stringify(patch),
+      }),
+    getApprovalMode: () => request<ChatApprovalMode>("/chat/approval-mode"),
+    setApprovalMode: (mode: "off" | "mutate" | "always") =>
+      request<ChatApprovalMode>("/chat/approval-mode", {
+        method: "POST",
+        body: JSON.stringify({ mode }),
+      }),
+    getThinking: () => request<ChatThinkingConfig>("/chat/thinking"),
+    setThinking: (patch: ChatThinkingPatch) =>
+      request<ChatThinkingConfig>("/chat/thinking", {
+        method: "POST",
+        body: JSON.stringify(patch),
+      }),
   },
   channels: {
     list: () => request<ChannelItem[]>("/channels"),
@@ -102,6 +122,16 @@ export const api = {
       if (opts?.include_tools) params.set("include_tools", "true");
       const qs = params.toString();
       return request<{ messages: unknown[]; count: number }>(`/sessions/${id}/history${qs ? `?${qs}` : ""}`);
+    },
+  },
+  settings: {
+    daemon: {
+      get: () => request<DaemonSettingsSnapshot>("/settings/daemon"),
+      update: (patch: DaemonSettingsPatch) =>
+        request<DaemonSettingsSnapshot>("/settings/daemon", {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        }),
     },
   },
   jobs: {
@@ -530,3 +560,97 @@ export type UndoOneResult = {
 export type UndoManyResult = {
   results: UndoResult[];
 };
+
+export type ChatApprovalMode = {
+  mode: "off" | "mutate" | "always";
+  dangerouslySkipPermissions?: boolean;
+};
+
+export type ChatThinkingConfig = {
+  level: "off" | "low" | "medium" | "high";
+  visibility: "off" | "on" | "stream";
+  canThink?: boolean;
+  economyMode?: boolean;
+};
+
+export type ChatThinkingPatch = {
+  level?: "off" | "low" | "medium" | "high";
+  visibility?: "off" | "on" | "stream";
+};
+
+export type ChatRunConfig = {
+  mode: "interactive" | "autonomous" | "supervised";
+  maxIterations: number;
+  configuredMaxIterations?: number;
+  approvalMode: "off" | "mutate" | "always";
+  dangerouslySkipPermissions?: boolean;
+  thinking: "off" | "low" | "medium" | "high";
+  reasoningVisibility: "off" | "on" | "stream";
+  model?: string;
+  provider?: string;
+  canThink?: boolean;
+  economyMode: boolean;
+  allowIrreversibleActions: boolean;
+  undoGuaranteeEnabled?: boolean;
+  economy?: {
+    maxIterationsCap?: number;
+    toolResultMaxChars?: number;
+    contextMaxTokens?: number;
+    contextThreshold?: number;
+  };
+  spendGuard?: {
+    dailyBudgetUsd?: number | null;
+    spentLast24hUsd?: number;
+    remainingUsd?: number | null;
+    exceeded?: boolean;
+    autoPauseOnLimit?: boolean;
+    paused?: boolean;
+  };
+};
+
+export type ChatRunConfigPatch = {
+  mode?: "interactive" | "autonomous" | "supervised";
+  maxIterations?: number;
+  economyMode?: boolean;
+  dailyBudgetUsd?: number | null;
+  spendPaused?: boolean;
+  allowIrreversibleActions?: boolean;
+};
+
+export type DaemonBindMode = "loopback" | "all" | "custom";
+export type DaemonAuthMode = "open" | "token";
+export type DaemonSecurityPolicy = "strict" | "balanced" | "permissive";
+
+export type DaemonSettingsRecord = {
+  host: string;
+  port: number;
+  bindMode: DaemonBindMode;
+  authMode: DaemonAuthMode;
+  token: string;
+  securityPolicy: DaemonSecurityPolicy;
+  updatedAt: string;
+};
+
+export type DaemonSettingsSnapshot = {
+  settingsFile: string;
+  desired: DaemonSettingsRecord;
+  effective: {
+    host: string;
+    port: number;
+    bindMode: DaemonBindMode;
+    authMode: DaemonAuthMode;
+    tokenSet: boolean;
+    securityPolicy: DaemonSecurityPolicy;
+  };
+  restartRequired: boolean;
+};
+
+export type DaemonSettingsPatch = Partial<{
+  host: string;
+  port: number;
+  bindMode: DaemonBindMode;
+  authMode: DaemonAuthMode;
+  token: string;
+  rotateToken: boolean;
+  securityPolicy: DaemonSecurityPolicy;
+}>;
