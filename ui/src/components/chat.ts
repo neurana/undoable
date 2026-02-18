@@ -5,6 +5,7 @@ import type {
   SessionItem,
   ApiMessage,
   SseEvent,
+  SpendGuardPayload,
 } from "./chat-types.js";
 import { chatStyles, chatAreaStyles, responsiveStyles } from "./chat-styles.js";
 import "./chat-sidebar.js";
@@ -22,6 +23,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 type ApiErrorPayload = {
   error?: string;
   recovery?: string;
+  spendGuard?: SpendGuardPayload;
 };
 
 type RunConfigPayload = {
@@ -36,6 +38,15 @@ type RunConfigPayload = {
   model?: string;
   provider?: string;
   canThink?: boolean;
+  spendGuard?: SpendGuardPayload;
+  allowIrreversibleActions?: boolean;
+  undoGuaranteeEnabled?: boolean;
+};
+
+type UndoGuardBlockHint = {
+  message: string;
+  recovery?: string;
+  tool?: string;
 };
 
 function normalizeErrorMessage(err: unknown): string {
@@ -89,12 +100,219 @@ export class UndoableChat extends LitElement {
         margin: 0 auto;
         padding: 6px var(--gutter) 6px calc(var(--gutter) + var(--col-offset));
       }
+      .undo-guard-banner {
+        max-width: var(--content-w);
+        margin: 0 auto 8px;
+        padding: 10px var(--gutter) 10px calc(var(--gutter) + var(--col-offset));
+        border: 1px solid color-mix(in srgb, var(--warning) 36%, transparent);
+        background: color-mix(in srgb, var(--warning-subtle) 86%, white);
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+      }
+      .undo-guard-copy {
+        min-width: 0;
+      }
+      .undo-guard-title {
+        color: var(--warning);
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.35;
+        margin-bottom: 2px;
+      }
+      .undo-guard-text {
+        color: var(--text-secondary);
+        font-size: 11px;
+        line-height: 1.4;
+      }
+      .undo-guard-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .undo-guard-btn {
+        border: 1px solid var(--border-strong);
+        background: var(--surface-1);
+        color: var(--text-secondary);
+        border-radius: 999px;
+        height: 28px;
+        padding: 0 11px;
+        font-size: 11px;
+        font-weight: 600;
+        font-family: inherit;
+        cursor: pointer;
+      }
+      .undo-guard-btn:hover {
+        background: var(--wash);
+        color: var(--text-primary);
+      }
+      .undo-guard-btn.primary {
+        border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+        background: color-mix(in srgb, var(--warning-subtle) 72%, white);
+        color: var(--warning);
+      }
+      .undo-guard-btn.primary:hover {
+        background: color-mix(in srgb, var(--warning-subtle) 60%, white);
+      }
+      .undo-guard-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .chat-header {
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        margin-left: auto;
+        flex: 0 1 auto;
+      }
+      .nav-pill-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 3px;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--border-strong);
+        background: var(--surface-1);
+        box-shadow: var(--shadow-sm);
+      }
       .status-info {
         display: flex;
         align-items: center;
-        gap: 14px;
+        gap: 10px;
         font-size: 11px;
         color: var(--text-tertiary);
+        background: var(--surface-1);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-pill);
+        padding: 4px 10px;
+        max-width: min(70vw, 980px);
+        overflow: visible;
+      }
+      .status-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+      .status-label {
+        color: var(--text-tertiary);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.3px;
+        text-transform: uppercase;
+      }
+      .status-value {
+        color: var(--text-secondary);
+        font-weight: 600;
+        font-size: 11px;
+        font-family: var(--mono);
+      }
+      .status-divider {
+        width: 1px;
+        height: 14px;
+        background: var(--border-divider);
+        flex-shrink: 0;
+      }
+      .status-overflow {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        flex-shrink: 0;
+      }
+      .status-more-btn {
+        height: 24px;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--border-strong);
+        background: var(--bg-deep);
+        color: var(--text-secondary);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+        text-transform: uppercase;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0 8px;
+        cursor: pointer;
+      }
+      .status-more-btn:hover {
+        background: var(--wash);
+        color: var(--text-primary);
+      }
+      .status-more-btn svg {
+        width: 11px;
+        height: 11px;
+        stroke: currentColor;
+        stroke-width: 2;
+        fill: none;
+        transition: transform 160ms ease;
+      }
+      .status-more-btn.open svg {
+        transform: rotate(180deg);
+      }
+      .status-overflow-menu {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        width: min(300px, 78vw);
+        background: var(--surface-1);
+        border: 1px solid var(--border-strong);
+        border-radius: 12px;
+        box-shadow: var(--shadow-raised);
+        padding: 6px;
+        z-index: 40;
+      }
+      .status-overflow-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        border-radius: 8px;
+        padding: 8px 10px;
+      }
+      .status-overflow-action {
+        width: 100%;
+        border: none;
+        background: transparent;
+        text-align: left;
+        font-family: inherit;
+        cursor: pointer;
+      }
+      .status-overflow-action:hover {
+        background: var(--wash);
+      }
+      .status-overflow-label {
+        color: var(--text-tertiary);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.28px;
+        text-transform: uppercase;
+      }
+      .status-overflow-value {
+        color: var(--text-secondary);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .status-overflow-divider {
+        height: 1px;
+        background: var(--border-divider);
+        margin: 4px 6px;
       }
       .status-badge {
         padding: 2px 8px;
@@ -150,14 +368,91 @@ export class UndoableChat extends LitElement {
         color: var(--text-tertiary);
         border-color: var(--border-strong);
       }
+      .badge-undo-guard-on {
+        background: rgba(46, 125, 86, 0.1);
+        color: var(--success);
+        border-color: rgba(46, 125, 86, 0.24);
+      }
+      .badge-undo-guard-off {
+        background: var(--danger-subtle);
+        color: var(--danger);
+        border-color: rgba(192, 57, 43, 0.2);
+      }
+      .badge-undo-guard-once {
+        background: var(--warning-subtle);
+        color: var(--warning);
+        border-color: rgba(184, 134, 11, 0.24);
+      }
+      .badge-budget-on {
+        background: rgba(46, 125, 86, 0.1);
+        color: var(--success);
+        border-color: rgba(46, 125, 86, 0.24);
+      }
+      .badge-budget-limit {
+        background: var(--danger-subtle);
+        color: var(--danger);
+        border-color: rgba(192, 57, 43, 0.2);
+      }
+      .badge-budget-paused {
+        background: var(--warning-subtle);
+        color: var(--warning);
+        border-color: rgba(184, 134, 11, 0.2);
+      }
+      .badge-budget-off {
+        background: var(--bg-deep);
+        color: var(--text-tertiary);
+        border-color: var(--border-strong);
+      }
+      .budget-input {
+        width: 100%;
+        box-sizing: border-box;
+        margin: 0 0 10px 0;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border-strong);
+        background: var(--surface-1);
+        color: var(--text-primary);
+        font-size: 13px;
+        font-family: var(--mono);
+      }
+      .budget-help {
+        margin: 0 0 12px 0;
+        font-size: 12px;
+        color: var(--text-secondary);
+        line-height: 1.45;
+      }
+      .iter-dialog-btn-primary {
+        background: var(--mint-strong);
+        color: var(--dark);
+      }
+      .iter-dialog-btn-primary:hover {
+        filter: brightness(0.97);
+      }
       .usage-label {
         font-family: var(--mono);
         font-size: 10px;
         color: var(--text-tertiary);
-        background: var(--wash);
-        padding: 2px 8px;
+        background: transparent;
+        padding: 1px 6px;
+        border: 1px dashed var(--border-strong);
         border-radius: var(--radius-pill);
         cursor: help;
+      }
+      .status-inline-btn {
+        border: none;
+        background: transparent;
+        color: var(--text-secondary);
+        font: inherit;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 0;
+      }
+      .status-inline-btn:hover {
+        color: var(--text-primary);
+        text-decoration: underline;
+        text-underline-offset: 2px;
       }
       .sidebar-backdrop {
         display: none;
@@ -173,9 +468,10 @@ export class UndoableChat extends LitElement {
         display: flex;
         align-items: center;
         gap: 4px;
-        padding: 3px 10px;
+        height: 30px;
+        padding: 0 10px;
         border-radius: var(--radius-pill);
-        background: var(--wash);
+        background: var(--surface-1);
         color: var(--text-secondary);
         font-size: 11px;
         font-weight: 500;
@@ -185,9 +481,23 @@ export class UndoableChat extends LitElement {
         white-space: nowrap;
       }
       .agent-btn:hover {
-        background: var(--wash-strong);
+        background: var(--wash);
         border-color: var(--mint-strong);
         color: var(--dark);
+      }
+      .model-label {
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--border-strong);
+        background: var(--surface-1);
+        color: var(--text-secondary);
+        padding: 0 10px;
+        max-width: 180px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .agent-btn svg {
         width: 10px;
@@ -305,6 +615,16 @@ export class UndoableChat extends LitElement {
         stroke: currentColor;
         stroke-width: 1.7;
         fill: none;
+      }
+      @media (max-width: 1080px) {
+        .status-label {
+          display: none;
+        }
+        .status-info {
+          max-width: min(56vw, 520px);
+          gap: 8px;
+          padding: 3px 8px;
+        }
       }
       .chat-content {
         flex: 1;
@@ -468,6 +788,36 @@ export class UndoableChat extends LitElement {
           justify-content: center;
           padding: 0;
           border-radius: 8px;
+        }
+        .nav-pill-group {
+          padding: 0;
+          border: none;
+          background: transparent;
+          box-shadow: none;
+          gap: 4px;
+        }
+        .status-info {
+          max-width: 42vw;
+          padding: 2px 6px;
+          gap: 6px;
+        }
+        .undo-guard-banner {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 10px;
+          border-radius: 10px;
+          padding-right: var(--gutter);
+        }
+        .undo-guard-actions {
+          width: 100%;
+          justify-content: flex-start;
+          flex-wrap: wrap;
+        }
+        .header-right {
+          gap: 4px;
+        }
+        .model-label {
+          display: none;
         }
         .chat-content {
           position: relative;
@@ -656,6 +1006,15 @@ export class UndoableChat extends LitElement {
   @state() private activeRunId = "";
   @state() private voiceResponsePending = false;
   @state() private transcribeLimitBytes = 20 * 1024 * 1024;
+  @state() private dailyBudgetUsd: number | null = null;
+  @state() private spentLast24hUsd = 0;
+  @state() private remainingUsd: number | null = null;
+  @state() private spendExceeded = false;
+  @state() private spendAutoPauseOnLimit = true;
+  @state() private spendPaused = false;
+  @state() private allowIrreversibleActions = false;
+  @state() private showBudgetDialog = false;
+  @state() private budgetDraft = "";
   private audioPlayer: HTMLAudioElement | null = null;
   @state() private usage = {
     promptTokens: 0,
@@ -672,6 +1031,10 @@ export class UndoableChat extends LitElement {
   @state() private showUndoConfirm = false;
   @state() private undoConfirmAction: "last" | "all" = "last";
   @state() private undoableActions: UndoActionSummary[] = [];
+  @state() private undoGuardBlockHint: UndoGuardBlockHint | null = null;
+  @state() private undoGuardApplying = false;
+  @state() private allowIrreversibleOnceArmed = false;
+  @state() private headerStatusMenuOpen = false;
   private resizing = false;
   private resizePointerId = -1;
 
@@ -688,7 +1051,7 @@ export class UndoableChat extends LitElement {
     this.checkOnboarding();
     window.addEventListener("popstate", this.onPopState);
     window.addEventListener("keydown", this.onGlobalKey);
-    this.addEventListener("click", this.closeAgentDropdown);
+    this.addEventListener("click", this.closeHeaderPopovers);
     this.addEventListener(
       "onboarding-complete",
       this.onOnboardingDone as EventListener,
@@ -703,7 +1066,7 @@ export class UndoableChat extends LitElement {
     super.disconnectedCallback();
     window.removeEventListener("popstate", this.onPopState);
     window.removeEventListener("keydown", this.onGlobalKey);
-    this.removeEventListener("click", this.closeAgentDropdown);
+    this.removeEventListener("click", this.closeHeaderPopovers);
     this.removeEventListener(
       "onboarding-complete",
       this.onOnboardingDone as EventListener,
@@ -738,11 +1101,16 @@ export class UndoableChat extends LitElement {
     }
   };
 
-  private closeAgentDropdown = (e: Event) => {
-    if (!this.agentDropdownOpen) return;
+  private closeHeaderPopovers = (e: Event) => {
     const path = e.composedPath();
-    const sel = this.shadowRoot?.querySelector(".agent-selector");
-    if (sel && !path.includes(sel)) this.agentDropdownOpen = false;
+    if (this.agentDropdownOpen) {
+      const sel = this.shadowRoot?.querySelector(".agent-selector");
+      if (sel && !path.includes(sel)) this.agentDropdownOpen = false;
+    }
+    if (this.headerStatusMenuOpen) {
+      const menu = this.shadowRoot?.querySelector(".status-overflow");
+      if (menu && !path.includes(menu)) this.headerStatusMenuOpen = false;
+    }
   };
 
   updated(changed: Map<string, unknown>) {
@@ -791,6 +1159,87 @@ export class UndoableChat extends LitElement {
     }
   }
 
+  private applySpendGuard(spendGuard?: SpendGuardPayload) {
+    if (!spendGuard) return;
+    if (spendGuard.dailyBudgetUsd === null) this.dailyBudgetUsd = null;
+    else if (
+      typeof spendGuard.dailyBudgetUsd === "number" &&
+      Number.isFinite(spendGuard.dailyBudgetUsd)
+    ) {
+      this.dailyBudgetUsd = spendGuard.dailyBudgetUsd;
+    }
+    if (
+      typeof spendGuard.spentLast24hUsd === "number" &&
+      Number.isFinite(spendGuard.spentLast24hUsd)
+    ) {
+      this.spentLast24hUsd = spendGuard.spentLast24hUsd;
+    }
+    if (spendGuard.remainingUsd === null) this.remainingUsd = null;
+    else if (
+      typeof spendGuard.remainingUsd === "number" &&
+      Number.isFinite(spendGuard.remainingUsd)
+    ) {
+      this.remainingUsd = spendGuard.remainingUsd;
+    }
+    if (typeof spendGuard.exceeded === "boolean") {
+      this.spendExceeded = spendGuard.exceeded;
+    }
+    if (typeof spendGuard.autoPauseOnLimit === "boolean") {
+      this.spendAutoPauseOnLimit = spendGuard.autoPauseOnLimit;
+    }
+    if (typeof spendGuard.paused === "boolean") {
+      this.spendPaused = spendGuard.paused;
+    }
+  }
+
+  private fmtUsd(value: number): string {
+    return `$${value.toFixed(2)}`;
+  }
+
+  private spendBudgetBadgeClass(): string {
+    if (this.dailyBudgetUsd === null) return "badge-budget-off";
+    if (this.spendPaused) return "badge-budget-paused";
+    if (this.spendExceeded) return "badge-budget-limit";
+    return "badge-budget-on";
+  }
+
+  private spendBudgetBadgeText(): string {
+    if (this.dailyBudgetUsd === null) return "off";
+    if (this.spendPaused) return "paused";
+    if (this.spendExceeded) return "limit";
+    return "on";
+  }
+
+  private isUndoOpenOnce(): boolean {
+    return this.allowIrreversibleActions && this.allowIrreversibleOnceArmed;
+  }
+
+  private undoGuardBadgeClass(): string {
+    if (this.isUndoOpenOnce()) return "badge-undo-guard-once";
+    return this.allowIrreversibleActions
+      ? "badge-undo-guard-off"
+      : "badge-undo-guard-on";
+  }
+
+  private undoGuardBadgeText(): string {
+    if (this.isUndoOpenOnce()) return "open (once)";
+    return this.allowIrreversibleActions ? "open" : "strict";
+  }
+
+  private undoGuardBadgeTitle(): string {
+    if (this.isUndoOpenOnce()) {
+      return "Irreversible actions are temporarily allowed for the next successful run";
+    }
+    return this.allowIrreversibleActions
+      ? "Irreversible actions are allowed"
+      : "Undo Guarantee mode is strict (irreversible actions blocked)";
+  }
+
+  private undoGuardOverflowText(): string {
+    if (this.isUndoOpenOnce()) return "allowed once";
+    return this.allowIrreversibleActions ? "allowed" : "blocked";
+  }
+
   private applyRunConfig(data: RunConfigPayload) {
     if (typeof data.mode === "string") this.runMode = data.mode;
     if (typeof data.maxIterations === "number") this.maxIter = data.maxIterations;
@@ -804,6 +1253,45 @@ export class UndoableChat extends LitElement {
     if (typeof data.model === "string") this.currentModel = data.model;
     if (typeof data.provider === "string") this.currentProvider = data.provider;
     if (typeof data.canThink === "boolean") this.canThink = data.canThink;
+    if (typeof data.allowIrreversibleActions === "boolean") {
+      this.allowIrreversibleActions = data.allowIrreversibleActions;
+    } else if (typeof data.undoGuaranteeEnabled === "boolean") {
+      this.allowIrreversibleActions = !data.undoGuaranteeEnabled;
+    }
+    if (this.allowIrreversibleActions) {
+      this.undoGuardBlockHint = null;
+    } else if (this.allowIrreversibleOnceArmed) {
+      this.allowIrreversibleOnceArmed = false;
+    }
+    this.applySpendGuard(data.spendGuard);
+  }
+
+  private async setAllowIrreversibleActions(
+    allow: boolean,
+    opts?: { silent?: boolean },
+  ): Promise<boolean> {
+    try {
+      const res = await fetch("/api/chat/run-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allowIrreversibleActions: allow }),
+      });
+      if (!res.ok) {
+        if (!opts?.silent) {
+          this.error = await this.readApiError(
+            res,
+            "Failed to update undo guarantee mode",
+          );
+        }
+        return false;
+      }
+      const data = (await res.json()) as RunConfigPayload;
+      this.applyRunConfig(data);
+      return true;
+    } catch (err) {
+      if (!opts?.silent) this.error = normalizeErrorMessage(err);
+      return false;
+    }
   }
 
   private async fetchRunConfig() {
@@ -1273,18 +1761,21 @@ export class UndoableChat extends LitElement {
           ...this.entries,
           {
             kind: "assistant",
-            content: `Undid ${successful} action(s)${failed > 0 ? `, ${failed} failed` : ""}. Files have been restored to their previous state.`,
+            content: `Undid ${successful} action(s)${failed > 0 ? `, ${failed} failed` : ""}.`,
           },
         ];
       } else {
         const result = await api.undo.undoLast(1);
         const r = result.results[0];
         if (r?.success) {
+          const note = r.note?.trim();
           this.entries = [
             ...this.entries,
             {
               kind: "assistant",
-              content: `Undid "${r.toolName}" action. File restored to previous state.`,
+              content: note
+                ? `Undid "${r.toolName}" action. ${note}`
+                : `Undid "${r.toolName}" action.`,
             },
           ];
         } else {
@@ -1369,7 +1860,11 @@ export class UndoableChat extends LitElement {
         .map((a) => `data:${a.mimeType};base64,${a.content}`) ?? [];
 
     this.error = "";
+    this.undoGuardBlockHint = null;
     this.currentIter = 0;
+    const shouldAutoRestoreStrict =
+      this.allowIrreversibleOnceArmed && this.allowIrreversibleActions;
+    let runCompletedSuccessfully = false;
     this.usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     this.entries = [
       ...this.entries,
@@ -1400,6 +1895,8 @@ export class UndoableChat extends LitElement {
         }),
       });
       if (!res.ok) {
+        const body = (await res.clone().json().catch(() => ({}))) as ApiErrorPayload;
+        this.applySpendGuard(body.spendGuard);
         throw new Error(
           await this.readApiError(
             res,
@@ -1426,6 +1923,7 @@ export class UndoableChat extends LitElement {
           if (raw === "[DONE]") continue;
           try {
             const evt = JSON.parse(raw) as SseEvent;
+            this.applySpendGuard(evt.spendGuard);
             if (evt.type === "run_start") {
               this.activeRunId = evt.runId ?? "";
             } else if (evt.type === "aborted") {
@@ -1517,6 +2015,18 @@ export class UndoableChat extends LitElement {
                 },
               ];
             } else if (evt.type === "warning") {
+              if (evt.code === "undo_guarantee_blocked") {
+                this.undoGuardBlockHint = {
+                  message:
+                    evt.content?.trim() ||
+                    "Strict Undo blocked an irreversible action.",
+                  recovery: evt.recovery?.trim() || undefined,
+                  tool: evt.tool?.trim() || undefined,
+                };
+                if (this.undoGuardBlockHint.tool) {
+                  this.applySwarmFromToolName(this.undoGuardBlockHint.tool);
+                }
+              }
               this.entries = [
                 ...this.entries,
                 { kind: "warning", content: evt.content ?? "" },
@@ -1524,6 +2034,7 @@ export class UndoableChat extends LitElement {
             } else if (evt.type === "usage" && evt.usage) {
               this.usage = { ...evt.usage };
             } else if (evt.type === "done") {
+              runCompletedSuccessfully = true;
               if (evt.usage) this.usage = { ...evt.usage };
               if (!aiAdded && evt.content) {
                 this.entries = [
@@ -1554,6 +2065,21 @@ export class UndoableChat extends LitElement {
       this.error = normalizeErrorMessage(err);
       if (aiAdded && !aiEntry.content) this.entries = this.entries.slice(0, -1);
     } finally {
+      if (shouldAutoRestoreStrict && runCompletedSuccessfully) {
+        const restored = await this.setAllowIrreversibleActions(false, {
+          silent: true,
+        });
+        if (restored) {
+          this.allowIrreversibleOnceArmed = false;
+          this.entries = [
+            ...this.entries,
+            {
+              kind: "assistant",
+              content: "Undo mode automatically returned to strict.",
+            },
+          ];
+        }
+      }
       this.loading = false;
       this.currentIter = 0;
       this.activeRunId = "";
@@ -1711,9 +2237,126 @@ export class UndoableChat extends LitElement {
     } catch {}
   }
 
+  private toggleHeaderStatusMenu = (e: Event) => {
+    e.stopPropagation();
+    this.headerStatusMenuOpen = !this.headerStatusMenuOpen;
+  };
+
+  private toggleEconomyFromMenu = async () => {
+    await this.toggleEconomyMode();
+    this.headerStatusMenuOpen = false;
+  };
+
+  private toggleIrreversibleFromMenu = async () => {
+    const next = !this.allowIrreversibleActions;
+    if (await this.setAllowIrreversibleActions(next)) {
+      this.allowIrreversibleOnceArmed = false;
+    }
+    this.headerStatusMenuOpen = false;
+  };
+
+  private clearUndoGuardBlockHint = () => {
+    this.undoGuardBlockHint = null;
+  };
+
+  private allowIrreversibleAndContinue = async () => {
+    this.undoGuardApplying = true;
+    try {
+      const ok = await this.setAllowIrreversibleActions(true);
+      if (!ok) return;
+      this.allowIrreversibleOnceArmed = true;
+      this.undoGuardBlockHint = null;
+      this.entries = [
+        ...this.entries,
+        {
+          kind: "assistant",
+          content:
+            "Irreversible actions are now allowed for the next successful run only. Retry your request.",
+        },
+      ];
+    } finally {
+      this.undoGuardApplying = false;
+    }
+  };
+
+  private openBudgetDialog() {
+    this.budgetDraft =
+      this.dailyBudgetUsd === null ? "" : String(this.dailyBudgetUsd);
+    this.showBudgetDialog = true;
+  }
+
+  private openBudgetDialogFromMenu = () => {
+    this.headerStatusMenuOpen = false;
+    this.openBudgetDialog();
+  };
+
+  private closeBudgetDialog() {
+    this.showBudgetDialog = false;
+  }
+
+  private async saveBudgetDialog() {
+    const raw = this.budgetDraft.trim();
+    let nextBudget: number | null;
+    if (!raw) {
+      nextBudget = null;
+    } else {
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        this.error = "Daily budget must be a positive number in USD, or empty to disable.";
+        return;
+      }
+      nextBudget = parsed;
+    }
+
+    try {
+      const res = await fetch("/api/chat/run-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dailyBudgetUsd: nextBudget }),
+      });
+      if (!res.ok) {
+        this.error = await this.readApiError(res, "Failed to update budget");
+        return;
+      }
+      const data = (await res.json()) as RunConfigPayload;
+      this.applyRunConfig(data);
+      this.showBudgetDialog = false;
+    } catch (err) {
+      this.error = normalizeErrorMessage(err);
+    }
+  }
+
+  private async toggleSpendPause() {
+    try {
+      const res = await fetch("/api/chat/run-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spendPaused: !this.spendPaused }),
+      });
+      if (!res.ok) {
+        this.error = await this.readApiError(res, "Failed to update spend pause");
+        return;
+      }
+      const data = (await res.json()) as RunConfigPayload;
+      this.applyRunConfig(data);
+    } catch (err) {
+      this.error = normalizeErrorMessage(err);
+    }
+  }
+
+  private toggleSpendPauseFromMenu = async () => {
+    await this.toggleSpendPause();
+    this.headerStatusMenuOpen = false;
+  };
+
   private openMaxIterDialog() {
     this.showMaxIterDialog = true;
   }
+
+  private openMaxIterDialogFromMenu = () => {
+    this.headerStatusMenuOpen = false;
+    this.openMaxIterDialog();
+  };
 
   private async selectMaxIter(n: number) {
     this.showMaxIterDialog = false;
@@ -1791,197 +2434,315 @@ export class UndoableChat extends LitElement {
 
       <div class="chat-area">
         <div class="chat-header">
-          <button
-            class="btn-toggle-sidebar"
-            @click=${this.toggleSidebar}
-            title=${this.sidebarOpen ? "Hide sidebar" : "Show sidebar"}
-          >
-            <svg class="toggle-icon" viewBox="0 0 24 24">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <line x1="9" y1="3" x2="9" y2="21" />
-            </svg>
-          </button>
-          ${this.agents.length > 0
-            ? html`
-                <div class="agent-selector">
-                  <button
-                    class="agent-btn"
-                    @click=${() => {
-                      this.agentDropdownOpen = !this.agentDropdownOpen;
-                    }}
-                    title="Switch agent"
-                  >
-                    ${(() => {
-                      const a = this.agents.find(
-                        (a) => a.id === this.currentAgentId,
-                      );
-                      return a
-                        ? `${a.identity?.emoji ? a.identity.emoji + " " : ""}${a.name}`
-                        : "Agent";
-                    })()}
-                    <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
-                  </button>
-                  ${this.agentDropdownOpen
-                    ? html`
-                        <div class="agent-dropdown">
-                          ${this.agents.map(
-                            (a) => html`
-                              <div
-                                class="agent-option ${a.id ===
-                                this.currentAgentId
-                                  ? "active"
-                                  : ""}"
-                                @click=${() => this.selectAgent(a.id)}
-                              >
-                                <span class="agent-option-name"
-                                  >${a.identity?.emoji
-                                    ? a.identity.emoji + " "
-                                    : ""}${a.name}</span
+          <div class="header-left">
+            <button
+              class="btn-toggle-sidebar"
+              @click=${this.toggleSidebar}
+              title=${this.sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+            >
+              <svg class="toggle-icon" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <line x1="9" y1="3" x2="9" y2="21" />
+              </svg>
+            </button>
+            ${this.agents.length > 0
+              ? html`
+                  <div class="agent-selector">
+                    <button
+                      class="agent-btn"
+                      @click=${() => {
+                        this.agentDropdownOpen = !this.agentDropdownOpen;
+                      }}
+                      title="Switch agent"
+                    >
+                      ${(() => {
+                        const a = this.agents.find(
+                          (a) => a.id === this.currentAgentId,
+                        );
+                        return a
+                          ? `${a.identity?.emoji ? a.identity.emoji + " " : ""}${a.name}`
+                          : "Agent";
+                      })()}
+                      <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+                    </button>
+                    ${this.agentDropdownOpen
+                      ? html`
+                          <div class="agent-dropdown">
+                            ${this.agents.map(
+                              (a) => html`
+                                <div
+                                  class="agent-option ${a.id ===
+                                  this.currentAgentId
+                                    ? "active"
+                                    : ""}"
+                                  @click=${() => this.selectAgent(a.id)}
                                 >
-                                <span class="agent-option-model"
-                                  >${a.model}</span
+                                  <span class="agent-option-name"
+                                    >${a.identity?.emoji
+                                      ? a.identity.emoji + " "
+                                      : ""}${a.name}</span
+                                  >
+                                  <span class="agent-option-model"
+                                    >${a.model}</span
+                                  >
+                                </div>
+                              `,
+                            )}
+                          </div>
+                        `
+                      : nothing}
+                  </div>
+                `
+              : nothing}
+            ${this.currentModel
+              ? html`<span
+                  class="model-label"
+                  style="cursor:pointer;"
+                  title=${`${this.currentProvider}/${this.currentModel}. Click to change.`}
+                  @click=${() => {
+                    this.settingsOpen = true;
+                  }}
+                  >${this.currentModel}</span
+                >`
+              : nothing}
+            <div class="nav-pill-group">
+              <button
+                class="btn-swarm-nav ${this.swarmOpen ? "active" : ""}"
+                @click=${this.toggleSwarm}
+                title=${this.swarmOpen ? "Hide SWARM" : "Show SWARM"}
+              >
+                <svg viewBox="0 0 24 24">
+                  <circle cx="5" cy="12" r="2" />
+                  <circle cx="12" cy="5" r="2" />
+                  <circle cx="19" cy="12" r="2" />
+                  <circle cx="12" cy="19" r="2" />
+                  <path d="M7 11L10 7M14 7L17 11M7 13L10 17M14 17L17 13" />
+                </svg>
+                <span>SWARM</span>
+              </button>
+              <button
+                class="btn-canvas ${this.canvasOpen ? "active" : ""}"
+                @click=${this.toggleCanvas}
+                title=${this.canvasOpen
+                  ? "Hide live canvas workspace"
+                  : "Show live canvas workspace"}
+              >
+                <svg viewBox="0 0 24 24">
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
+                  <circle cx="8.5" cy="8.5" r="1.5" />
+                  <polyline points="21 15 16 10 5 21" />
+                </svg>
+                <span>Canvas</span>
+              </button>
+            </div>
+          </div>
+          <div class="header-right">
+            ${this.runMode
+              ? html`
+                  <div class="status-info">
+                    <span class="status-item">
+                      <span class="status-label">Mode</span>
+                      <span
+                        class="status-badge ${this.badgeClass(this.runMode)}"
+                        style=${this.dangerouslySkipPermissions
+                          ? "cursor:not-allowed;"
+                          : "cursor:pointer;"}
+                        title=${this.dangerouslySkipPermissions
+                          ? "Locked while --dangerously-skip-permissions is active"
+                          : "Click to cycle"}
+                        @click=${this.cycleRunMode}
+                        >${this.runMode}</span
+                      >
+                    </span>
+                    <span class="status-item">
+                      <span class="status-label">Approval</span>
+                      <span
+                        class="status-badge ${this.badgeClass(
+                          this.approvalModeLabel,
+                        )}"
+                        style=${this.dangerouslySkipPermissions
+                          ? "cursor:not-allowed;"
+                          : "cursor:pointer;"}
+                        title=${this.dangerouslySkipPermissions
+                          ? "Locked while --dangerously-skip-permissions is active"
+                          : "Click to cycle"}
+                        @click=${this.cycleApprovalMode}
+                        >${this.approvalModeLabel || "off"}</span
+                      >
+                    </span>
+                    <span class="status-item">
+                      <span class="status-label">Undo</span>
+                      <span
+                        class="status-badge ${this.undoGuardBadgeClass()}"
+                        title=${this.undoGuardBadgeTitle()}
+                        >${this.undoGuardBadgeText()}</span
+                      >
+                    </span>
+                    <div class="status-overflow">
+                      <button
+                        class="status-more-btn ${this.headerStatusMenuOpen
+                          ? "open"
+                          : ""}"
+                        title="Open controls and usage details"
+                        @click=${this.toggleHeaderStatusMenu}
+                      >
+                        Controls
+                        <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+                      </button>
+                      ${this.headerStatusMenuOpen
+                        ? html`
+                            <div
+                              class="status-overflow-menu"
+                              @click=${(e: Event) => e.stopPropagation()}
+                            >
+                              <button
+                                class="status-overflow-item status-overflow-action"
+                                @click=${this.toggleIrreversibleFromMenu}
+                              >
+                                <span class="status-overflow-label"
+                                  >Irreversible actions</span
+                                >
+                                <span
+                                  class="status-badge ${this.undoGuardBadgeClass()}"
+                                  >${this.undoGuardOverflowText()}</span
+                                >
+                              </button>
+                              <button
+                                class="status-overflow-item status-overflow-action"
+                                @click=${this.toggleEconomyFromMenu}
+                              >
+                                <span class="status-overflow-label"
+                                  >Economy mode</span
+                                >
+                                <span
+                                  class="status-badge ${this.economyMode
+                                    ? "badge-economy-on"
+                                    : "badge-economy-off"}"
+                                  >${this.economyMode ? "on" : "off"}</span
+                                >
+                              </button>
+                              <button
+                                class="status-overflow-item status-overflow-action"
+                                @click=${this.openBudgetDialogFromMenu}
+                              >
+                                <span class="status-overflow-label"
+                                  >Daily budget</span
+                                >
+                                <span
+                                  class="status-badge ${this.spendBudgetBadgeClass()}"
+                                  >${this.spendBudgetBadgeText()}</span
+                                >
+                              </button>
+                              <button
+                                class="status-overflow-item status-overflow-action"
+                                @click=${this.toggleSpendPauseFromMenu}
+                              >
+                                <span class="status-overflow-label"
+                                  >Spend execution</span
+                                >
+                                <span
+                                  class="status-badge ${this.spendPaused
+                                    ? "badge-budget-paused"
+                                    : "badge-budget-on"}"
+                                  >${this.spendPaused ? "paused" : "running"}</span
+                                >
+                              </button>
+                              <div class="status-overflow-divider"></div>
+                              <div class="status-overflow-item">
+                                <span class="status-overflow-label"
+                                  >24h usage</span
+                                >
+                                <span class="status-overflow-value"
+                                  >${this.fmtUsd(this.spentLast24hUsd)}${this.dailyBudgetUsd !==
+                                  null
+                                    ? ` / ${this.fmtUsd(this.dailyBudgetUsd)}`
+                                    : ""}</span
                                 >
                               </div>
-                            `,
-                          )}
-                        </div>
-                      `
-                    : nothing}
-                </div>
-              `
-            : nothing}
-          ${this.currentModel
-            ? html`<span
-                class="model-label"
-                style="cursor:pointer;"
-                title=${`${this.currentProvider}/${this.currentModel}. Click to change.`}
-                @click=${() => {
-                  this.settingsOpen = true;
-                }}
-                >${this.currentModel}</span
-              >`
-            : nothing}
-          <button
-            class="btn-swarm-nav ${this.swarmOpen ? "active" : ""}"
-            @click=${this.toggleSwarm}
-            title=${this.swarmOpen ? "Hide SWARM" : "Show SWARM"}
-          >
-            <svg viewBox="0 0 24 24">
-              <circle cx="5" cy="12" r="2" />
-              <circle cx="12" cy="5" r="2" />
-              <circle cx="19" cy="12" r="2" />
-              <circle cx="12" cy="19" r="2" />
-              <path d="M7 11L10 7M14 7L17 11M7 13L10 17M14 17L17 13" />
-            </svg>
-            <span>SWARM</span>
-          </button>
-          <button
-            class="btn-canvas ${this.canvasOpen ? "active" : ""}"
-            @click=${this.toggleCanvas}
-            title=${this.canvasOpen ? "Hide live canvas workspace" : "Show live canvas workspace"}
-          >
-            <svg viewBox="0 0 24 24">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <circle cx="8.5" cy="8.5" r="1.5" />
-              <polyline points="21 15 16 10 5 21" />
-            </svg>
-            <span>Canvas</span>
-          </button>
-          <div class="chat-header-spacer"></div>
-          <button
-            class="btn-header-icon"
-            @click=${() => {
-              this.showOnboarding = true;
-            }}
-            title="Profile & Onboarding"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="18"
-              height="18"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
+                              ${this.dailyBudgetUsd !== null &&
+                              this.remainingUsd !== null
+                                ? html`<div class="status-overflow-item">
+                                    <span class="status-overflow-label"
+                                      >Budget left</span
+                                    >
+                                    <span class="status-overflow-value"
+                                      >${this.fmtUsd(
+                                        Math.max(0, this.remainingUsd),
+                                      )}</span
+                                    >
+                                  </div>`
+                                : nothing}
+                              ${this.maxIter
+                                ? html`<button
+                                    class="status-overflow-item status-overflow-action"
+                                    title="Click to change"
+                                    @click=${this.openMaxIterDialogFromMenu}
+                                  >
+                                    <span class="status-overflow-label"
+                                      >Max iterations</span
+                                    >
+                                    <span class="status-overflow-value"
+                                      >${this.maxIter >= 9999
+                                        ? "∞"
+                                        : this.maxIter}</span
+                                    >
+                                  </button>`
+                                : nothing}
+                              ${this.usage.totalTokens > 0
+                                ? html`<div class="status-overflow-item">
+                                    <span class="status-overflow-label"
+                                      >Token usage</span
+                                    >
+                                    <span
+                                      class="usage-label"
+                                      title="Prompt: ${this.usage
+                                        .promptTokens} | Completion: ${this
+                                        .usage.completionTokens}"
+                                      >${this.fmtTokens(
+                                        this.usage.totalTokens,
+                                      )} tokens</span
+                                    >
+                                  </div>`
+                                : nothing}
+                              ${this.dangerouslySkipPermissions
+                                ? html`<div class="status-overflow-item">
+                                    <span class="status-overflow-label"
+                                      >Permission guard</span
+                                    >
+                                    <span
+                                      class="status-badge badge-danger-skip"
+                                      title="Danger mode: all permission checks are bypassed"
+                                      >skip-perms</span
+                                    >
+                                  </div>`
+                                : nothing}
+                            </div>
+                          `
+                        : nothing}
+                    </div>
+                  </div>
+                `
+              : nothing}
+            <button
+              class="btn-header-icon"
+              @click=${() => {
+                this.showOnboarding = true;
+              }}
+              title="Profile & Onboarding"
             >
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
-          </button>
-          ${this.runMode
-            ? html`
-                <div class="status-info">
-                  <span
-                    >Mode:
-                    <span
-                      class="status-badge ${this.badgeClass(this.runMode)}"
-                      style=${this.dangerouslySkipPermissions
-                        ? "cursor:not-allowed;"
-                        : "cursor:pointer;"}
-                      title=${this.dangerouslySkipPermissions
-                        ? "Locked while --dangerously-skip-permissions is active"
-                        : "Click to cycle"}
-                      @click=${this.cycleRunMode}
-                      >${this.runMode}</span
-                    ></span
-                  >
-                  <span
-                    >Approval:
-                    <span
-                      class="status-badge ${this.badgeClass(
-                        this.approvalModeLabel,
-                      )}"
-                      style=${this.dangerouslySkipPermissions
-                        ? "cursor:not-allowed;"
-                        : "cursor:pointer;"}
-                      title=${this.dangerouslySkipPermissions
-                        ? "Locked while --dangerously-skip-permissions is active"
-                        : "Click to cycle"}
-                      @click=${this.cycleApprovalMode}
-                      >${this.approvalModeLabel || "off"}</span
-                    ></span
-                  >
-                  <span
-                    >Economy:
-                    <span
-                      class="status-badge ${this.economyMode
-                        ? "badge-economy-on"
-                        : "badge-economy-off"}"
-                      style="cursor:pointer;"
-                      title="Click to toggle token economy mode"
-                      @click=${this.toggleEconomyMode}
-                      >${this.economyMode ? "on" : "off"}</span
-                    ></span
-                  >
-                  ${this.dangerouslySkipPermissions
-                    ? html`<span
-                        class="status-badge badge-danger-skip"
-                        title="Danger mode: all permission checks are bypassed"
-                        >skip-perms</span
-                      >`
-                    : nothing}
-                  ${this.maxIter
-                    ? html`<span
-                        style="cursor:pointer;"
-                        title="Click to change"
-                        @click=${() => this.openMaxIterDialog()}
-                        >Max:
-                        <b
-                          >${this.maxIter >= 9999 ? "∞" : this.maxIter}</b
-                        ></span
-                      >`
-                    : nothing}
-                  ${this.usage.totalTokens > 0
-                    ? html`<span
-                        class="usage-label"
-                        title="Prompt: ${this.usage
-                          .promptTokens} | Completion: ${this.usage
-                          .completionTokens}"
-                        >${this.fmtTokens(this.usage.totalTokens)} tokens</span
-                      >`
-                    : nothing}
-                </div>
-              `
-            : nothing}
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+              >
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div class="chat-content">
@@ -2012,6 +2773,41 @@ export class UndoableChat extends LitElement {
                 `}
             ${this.error
               ? html`<div class="error">${this.error}</div>`
+              : nothing}
+            ${this.undoGuardBlockHint
+              ? html`
+                  <div class="undo-guard-banner" role="status">
+                    <div class="undo-guard-copy">
+                      <div class="undo-guard-title">
+                        Strict Undo blocked
+                        ${this.undoGuardBlockHint.tool
+                          ? html`<code>${this.undoGuardBlockHint.tool}</code>`
+                          : html`this action`}
+                      </div>
+                      <div class="undo-guard-text">
+                        ${this.undoGuardBlockHint.recovery ||
+                        this.undoGuardBlockHint.message}
+                      </div>
+                    </div>
+                    <div class="undo-guard-actions">
+                      <button
+                        class="undo-guard-btn primary"
+                        ?disabled=${this.undoGuardApplying}
+                        @click=${this.allowIrreversibleAndContinue}
+                      >
+                        ${this.undoGuardApplying
+                          ? "Allowing..."
+                          : "Allow Once and Continue"}
+                      </button>
+                      <button
+                        class="undo-guard-btn"
+                        @click=${this.clearUndoGuardBlockHint}
+                      >
+                        Keep Strict
+                      </button>
+                    </div>
+                  </div>
+                `
               : nothing}
 
             <chat-input
@@ -2097,6 +2893,59 @@ export class UndoableChat extends LitElement {
       ${this.showOnboarding
         ? html`<undoable-onboarding></undoable-onboarding>`
         : nothing}
+      ${this.showBudgetDialog
+        ? html`
+            <div
+              class="iter-dialog-overlay"
+              @click=${() => {
+                this.closeBudgetDialog();
+              }}
+            >
+              <div class="iter-dialog" @click=${(e: Event) => e.stopPropagation()}>
+                <div class="iter-dialog-title">Daily Spend Budget (USD)</div>
+                <input
+                  class="budget-input"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  .value=${this.budgetDraft}
+                  placeholder="e.g. 5.00 (empty = no cap)"
+                  @input=${(e: Event) => {
+                    this.budgetDraft = (e.target as HTMLInputElement).value;
+                  }}
+                  @keydown=${(e: KeyboardEvent) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      this.saveBudgetDialog();
+                    }
+                  }}
+                />
+                <p class="budget-help">
+                  Rolling 24h budget. Leave empty to disable cap.
+                  ${this.spendAutoPauseOnLimit
+                    ? " Auto-pause on limit is enabled."
+                    : " Auto-pause on limit is disabled."}
+                </p>
+                <div class="iter-dialog-actions">
+                  <button
+                    class="iter-dialog-btn iter-dialog-btn-cancel"
+                    @click=${() => {
+                      this.closeBudgetDialog();
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    class="iter-dialog-btn iter-dialog-btn-primary"
+                    @click=${this.saveBudgetDialog}
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          `
+        : nothing}
       ${this.showMaxIterDialog
         ? html`
             <div
@@ -2163,9 +3012,9 @@ export class UndoableChat extends LitElement {
                 >
                   ${this.undoConfirmAction === "all"
                     ? html`This will revert
-                        <strong>${this.undoableActions.length}</strong> file
-                        change(s) to their previous state.`
-                    : html`This will revert the last file change:
+                        <strong>${this.undoableActions.length}</strong>
+                        undoable action(s).`
+                    : html`This will revert the last undoable action:
                         <strong
                           >${this.undoableActions[
                             this.undoableActions.length - 1

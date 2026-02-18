@@ -18,6 +18,7 @@ export class UndoService {
   private actionLog: ActionLog;
   private redoSnapshots = new Map<string, FileUndoData>();
   private redoStack: string[] = [];
+  private undoneActions = new Set<string>();
 
   constructor(actionLog: ActionLog) {
     this.engine = new UndoEngine();
@@ -34,27 +35,53 @@ export class UndoService {
   }
 
   async undoAction(actionId: string): Promise<UndoResult> {
-    const action = this.actionLog.getById(actionId);
-    if (!action) {
+    const resolved = this.resolveAction(actionId);
+    if (!resolved) {
       return { actionId, toolName: "unknown", success: false, error: "Action not found" };
     }
+    const action = resolved.action;
+    const resolvedId = resolved.id;
+    const corrected = resolved.corrected;
+    if (this.undoneActions.has(resolvedId)) {
+      return {
+        actionId: resolvedId,
+        toolName: action.toolName,
+        success: false,
+        error: "Action already undone. Use redo_one/redo_last to reapply it.",
+      };
+    }
     if (!action.undoable || !action.undoData) {
-      return { actionId, toolName: action.toolName, success: false, error: "Action is not undoable" };
+      return { actionId: resolvedId, toolName: action.toolName, success: false, error: "Action is not undoable" };
     }
     if (action.error) {
-      return { actionId, toolName: action.toolName, success: false, error: "Action failed, nothing to undo" };
+      return { actionId: resolvedId, toolName: action.toolName, success: false, error: "Action failed, nothing to undo" };
     }
 
     const undo = action.undoData;
+    let result: UndoResult;
     if (undo.type === "file") {
-      return this.undoFileAction(action, undo);
-    }
-    if (undo.type === "exec") {
-      return this.undoExecAction(action, undo);
+      result = await this.undoFileAction(action, undo);
+    } else if (undo.type === "exec") {
+      result = this.undoExecAction(action, undo);
+    } else {
+      const exhaustive: never = undo;
+      result = {
+        actionId: resolvedId,
+        toolName: action.toolName,
+        success: false,
+        error: `Unsupported undo type: ${(exhaustive as { type: string }).type}`,
+      };
     }
 
-    const exhaustive: never = undo;
-    return { actionId, toolName: action.toolName, success: false, error: `Unsupported undo type: ${(exhaustive as { type: string }).type}` };
+    if (result.success) {
+      this.undoneActions.add(resolvedId);
+      if (corrected) {
+        result.note = result.note
+          ? `${result.note} (matched action id: ${resolvedId})`
+          : `Matched action id: ${resolvedId}`;
+      }
+    }
+    return result;
   }
 
   private undoExecAction(action: ActionRecord, undo: ExecUndoData): UndoResult {
@@ -85,7 +112,7 @@ export class UndoService {
   }
 
   async undoLastN(n: number, runId?: string): Promise<UndoResult[]> {
-    const actions = this.actionLog.undoableActions(runId);
+    const actions = this.listUndoable(runId);
     const toUndo = actions.slice(-n).reverse();
     const results: UndoResult[] = [];
     for (const action of toUndo) {
@@ -95,7 +122,7 @@ export class UndoService {
   }
 
   async undoAll(runId?: string): Promise<UndoResult[]> {
-    const actions = this.actionLog.undoableActions(runId);
+    const actions = this.listUndoable(runId);
     const reversed = [...actions].reverse();
     const results: UndoResult[] = [];
     for (const action of reversed) {
@@ -105,7 +132,9 @@ export class UndoService {
   }
 
   listUndoable(runId?: string): ActionRecord[] {
-    return this.actionLog.undoableActions(runId);
+    return this.actionLog
+      .undoableActions(runId)
+      .filter((action) => !this.undoneActions.has(action.id));
   }
 
   listRedoable(runId?: string): ActionRecord[] {
@@ -120,15 +149,30 @@ export class UndoService {
   }
 
   async redoAction(actionId: string): Promise<UndoResult> {
-    const action = this.actionLog.getById(actionId);
-    if (!action) {
+    const resolved = this.resolveAction(actionId);
+    if (!resolved) {
       return { actionId, toolName: "unknown", success: false, error: "Action not found" };
     }
+    const action = resolved.action;
+    const resolvedId = resolved.id;
+    const corrected = resolved.corrected;
     const redo = this.redoSnapshots.get(actionId);
     if (!redo) {
-      return { actionId, toolName: action.toolName, success: false, error: "Action is not available for redo" };
+      const resolvedRedo = this.redoSnapshots.get(resolvedId);
+      if (!resolvedRedo) {
+        return { actionId: resolvedId, toolName: action.toolName, success: false, error: "Action is not available for redo" };
+      }
+      return this.applyRedo(action, resolvedId, resolvedRedo, corrected);
     }
+    return this.applyRedo(action, actionId, redo, corrected);
+  }
 
+  private async applyRedo(
+    action: ActionRecord,
+    actionId: string,
+    redo: FileUndoData,
+    corrected = false,
+  ): Promise<UndoResult> {
     if (redo.type !== "file") {
       return { actionId, toolName: action.toolName, success: false, error: `Unsupported redo type: ${redo.type}` };
     }
@@ -144,12 +188,15 @@ export class UndoService {
     if (result.success) {
       this.redoSnapshots.delete(actionId);
       this.removeFromRedoStack(actionId);
+      this.undoneActions.delete(actionId);
     }
+    const note = corrected ? `Matched action id: ${actionId}` : undefined;
     return {
       actionId: action.id,
       toolName: action.toolName,
       success: result.success,
       error: result.error,
+      note,
     };
   }
 
@@ -209,5 +256,21 @@ export class UndoService {
   private getRedoCandidates(runId?: string): string[] {
     if (!runId) return [...this.redoStack];
     return this.redoStack.filter((id) => this.actionLog.getById(id)?.runId === runId);
+  }
+
+  private resolveAction(actionId: string): { action: ActionRecord; id: string; corrected: boolean } | null {
+    const normalized = actionId.trim();
+    if (!normalized) return null;
+    const exact = this.actionLog.getById(normalized);
+    if (exact) {
+      return { action: exact, id: exact.id, corrected: false };
+    }
+
+    const candidates = this.actionLog
+      .list()
+      .filter((record) => record.id.startsWith(normalized) || normalized.startsWith(record.id));
+    if (candidates.length !== 1) return null;
+    const matched = candidates[0]!;
+    return { action: matched, id: matched.id, corrected: true };
   }
 }

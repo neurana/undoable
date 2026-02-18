@@ -3,12 +3,14 @@ import type { ActionLog } from "../actions/action-log.js";
 import type { ApprovalGate } from "../actions/approval-gate.js";
 import type { UndoService } from "../actions/undo-service.js";
 
+const NON_UNDOABLE_NOISE_TOOLS = new Set(["undo", "actions"]);
+
 export function createActionTools(
   actionLog: ActionLog,
   approvalGate: ApprovalGate,
   undoService: UndoService,
 ): AgentTool[] {
-  return [createActionsTool(actionLog, approvalGate), createUndoTool(undoService)];
+  return [createActionsTool(actionLog, approvalGate), createUndoTool(undoService, actionLog)];
 }
 
 function createActionsTool(actionLog: ActionLog, approvalGate: ApprovalGate): AgentTool {
@@ -113,7 +115,7 @@ function createActionsTool(actionLog: ActionLog, approvalGate: ApprovalGate): Ag
   };
 }
 
-function createUndoTool(undoService: UndoService): AgentTool {
+function createUndoTool(undoService: UndoService, actionLog: ActionLog): AgentTool {
   return {
     name: "undo",
     definition: {
@@ -130,7 +132,7 @@ function createUndoTool(undoService: UndoService): AgentTool {
               enum: ["list", "one", "last", "all", "redo_one", "redo_last", "redo_all"],
               description: "list: show undoable/redoable actions. one/last/all: undo. redo_one/redo_last/redo_all: redo previously undone actions.",
             },
-            id: { type: "string", description: "Action ID to undo (for action=one)" },
+            id: { type: "string", description: "Action ID for one/redo_one. If omitted, it uses the most recent matching action." },
             count: { type: "number", description: "Number of recent actions to undo (for action=last, default: 1)" },
           },
           required: ["action"],
@@ -144,7 +146,19 @@ function createUndoTool(undoService: UndoService): AgentTool {
         case "list": {
           const undoable = undoService.listUndoable();
           const redoable = undoService.listRedoable();
+          const all = actionLog.list();
+          const nonUndoableRecent = all
+            .filter((a) => !a.undoable && !NON_UNDOABLE_NOISE_TOOLS.has(a.toolName))
+            .slice(-20)
+            .map((a) => ({
+              id: a.id,
+              tool: a.toolName,
+              category: a.category,
+              startedAt: a.startedAt,
+              error: a.error ?? null,
+            }));
           return {
+            recordedCount: all.length,
             undoableCount: undoable.length,
             redoableCount: redoable.length,
             undoable: undoable.map((r) => ({
@@ -159,12 +173,23 @@ function createUndoTool(undoService: UndoService): AgentTool {
               args: r.args,
               startedAt: r.startedAt,
             })),
+            nonUndoableRecent,
           };
         }
 
         case "one": {
-          if (!args.id) return { error: "id is required" };
-          const result = await undoService.undoAction(args.id as string);
+          const id = args.id as string | undefined;
+          if (!id) {
+            const [result] = await undoService.undoLastN(1);
+            if (!result) return { error: "No undoable actions available" };
+            return {
+              ...result,
+              note: result.note
+                ? `${result.note}. Auto-selected most recent undoable action.`
+                : "Auto-selected most recent undoable action.",
+            };
+          }
+          const result = await undoService.undoAction(id);
           return result;
         }
 
@@ -180,8 +205,18 @@ function createUndoTool(undoService: UndoService): AgentTool {
         }
 
         case "redo_one": {
-          if (!args.id) return { error: "id is required" };
-          const result = await undoService.redoAction(args.id as string);
+          const id = args.id as string | undefined;
+          if (!id) {
+            const [result] = await undoService.redoLastN(1);
+            if (!result) return { error: "No redoable actions available" };
+            return {
+              ...result,
+              note: result.note
+                ? `${result.note}. Auto-selected most recent redoable action.`
+                : "Auto-selected most recent redoable action.",
+            };
+          }
+          const result = await undoService.redoAction(id);
           return result;
         }
 

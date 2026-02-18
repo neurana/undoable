@@ -8,7 +8,14 @@ import { readSseStream } from "@undoable/llm-sdk";
 import type { BrowserService } from "../services/browser-service.js";
 import { truncateToolResult } from "../services/web-utils.js";
 import { createToolRegistry } from "../tools/index.js";
-import { resolveRunMode, shouldAutoApprove, type RunModeConfig } from "../actions/index.js";
+import {
+  resolveRunMode,
+  shouldAutoApprove,
+  getToolCategory,
+  isUndoableTool,
+  getReversalCommand,
+  type RunModeConfig,
+} from "../actions/index.js";
 import { DriftDetector, buildStabilizer } from "../alignment/index.js";
 import { parseAttachments, type ChatAttachment } from "../services/chat-attachments.js";
 import type { ProviderService } from "../services/provider-service.js";
@@ -48,6 +55,8 @@ import type { SkillsService } from "../services/skills-service.js";
 
 const MAX_TOOL_RESULT_CHARS = 30_000;
 const DEFAULT_MAX_ITERATIONS = 10;
+const ONE_DAY_MS = 86_400_000;
+const NON_UNDOABLE_NOISE_TOOLS = new Set(["undo", "actions"]);
 
 function isRetryableError(status: number): boolean {
   return status === 429 || status >= 500;
@@ -117,6 +126,92 @@ function describeChatFailure(err: unknown): ChatFailure {
   }
 
   return { message: message || "Unknown error" };
+}
+
+function formatUsd(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+type UndoGuaranteeCheck = {
+  allowed: boolean;
+  reason?: string;
+  recovery?: string;
+};
+
+function checkUndoGuarantee(
+  toolName: string,
+  args: Record<string, unknown>,
+): UndoGuaranteeCheck {
+  if (toolName === "undo" || toolName === "actions") {
+    return { allowed: true };
+  }
+
+  if (toolName === "process") {
+    const action = String(args.action ?? "list").toLowerCase();
+    if (action === "list" || action === "poll" || action === "log") {
+      return { allowed: true };
+    }
+    return {
+      allowed: false,
+      reason: `process action "${action}" is not automatically undoable`,
+      recovery:
+        "Use list/poll/log only, or enable irreversible actions in run config.",
+    };
+  }
+
+  if (toolName === "exec" || toolName === "bash" || toolName === "shell") {
+    const command = String(args.command ?? args.cmd ?? args.script ?? "").trim();
+    if (!command) {
+      return {
+        allowed: false,
+        reason: "exec command is empty",
+        recovery:
+          "Provide a reversible command or enable irreversible actions in run config.",
+      };
+    }
+    const cwd = typeof args.cwd === "string" ? args.cwd : undefined;
+    const reversal = getReversalCommand(command, cwd);
+    if (!reversal.canReverse) {
+      return {
+        allowed: false,
+        reason:
+          reversal.warning ??
+          `exec command "${command.slice(0, 80)}" has no known automatic reversal`,
+        recovery:
+          "Use write_file/edit_file or a reversible exec command, or enable irreversible actions in run config.",
+      };
+    }
+    return { allowed: true };
+  }
+
+  const category = getToolCategory(toolName);
+  if (category !== "mutate" && category !== "exec") {
+    const lower = toolName.toLowerCase();
+    const looksMutating =
+      /(?:create|update|delete|remove|toggle|set|install|spawn|send|write|edit|run|kill|sync|reconcile)/.test(
+        lower,
+      );
+    if (looksMutating && !isUndoableTool(toolName)) {
+      return {
+        allowed: false,
+        reason: `tool "${toolName}" looks mutating and has no automatic undo support`,
+        recovery:
+          "Use an undoable tool flow, or enable irreversible actions in run config.",
+      };
+    }
+    return { allowed: true };
+  }
+
+  if (isUndoableTool(toolName)) {
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    reason: `tool "${toolName}" performs ${category} operations without automatic undo support`,
+    recovery:
+      "Use an undoable tool flow, or enable irreversible actions in run config.",
+  };
 }
 
 type ActiveChatRun = {
@@ -235,6 +330,14 @@ export function chatRoutes(
 ) {
   let runModeConfig = config.runMode ?? resolveRunMode();
   let economyMode: EconomyModeConfig = resolveEconomyMode(config.economy);
+  const parsedDailyBudgetUsd = Number(process.env.UNDOABLE_DAILY_BUDGET_USD ?? "");
+  let dailyBudgetUsd: number | null =
+    Number.isFinite(parsedDailyBudgetUsd) && parsedDailyBudgetUsd > 0
+      ? parsedDailyBudgetUsd
+      : null;
+  let allowIrreversibleActions = process.env.UNDOABLE_ALLOW_IRREVERSIBLE_ACTIONS === "1";
+  const autoPauseOnBudgetLimit = process.env.UNDOABLE_DAILY_BUDGET_AUTO_PAUSE !== "0";
+  let spendPaused = false;
   const approvalMode = shouldAutoApprove(runModeConfig) ? "off" as const : undefined;
   const registry = createToolRegistry({
     runManager,
@@ -289,6 +392,24 @@ export function chatRoutes(
     effectiveMaxIterations(configuredMaxIterations, economyMode);
   const getToolResultLimit = () =>
     effectiveToolResultLimit(MAX_TOOL_RESULT_CHARS, economyMode);
+  const getDailySpendUsd = () => (usageService ? usageService.getTotalCost(ONE_DAY_MS) : 0);
+  const getSpendStatus = () => {
+    const spentLast24hUsd = getDailySpendUsd();
+    const exceeded =
+      dailyBudgetUsd !== null && spentLast24hUsd >= dailyBudgetUsd;
+    if (exceeded && autoPauseOnBudgetLimit) spendPaused = true;
+    return {
+      dailyBudgetUsd,
+      spentLast24hUsd,
+      remainingUsd:
+        dailyBudgetUsd === null
+          ? null
+          : Math.max(0, dailyBudgetUsd - spentLast24hUsd),
+      exceeded,
+      autoPauseOnLimit: autoPauseOnBudgetLimit,
+      paused: spendPaused,
+    };
+  };
   const setEconomyMode = (enabled: boolean) => {
     if (enabled === economyMode.enabled) return;
     economyMode = resolveEconomyMode({ ...economyMode, enabled });
@@ -390,6 +511,7 @@ export function chatRoutes(
 
   const buildRunConfigResponse = () => {
     const active = getActiveConfig();
+    const spend = getSpendStatus();
     return {
       mode: runModeConfig.mode,
       maxIterations: getMaxIterationsForRun(),
@@ -402,11 +524,21 @@ export function chatRoutes(
       provider: active.provider,
       canThink: canThinkNow(),
       economyMode: economyMode.enabled,
+      allowIrreversibleActions,
+      undoGuaranteeEnabled: !allowIrreversibleActions,
       economy: {
         maxIterationsCap: economyMode.maxIterationsCap,
         toolResultMaxChars: economyMode.toolResultMaxChars,
         contextMaxTokens: economyMode.compaction.maxTokens,
         contextThreshold: economyMode.compaction.threshold,
+      },
+      spendGuard: {
+        dailyBudgetUsd: spend.dailyBudgetUsd,
+        spentLast24hUsd: spend.spentLast24hUsd,
+        remainingUsd: spend.remainingUsd,
+        exceeded: spend.exceeded,
+        autoPauseOnLimit: spend.autoPauseOnLimit,
+        paused: spend.paused,
       },
     };
   };
@@ -415,8 +547,15 @@ export function chatRoutes(
     return buildRunConfigResponse();
   });
 
-  app.post<{ Body: { mode?: string; maxIterations?: number; economyMode?: boolean } }>("/chat/run-config", async (req, reply) => {
-    const { mode, maxIterations: newMax, economyMode: nextEconomyMode } = req.body;
+  app.post<{ Body: { mode?: string; maxIterations?: number; economyMode?: boolean; dailyBudgetUsd?: number | null; spendPaused?: boolean; allowIrreversibleActions?: boolean } }>("/chat/run-config", async (req, reply) => {
+    const {
+      mode,
+      maxIterations: newMax,
+      economyMode: nextEconomyMode,
+      dailyBudgetUsd: nextDailyBudgetUsd,
+      spendPaused: nextSpendPaused,
+      allowIrreversibleActions: nextAllowIrreversibleActions,
+    } = req.body;
     const nextMaxIterations =
       newMax === undefined
         ? undefined
@@ -451,6 +590,37 @@ export function chatRoutes(
     if (typeof nextEconomyMode === "boolean") {
       setEconomyMode(nextEconomyMode);
     }
+    if (nextDailyBudgetUsd !== undefined) {
+      if (nextDailyBudgetUsd === null) {
+        dailyBudgetUsd = null;
+        spendPaused = false;
+      } else if (
+        typeof nextDailyBudgetUsd === "number" &&
+        Number.isFinite(nextDailyBudgetUsd) &&
+        nextDailyBudgetUsd > 0
+      ) {
+        dailyBudgetUsd = nextDailyBudgetUsd;
+      } else {
+        return reply
+          .code(400)
+          .send({ error: "dailyBudgetUsd must be a positive number or null" });
+      }
+    }
+    if (nextSpendPaused !== undefined) {
+      if (typeof nextSpendPaused !== "boolean") {
+        return reply.code(400).send({ error: "spendPaused must be a boolean" });
+      }
+      spendPaused = nextSpendPaused;
+    }
+    if (nextAllowIrreversibleActions !== undefined) {
+      if (typeof nextAllowIrreversibleActions !== "boolean") {
+        return reply
+          .code(400)
+          .send({ error: "allowIrreversibleActions must be a boolean" });
+      }
+      allowIrreversibleActions = nextAllowIrreversibleActions;
+    }
+    getSpendStatus();
     return {
       ok: true,
       ...buildRunConfigResponse(),
@@ -571,10 +741,25 @@ export function chatRoutes(
     }));
     switch (action) {
       case "list":
+        {
+          const all = registry.actionLog.list();
+          const nonUndoableRecent = all
+            .filter((a) => !a.undoable && !NON_UNDOABLE_NOISE_TOOLS.has(a.toolName))
+            .slice(-20)
+            .map((a) => ({
+              id: a.id,
+              tool: a.toolName,
+              category: a.category,
+              startedAt: a.startedAt,
+              error: a.error ?? null,
+            }));
         return {
+          recordedCount: all.length,
           undoable: toSummary(registry.undoService.listUndoable()),
           redoable: toSummary(registry.undoService.listRedoable()),
+          nonUndoableRecent,
         };
+        }
       case "one":
       case "undo_one":
         if (!id) return reply.code(400).send({ error: "id required" });
@@ -664,6 +849,27 @@ export function chatRoutes(
       }
     }
     if (directiveModelOverride) agentModelOverride = directiveModelOverride;
+    const directivesOnly = directives.length > 0 && !cleanMessage;
+
+    const spendStatusBeforeRun = getSpendStatus();
+    if (
+      spendStatusBeforeRun.dailyBudgetUsd !== null &&
+      spendStatusBeforeRun.exceeded &&
+      spendStatusBeforeRun.paused &&
+      !directivesOnly
+    ) {
+      return reply.code(429).send({
+        error: `Daily spend limit reached (${formatUsd(
+          spendStatusBeforeRun.spentLast24hUsd,
+        )}/${formatUsd(
+          spendStatusBeforeRun.dailyBudgetUsd,
+        )} in last 24h). New runs are paused.`,
+        code: "CHAT_SPEND_LIMIT_REACHED",
+        spendGuard: spendStatusBeforeRun,
+        recovery:
+          "Wait for usage window to cool down, raise dailyBudgetUsd, or resume by setting spendPaused=false via /chat/run-config.",
+      });
+    }
 
     const activeConf = getActiveConfig();
     const workspaceDir = agentWorkspace || os.homedir();
@@ -675,6 +881,7 @@ export function chatRoutes(
       toolDefinitions: agentToolDefs,
       contextFiles,
       economyMode: economyMode.enabled,
+      undoGuaranteeEnabled: !allowIrreversibleActions,
       workspaceDir,
       runtime: {
         model: agentModelOverride ?? activeConf.model,
@@ -746,8 +953,11 @@ export function chatRoutes(
       configuredMaxIterations,
       dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
       economyMode: economyMode.enabled,
+      allowIrreversibleActions,
+      undoGuaranteeEnabled: !allowIrreversibleActions,
       thinking: thinkingConfig.level, reasoningVisibility: thinkingConfig.visibility,
       model: activeConf.model, provider: activeConf.provider, canThink: canThinkNow(),
+      spendGuard: getSpendStatus(),
     });
 
     // Handle directive-only messages (no LLM call needed)
@@ -768,8 +978,11 @@ export function chatRoutes(
             visibility: thinkingConfig.visibility,
             mode: runModeConfig.mode,
             economyMode: economyMode.enabled,
+            allowIrreversibleActions,
+            undoGuaranteeEnabled: !allowIrreversibleActions,
             maxIterations: getMaxIterationsForRun(),
             configuredMaxIterations,
+            spendGuard: getSpendStatus(),
           });
           handled = true;
         } else if (d.type === "help") {
@@ -969,6 +1182,39 @@ export function chatRoutes(
           }
         }
 
+        const spendStatus = getSpendStatus();
+        if (
+          spendStatus.dailyBudgetUsd !== null &&
+          spendStatus.exceeded &&
+          hasToolCalls
+        ) {
+          const budgetNote = `Daily spend limit reached (${formatUsd(
+            spendStatus.spentLast24hUsd,
+          )}/${formatUsd(
+            spendStatus.dailyBudgetUsd,
+          )} in last 24h). Skipping further tool execution for this run.`;
+          sse({
+            type: "warning",
+            code: "spend_limit_reached",
+            content: budgetNote,
+            spendGuard: spendStatus,
+          });
+          const safeVisibleContent = (visibleContent || "").trim();
+          const assistantContent = safeVisibleContent
+            ? `${safeVisibleContent}\n\n${budgetNote}`
+            : budgetNote;
+          await chatService.addAssistantMessage(sessionId, assistantContent);
+          sse({
+            type: "done",
+            content: assistantContent,
+            iterations: loops,
+            maxIterations,
+            usage: { ...totalUsage },
+            spendGuard: spendStatus,
+          });
+          break;
+        }
+
         if (!hasToolCalls) {
           await chatService.addAssistantMessage(sessionId, visibleContent);
           sse({ type: "done", content: visibleContent, iterations: loops, maxIterations, usage: { ...totalUsage } });
@@ -994,6 +1240,49 @@ export function chatRoutes(
           let args: Record<string, unknown> = {};
           try { args = JSON.parse(tc.function.arguments); } catch { }
           sse({ type: "tool_call", name: tc.function.name, args, iteration: loops, maxIterations });
+
+          const guarantee = checkUndoGuarantee(tc.function.name, args);
+          if (!allowIrreversibleActions && !guarantee.allowed) {
+            const category = getToolCategory(tc.function.name);
+            const errorMessage = `Blocked by Undo Guarantee mode: ${guarantee.reason ?? `tool "${tc.function.name}" is not undoable`}.`;
+            const blockedResult = {
+              error: errorMessage,
+              recovery:
+                guarantee.recovery ??
+                "Enable irreversible actions in run config to allow this operation.",
+              blockedByUndoGuarantee: true,
+              undoable: false,
+              tool: tc.function.name,
+              category,
+            };
+            const blockedAction = await registry.actionLog.record({
+              runId,
+              toolName: tc.function.name,
+              category,
+              args,
+              approval: "auto-approved",
+              undoable: false,
+            });
+            await registry.actionLog.complete(
+              blockedAction.id,
+              blockedResult,
+              errorMessage,
+            );
+            const blockedStr = truncateToolResult(
+              JSON.stringify(blockedResult),
+              getToolResultLimit(),
+            );
+            await chatService.addToolResult(sessionId, tc.id, blockedStr);
+            sse({
+              type: "warning",
+              code: "undo_guarantee_blocked",
+              content: errorMessage,
+              recovery: blockedResult.recovery,
+              tool: tc.function.name,
+            });
+            sse({ type: "tool_result", name: tc.function.name, result: blockedResult });
+            continue;
+          }
 
           try {
             const result = await registry.execute(tc.function.name, args);

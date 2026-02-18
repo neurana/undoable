@@ -138,6 +138,31 @@ describe("wrapToolWithMiddleware", () => {
     expect(record.error).toBe("boom");
   });
 
+  it("marks non-reversible exec commands as not undoable", async () => {
+    const tool = makeFakeTool("exec", { ok: true });
+    const wrapped = wrapToolWithMiddleware(tool, { actionLog, approvalGate });
+
+    await wrapped.execute({ command: "echo hello" });
+
+    const record = actionLog.list()[0]!;
+    expect(record.toolName).toBe("exec");
+    expect(record.undoable).toBe(false);
+    expect(record.undoData).toBeDefined();
+    expect(record.undoData && record.undoData.type === "exec" ? record.undoData.canReverse : true).toBe(false);
+  });
+
+  it("marks reversible exec commands as undoable", async () => {
+    const tool = makeFakeTool("exec", { ok: true });
+    const wrapped = wrapToolWithMiddleware(tool, { actionLog, approvalGate });
+
+    await wrapped.execute({ command: "mkdir tmp-example" });
+
+    const record = actionLog.list()[0]!;
+    expect(record.toolName).toBe("exec");
+    expect(record.undoable).toBe(true);
+    expect(record.undoData && record.undoData.type === "exec" ? record.undoData.canReverse : false).toBe(true);
+  });
+
   it("passes runId to action records", async () => {
     const tool = makeFakeTool("read_file", { content: "x" });
     const wrapped = wrapToolWithMiddleware(tool, { actionLog, approvalGate, runId: "run-123" });

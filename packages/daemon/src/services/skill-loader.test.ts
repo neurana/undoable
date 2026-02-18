@@ -281,4 +281,35 @@ describe("loadAllSkills", () => {
     expect(skills[0]!.description).toBe("workspace");
     expect(skills[0]!.source).toBe("workspace");
   });
+
+  it("loads agent skill directories and keeps primary user dir precedence", () => {
+    const user = path.join(tmpDir, "user");
+    const agent = path.join(tmpDir, "agent");
+
+    fs.mkdirSync(path.join(user, "dupe"), { recursive: true });
+    fs.mkdirSync(path.join(agent, "dupe"), { recursive: true });
+    fs.mkdirSync(path.join(agent, "agent-only"), { recursive: true });
+
+    fs.writeFileSync(
+      path.join(agent, "dupe", "SKILL.md"),
+      "---\nname: dupe\ndescription: agent\n---\nagent body",
+    );
+    fs.writeFileSync(
+      path.join(user, "dupe", "SKILL.md"),
+      "---\nname: dupe\ndescription: user\n---\nuser body",
+    );
+    fs.writeFileSync(
+      path.join(agent, "agent-only", "SKILL.md"),
+      "---\nname: agent-only\ndescription: agent-only\n---\nagent only body",
+    );
+
+    const skills = loadAllSkills({
+      userDir: user,
+      extraUserDirs: [agent],
+    });
+
+    const byName = new Map(skills.map((skill) => [skill.name, skill]));
+    expect(byName.get("dupe")?.description).toBe("user");
+    expect(byName.get("agent-only")?.description).toBe("agent-only");
+  });
 });

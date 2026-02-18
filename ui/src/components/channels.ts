@@ -110,11 +110,41 @@ const PLATFORMS: Record<ChannelId, PlatformInfo> = {
 };
 
 const DM_POLICIES: Array<{ value: DmPolicy; label: string; description: string }> = [
-  { value: "pairing", label: "Pairing (Recommended)", description: "Unknown senders get a pairing code to approve" },
+  { value: "pairing", label: "Default (Recommended)", description: "Accept direct messages unless allowlist/disabled is configured" },
   { value: "allowlist", label: "Allowlist Only", description: "Only allowed users can message" },
   { value: "open", label: "Open", description: "Anyone can message (use with caution)" },
   { value: "disabled", label: "Disabled", description: "Ignore all direct messages" },
 ];
+
+function parseDmPolicy(value: unknown): DmPolicy | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "pairing" || normalized === "allowlist" || normalized === "open" || normalized === "disabled") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function parseAllowlist(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => String(entry).trim())
+    .filter(Boolean);
+}
+
+function deriveDmPolicy(channel: ChannelItem): DmPolicy {
+  const fromExtra = parseDmPolicy((channel.config.extra as Record<string, unknown> | undefined)?.dmPolicy);
+  if (fromExtra) return fromExtra;
+  if (channel.config.allowDMs === false) return "disabled";
+  if (Array.isArray(channel.config.userAllowlist) && channel.config.userAllowlist.length > 0) return "allowlist";
+  return "pairing";
+}
+
+function deriveAllowlist(channel: ChannelItem): string[] {
+  const fromConfig = parseAllowlist(channel.config.userAllowlist);
+  if (fromConfig.length > 0) return fromConfig;
+  return parseAllowlist((channel.config.extra as Record<string, unknown> | undefined)?.allowlist);
+}
 
 @customElement("channel-list")
 export class ChannelList extends LitElement {
@@ -309,6 +339,31 @@ export class ChannelList extends LitElement {
       font-size: 13px;
       color: var(--danger);
       line-height: 1.5;
+    }
+    .status-note {
+      padding: 14px 18px;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.5;
+      border: 1px solid var(--border-strong);
+      color: var(--ink-soft);
+      background: var(--wash);
+    }
+    .status-note.warn {
+      background: rgba(245, 158, 11, 0.08);
+      border-color: rgba(245, 158, 11, 0.2);
+      color: #b45309;
+    }
+    .status-note.error {
+      background: var(--danger-soft);
+      border-color: rgba(192, 57, 43, 0.12);
+      color: var(--danger);
+    }
+    .status-note.info {
+      background: rgba(59, 130, 246, 0.08);
+      border-color: rgba(59, 130, 246, 0.2);
+      color: #1d4ed8;
     }
 
     /* QR section */
@@ -547,8 +602,8 @@ export class ChannelList extends LitElement {
           channel: id,
           token: ch.config.token ?? "",
           appToken: (ch.config.extra as Record<string, string>)?.appToken ?? "",
-          dmPolicy: (ch.config.extra as Record<string, string>)?.dmPolicy as DmPolicy ?? "pairing",
-          allowlist: (ch.config.extra as Record<string, string[]>)?.allowlist ?? [],
+          dmPolicy: deriveDmPolicy(ch),
+          allowlist: deriveAllowlist(ch),
         };
       }
     } catch {
@@ -595,6 +650,9 @@ export class ChannelList extends LitElement {
       await api.channels.update(channelId, {
         token: state.token || undefined,
         extra,
+        allowDMs: state.dmPolicy !== "disabled",
+        allowGroups: true,
+        userAllowlist: state.dmPolicy === "allowlist" ? state.allowlist : [],
       });
       await api.channels.start(channelId);
       await this.load();
@@ -609,6 +667,7 @@ export class ChannelList extends LitElement {
     this.updateWizard(channelId, { loading: true });
     try {
       await api.channels.stop(channelId);
+      await api.channels.update(channelId, { enabled: false });
       await this.load();
     } catch { /* error shown in status */ }
     this.updateWizard(channelId, { loading: false });
@@ -679,6 +738,12 @@ export class ChannelList extends LitElement {
     const hasError = !!ch.status.error;
     const hasQR = !!ch.status.qrDataUrl;
     const state = this.wizardState[id];
+    const diagnostic = ch.snapshot?.diagnostics?.[0];
+    const diagnosticTone = diagnostic?.severity === "error"
+      ? "error"
+      : diagnostic?.severity === "warn"
+        ? "warn"
+        : "info";
 
     const statusClass = connected ? "status-connected" : hasQR ? "status-connecting" : hasError ? "status-error" : "status-disconnected";
     const statusText = connected ? "Connected" : hasQR ? "Awaiting scan" : hasError ? "Error" : "Offline";
@@ -699,6 +764,9 @@ export class ChannelList extends LitElement {
         <div class="card-body">
           ${ch.status.error ? html`<div class="error-banner">${ch.status.error}</div>` : nothing}
           ${state.error ? html`<div class="error-banner">${state.error}</div>` : nothing}
+          ${!ch.status.error && !state.error && diagnostic
+            ? html`<div class="status-note ${diagnosticTone}">${diagnostic.message}${diagnostic.recovery ? html`<br /><strong>Recovery:</strong> ${diagnostic.recovery}` : nothing}</div>`
+            : nothing}
 
           ${connected ? this.renderConnectedState(ch, id, platform) : hasQR ? this.renderQRState(ch, id, platform) : this.renderWizard(id, platform, state)}
         </div>
@@ -708,7 +776,7 @@ export class ChannelList extends LitElement {
     `;
   }
 
-  private renderConnectedState(ch: ChannelItem, id: ChannelId, platform: PlatformInfo) {
+  private renderConnectedState(_ch: ChannelItem, _id: ChannelId, platform: PlatformInfo) {
     return html`
       <div class="setup-prompt">
         <div class="setup-prompt-text">
@@ -870,7 +938,7 @@ export class ChannelList extends LitElement {
     `;
   }
 
-  private renderActions(ch: ChannelItem, id: ChannelId, platform: PlatformInfo, state: WizardState, connected: boolean, hasQR: boolean) {
+  private renderActions(_ch: ChannelItem, id: ChannelId, platform: PlatformInfo, state: WizardState, connected: boolean, hasQR: boolean) {
     if (connected) {
       return html`
         <div class="card-actions">

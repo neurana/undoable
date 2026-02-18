@@ -23,6 +23,15 @@ export type ApiMessage = {
   tool_call_id?: string;
 };
 
+export type SpendGuardPayload = {
+  dailyBudgetUsd?: number | null;
+  spentLast24hUsd?: number;
+  remainingUsd?: number | null;
+  exceeded?: boolean;
+  autoPauseOnLimit?: boolean;
+  paused?: boolean;
+};
+
 export type SseEvent = {
   type: string;
   content?: string;
@@ -49,6 +58,9 @@ export type SseEvent = {
   model?: string;
   provider?: string;
   canThink?: boolean;
+  allowIrreversibleActions?: boolean;
+  undoGuaranteeEnabled?: boolean;
   runId?: string;
+  spendGuard?: SpendGuardPayload;
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
 };

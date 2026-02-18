@@ -1,6 +1,6 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { api } from "../api/client.js";
+import { api, type UndoListResult } from "../api/client.js";
 
 type ModelInfo = {
   id: string;
@@ -31,6 +31,11 @@ type TtsStatus = {
   enabled: boolean;
   provider: string;
   providers: string[];
+};
+
+type RunConfigSnapshot = {
+  allowIrreversibleActions?: boolean;
+  undoGuaranteeEnabled?: boolean;
 };
 
 @customElement("chat-settings")
@@ -160,13 +165,131 @@ export class ChatSettings extends LitElement {
     .btn-key:hover { background: var(--wash, #f0f0f0); }
     .btn-key.danger { color: var(--danger, #c0392b); border-color: var(--danger, #c0392b); }
     .btn-key.danger:hover { background: rgba(192,57,43,0.05); }
+
+    /* Undo */
+    .undo-kpis {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .undo-kpi {
+      border: 1px solid var(--border-divider, #e0e0e0);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: var(--surface-1, #fff);
+    }
+    .undo-kpi-label {
+      font-size: 10px;
+      color: var(--text-tertiary, #999);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      font-weight: 700;
+    }
+    .undo-kpi-value {
+      font-size: 16px;
+      color: var(--text-primary, #1a1a1a);
+      font-weight: 700;
+      margin-top: 2px;
+      font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    }
+    .undo-mode-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid var(--border-divider, #e0e0e0);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: var(--surface-1, #fff);
+      margin-bottom: 12px;
+    }
+    .undo-mode-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary, #1a1a1a);
+    }
+    .undo-mode-sub {
+      font-size: 10px;
+      color: var(--text-tertiary, #999);
+      margin-top: 2px;
+    }
+    .undo-badge {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+    }
+    .undo-badge.strict {
+      color: var(--accent, #00b377);
+      background: var(--accent-subtle, #e6f9f1);
+      border-color: rgba(0, 176, 120, 0.25);
+    }
+    .undo-badge.open {
+      color: var(--danger, #c0392b);
+      background: rgba(192, 57, 43, 0.08);
+      border-color: rgba(192, 57, 43, 0.22);
+    }
+    .undo-list {
+      border: 1px solid var(--border-divider, #e0e0e0);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--surface-1, #fff);
+    }
+    .undo-list-header {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-divider, #e0e0e0);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      color: var(--text-tertiary, #999);
+      background: var(--wash, #f6f7f6);
+    }
+    .undo-list-empty {
+      padding: 12px 10px;
+      font-size: 11px;
+      color: var(--text-tertiary, #999);
+    }
+    .undo-item {
+      padding: 10px;
+      border-bottom: 1px solid var(--border-divider, #e0e0e0);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .undo-item:last-child { border-bottom: none; }
+    .undo-item-top {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      justify-content: space-between;
+    }
+    .undo-item-tool {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary, #1a1a1a);
+      font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    }
+    .undo-item-meta {
+      font-size: 10px;
+      color: var(--text-tertiary, #999);
+    }
+    .undo-item-error {
+      font-size: 11px;
+      color: var(--danger, #c0392b);
+      line-height: 1.4;
+    }
   `;
 
   @property({ type: Boolean }) open = false;
   @property({ type: String }) currentModel = "";
   @property({ type: String }) currentProvider = "";
 
-  @state() private tab: "models" | "providers" | "voice" | "browser" = "models";
+  @state() private tab: "models" | "providers" | "voice" | "browser" | "undo" = "models";
   @state() private models: ModelInfo[] = [];
   @state() private providers: ProviderInfo[] = [];
   @state() private localServers: LocalServerInfo[] = [];
@@ -174,6 +297,9 @@ export class ChatSettings extends LitElement {
   @state() private tts: TtsStatus = { enabled: false, provider: "system", providers: ["system"] };
   @state() private customVoiceProvider = "";
   @state() private browserHeadless = false;
+  @state() private undoCoverage: UndoListResult = { undoable: [], redoable: [], recordedCount: 0, nonUndoableRecent: [] };
+  @state() private undoLoading = false;
+  @state() private allowIrreversibleActions = false;
 
   private emit(name: string, detail?: unknown) {
     this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true }));
@@ -192,13 +318,24 @@ export class ChatSettings extends LitElement {
 
   private async loadData() {
     try {
-      const [modelsRes, providersRes, serversRes, ttsStatus, ttsProviders, browserStatus] = await Promise.all([
+      const [
+        modelsRes,
+        providersRes,
+        serversRes,
+        ttsStatus,
+        ttsProviders,
+        browserStatus,
+        undoList,
+        runConfigRes,
+      ] = await Promise.all([
         fetch("/api/chat/models"),
         fetch("/api/chat/providers"),
         fetch("/api/chat/local-servers").catch(() => null),
         api.gateway.tts.status().catch(() => null),
         api.gateway.tts.providers().catch(() => null),
         api.gateway.browser.isHeadless().catch(() => null),
+        api.undo.list().catch(() => null),
+        fetch("/api/chat/run-config").catch(() => null),
       ]);
       if (modelsRes.ok) {
         const data = await modelsRes.json() as { models: ModelInfo[] };
@@ -224,6 +361,22 @@ export class ChatSettings extends LitElement {
       }
       if (browserStatus !== null) {
         this.browserHeadless = browserStatus.headless ?? false;
+      }
+      if (undoList) {
+        this.undoCoverage = {
+          undoable: undoList.undoable ?? [],
+          redoable: undoList.redoable ?? [],
+          recordedCount: undoList.recordedCount ?? undoList.undoable.length + undoList.redoable.length,
+          nonUndoableRecent: undoList.nonUndoableRecent ?? [],
+        };
+      }
+      if (runConfigRes?.ok) {
+        const rc = (await runConfigRes.json()) as RunConfigSnapshot;
+        if (typeof rc.allowIrreversibleActions === "boolean") {
+          this.allowIrreversibleActions = rc.allowIrreversibleActions;
+        } else if (typeof rc.undoGuaranteeEnabled === "boolean") {
+          this.allowIrreversibleActions = !rc.undoGuaranteeEnabled;
+        }
       }
     } catch { /* ignore */ }
   }
@@ -259,6 +412,135 @@ export class ChatSettings extends LitElement {
       const result = await api.gateway.browser.setHeadless(headless);
       this.browserHeadless = result.headless ?? headless;
     } catch { /* ignore */ }
+  }
+
+  private async refreshUndoCoverage() {
+    this.undoLoading = true;
+    try {
+      const [undoList, runConfigRes] = await Promise.all([
+        api.undo.list(),
+        fetch("/api/chat/run-config").catch(() => null),
+      ]);
+      this.undoCoverage = {
+        undoable: undoList.undoable ?? [],
+        redoable: undoList.redoable ?? [],
+        recordedCount: undoList.recordedCount ?? undoList.undoable.length + undoList.redoable.length,
+        nonUndoableRecent: undoList.nonUndoableRecent ?? [],
+      };
+      if (runConfigRes?.ok) {
+        const rc = (await runConfigRes.json()) as RunConfigSnapshot;
+        if (typeof rc.allowIrreversibleActions === "boolean") {
+          this.allowIrreversibleActions = rc.allowIrreversibleActions;
+        } else if (typeof rc.undoGuaranteeEnabled === "boolean") {
+          this.allowIrreversibleActions = !rc.undoGuaranteeEnabled;
+        }
+      }
+    } catch {
+      // ignore
+    } finally {
+      this.undoLoading = false;
+    }
+  }
+
+  private async toggleIrreversibleActions() {
+    this.undoLoading = true;
+    try {
+      const res = await fetch("/api/chat/run-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          allowIrreversibleActions: !this.allowIrreversibleActions,
+        }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as RunConfigSnapshot;
+        if (typeof data.allowIrreversibleActions === "boolean") {
+          this.allowIrreversibleActions = data.allowIrreversibleActions;
+        } else if (typeof data.undoGuaranteeEnabled === "boolean") {
+          this.allowIrreversibleActions = !data.undoGuaranteeEnabled;
+        }
+      }
+      await this.refreshUndoCoverage();
+    } catch {
+      this.undoLoading = false;
+    }
+  }
+
+  private renderUndo() {
+    const nonUndoable = this.undoCoverage.nonUndoableRecent ?? [];
+    const recorded = this.undoCoverage.recordedCount ?? 0;
+    const undoableCount = this.undoCoverage.undoable.length;
+    const redoableCount = this.undoCoverage.redoable.length;
+    return html`
+      <div class="undo-mode-row">
+        <div>
+          <div class="undo-mode-title">Undo Guarantee</div>
+          <div class="undo-mode-sub">
+            ${this.allowIrreversibleActions
+              ? "Irreversible actions are currently allowed."
+              : "Irreversible mutate/exec actions are blocked."}
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="undo-badge ${this.allowIrreversibleActions ? "open" : "strict"}">
+            ${this.allowIrreversibleActions ? "open" : "strict"}
+          </span>
+          <button
+            class="btn-key"
+            ?disabled=${this.undoLoading}
+            @click=${() => this.toggleIrreversibleActions()}
+          >
+            ${this.allowIrreversibleActions ? "Set Strict" : "Allow"}
+          </button>
+        </div>
+      </div>
+
+      <div class="undo-kpis">
+        <div class="undo-kpi">
+          <div class="undo-kpi-label">Recorded</div>
+          <div class="undo-kpi-value">${recorded}</div>
+        </div>
+        <div class="undo-kpi">
+          <div class="undo-kpi-label">Undoable</div>
+          <div class="undo-kpi-value">${undoableCount}</div>
+        </div>
+        <div class="undo-kpi">
+          <div class="undo-kpi-label">Redoable</div>
+          <div class="undo-kpi-value">${redoableCount}</div>
+        </div>
+        <div class="undo-kpi">
+          <div class="undo-kpi-label">Non-undoable recent</div>
+          <div class="undo-kpi-value">${nonUndoable.length}</div>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+        <button
+          class="btn-refresh"
+          ?disabled=${this.undoLoading}
+          @click=${() => this.refreshUndoCoverage()}
+        >
+          ${this.undoLoading ? "Refreshing..." : "Refresh"}
+        </button>
+      </div>
+
+      <div class="undo-list">
+        <div class="undo-list-header">Recent non-undoable actions</div>
+        ${nonUndoable.length === 0
+          ? html`<div class="undo-list-empty">No non-undoable actions in recent history.</div>`
+          : nonUndoable.map((a) => html`
+              <div class="undo-item">
+                <div class="undo-item-top">
+                  <span class="undo-item-tool">${a.tool}</span>
+                  <span class="undo-item-meta">${a.category} · ${new Date(a.startedAt).toLocaleString()}</span>
+                </div>
+                ${a.error
+                  ? html`<div class="undo-item-error">${a.error}</div>`
+                  : html`<div class="undo-item-meta">No error detail recorded.</div>`}
+              </div>
+            `)}
+      </div>
+    `;
   }
 
   private renderBrowser() {
@@ -470,6 +752,7 @@ export class ChatSettings extends LitElement {
           <div class="tabs">
             <button class="tab" ?data-active=${this.tab === "models"} @click=${() => this.tab = "models"}>Models</button>
             <button class="tab" ?data-active=${this.tab === "providers"} @click=${() => this.tab = "providers"}>API Keys</button>
+            <button class="tab" ?data-active=${this.tab === "undo"} @click=${() => this.tab = "undo"}>Undo</button>
             <button class="tab" ?data-active=${this.tab === "voice"} @click=${() => this.tab = "voice"}>Voice</button>
             <button class="tab" ?data-active=${this.tab === "browser"} @click=${() => this.tab = "browser"}>Browser</button>
           </div>
@@ -478,6 +761,8 @@ export class ChatSettings extends LitElement {
               ? this.renderModels()
               : this.tab === "providers"
                 ? this.renderProviders()
+                : this.tab === "undo"
+                  ? this.renderUndo()
                 : this.tab === "voice"
                   ? this.renderVoice()
                   : this.renderBrowser()}

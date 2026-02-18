@@ -73,6 +73,12 @@ function captureUndoData(toolName: string, args: Record<string, unknown>): UndoD
   return undefined;
 }
 
+function isCapturedUndoDataUsable(undoData: UndoData | undefined): boolean {
+  if (!undoData) return false;
+  if (undoData.type === "exec") return undoData.canReverse;
+  return true;
+}
+
 export function wrapToolWithMiddleware(tool: AgentTool, opts: ToolMiddlewareOptions): AgentTool {
   const { actionLog, approvalGate, runId } = opts;
 
@@ -105,6 +111,7 @@ export function wrapToolWithMiddleware(tool: AgentTool, opts: ToolMiddlewareOpti
       if (undoable) {
         undoData = captureUndoData(tool.name, args);
       }
+      const canUndo = undoable && isCapturedUndoDataUsable(undoData);
 
       const action = await actionLog.record({
         runId,
@@ -112,7 +119,7 @@ export function wrapToolWithMiddleware(tool: AgentTool, opts: ToolMiddlewareOpti
         category,
         args,
         approval: approvalStatus,
-        undoable: undoable && undoData !== undefined,
+        undoable: canUndo,
         undoData,
       });
 

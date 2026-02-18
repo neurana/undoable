@@ -74,6 +74,48 @@ type BannerKind = "info" | "success" | "error";
 
 const SKILL_REFERENCE_REGEX =
   /([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+)/g;
+const SKILL_REFERENCE_SLASH_REGEX =
+  /([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+)/g;
+const SKILL_REFERENCE_URL_REGEX =
+  /(?:https?:\/\/)?skills\.sh\/([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+)(?:\/([a-zA-Z0-9._-]+))?/gi;
+
+function extractInstalledReferenceVariants(entry: string): string[] {
+  const refs = new Set<string>();
+  const trimmed = entry.trim();
+  if (!trimmed) return [];
+  refs.add(trimmed);
+
+  let match: RegExpExecArray | null;
+  SKILL_REFERENCE_URL_REGEX.lastIndex = 0;
+  while ((match = SKILL_REFERENCE_URL_REGEX.exec(trimmed)) !== null) {
+    const repo = `${match[1]!}/${match[2]!}`;
+    refs.add(repo);
+    if (match[3]) {
+      refs.add(`${repo}@${match[3]}`);
+      refs.add(`${repo}/${match[3]}`);
+    }
+  }
+
+  SKILL_REFERENCE_REGEX.lastIndex = 0;
+  while ((match = SKILL_REFERENCE_REGEX.exec(trimmed)) !== null) {
+    const reference = match[1]!;
+    refs.add(reference);
+    const [repo, skill] = reference.split("@");
+    if (repo) refs.add(repo);
+    if (repo && skill) refs.add(`${repo}/${skill}`);
+  }
+
+  SKILL_REFERENCE_SLASH_REGEX.lastIndex = 0;
+  while ((match = SKILL_REFERENCE_SLASH_REGEX.exec(trimmed)) !== null) {
+    const slashRef = match[1]!;
+    refs.add(slashRef);
+    const [owner, repo, skill] = slashRef.split("/");
+    if (owner && repo) refs.add(`${owner}/${repo}`);
+    if (owner && repo && skill) refs.add(`${owner}/${repo}@${skill}`);
+  }
+
+  return [...refs];
+}
 const QUICK_DISCOVERY_TERMS = [
   "testing",
   "deployment",
@@ -950,13 +992,8 @@ export class SkillList extends LitElement {
     this.installedEntries = entries;
     const refs = new Set<string>();
     for (const entry of entries) {
-      const trimmed = entry.trim();
-      if (!trimmed) continue;
-      refs.add(trimmed);
-      let match: RegExpExecArray | null;
-      SKILL_REFERENCE_REGEX.lastIndex = 0;
-      while ((match = SKILL_REFERENCE_REGEX.exec(trimmed)) !== null) {
-        refs.add(match[1]!);
+      for (const variant of extractInstalledReferenceVariants(entry)) {
+        refs.add(variant);
       }
     }
     this.installedRefs = refs;
@@ -1517,12 +1554,21 @@ export class SkillList extends LitElement {
 
       ${!this.loading && this.filtered.length === 0 ? html`
         <div class="empty">
-          <div class="empty-title">${this.skills.length === 0 ? "No skills installed" : "No skills match this filter"}</div>
+          <div class="empty-title">${this.skills.length === 0
+            ? (this.installedEntries.length > 0 ? "Installed skills detected" : "No skills installed")
+            : "No skills match this filter"}</div>
           <div class="empty-text">
             ${this.skills.length === 0
-              ? "Go to Discover to find and install skills from the registry"
+              ? (this.installedEntries.length > 0
+                ? "CLI detected installed skills, but local cards are unavailable. Refresh, then verify your agent skill directories."
+                : "Go to Discover to find and install skills from the registry")
               : "Try selecting a different filter"}
           </div>
+          ${this.skills.length === 0 && this.installedEntries.length > 0 ? html`
+            <div class="entries-list" style="justify-content:center; margin-top: 14px;">
+              ${this.installedEntries.map((entry) => html`<span class="entry-chip">${entry}</span>`)}
+            </div>
+          ` : nothing}
         </div>
       ` : nothing}
 

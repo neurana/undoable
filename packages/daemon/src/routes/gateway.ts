@@ -11,6 +11,7 @@ import type { CronRunLogService } from "../services/cron-run-log-service.js";
 import type { SkillsService } from "../services/skills-service.js";
 import type { ChannelManager } from "../channels/index.js";
 import type { ChannelId } from "../channels/types.js";
+import { buildChannelStatusSnapshot } from "../channels/status-snapshot.js";
 import type { BrowserService } from "../services/browser-service.js";
 import type { ExecApprovalService, ExecApprovalDecision } from "../services/exec-approval-service.js";
 import type { NodeGatewayService } from "../services/node-gateway-service.js";
@@ -79,7 +80,21 @@ type GatewayRouteDeps = {
     SkillsService,
     "list" | "bins" | "toggle" | "getByName" | "getDangerWarning" | "searchRegistry" | "installFromRegistry"
   >;
-  channelManager: Pick<ChannelManager, "listAll" | "getStatus" | "updateConfig" | "stopChannel">;
+  channelManager: Pick<
+    ChannelManager,
+    | "listAll"
+    | "getStatus"
+    | "updateConfig"
+    | "stopChannel"
+    | "probeChannel"
+    | "listCapabilities"
+    | "listLogs"
+    | "resolveTargets"
+    | "listPairing"
+    | "approvePairing"
+    | "rejectPairing"
+    | "revokePairing"
+  >;
   browserService: Pick<
     BrowserService,
     | "navigate"
@@ -144,6 +159,11 @@ function parseChannelId(value: unknown): ChannelId | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim().toLowerCase();
   return CHANNEL_IDS.includes(trimmed as ChannelId) ? (trimmed as ChannelId) : null;
+}
+
+function parseResolveKind(value: unknown): "auto" | "user" | "group" {
+  if (value === "user" || value === "group") return value;
+  return "auto";
 }
 
 function resolveJobId(params: Record<string, unknown>): string | null {
@@ -1102,33 +1122,266 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
             channels: {} as Record<string, unknown>,
             channelAccounts: {} as Record<string, unknown>,
             channelDefaultAccountId: {} as Record<string, string>,
+            channelSnapshots: {} as Record<string, unknown>,
+            channelDiagnostics: {} as Record<string, unknown>,
           };
 
           for (const row of rows) {
             const channelId = row.config.channelId;
-            const configured = Boolean(row.config.token || row.config.extra);
+            const snapshot = buildChannelStatusSnapshot(row.config, row.status);
+            const pairing = deps.channelManager.listPairing(channelId);
             payload.channels[channelId] = {
-              configured,
-              connected: row.status.connected,
-              error: row.status.error,
+              configured: snapshot.configured,
+              connected: snapshot.connected,
+              enabled: snapshot.enabled,
+              status: snapshot.status,
+              error: snapshot.error,
+              needsSetup: snapshot.needsSetup,
+              dmPolicy: snapshot.dmPolicy,
+              allowlistCount: snapshot.allowlistCount,
+              pairingPending: pairing.pending.length,
+              pairingApproved: pairing.approved.length,
             };
             payload.channelAccounts[channelId] = [
               {
                 accountId: DEFAULT_CHANNEL_ACCOUNT_ID,
-                configured,
-                connected: row.status.connected,
-                accountName: row.status.accountName,
-                error: row.status.error,
+                ...snapshot,
                 qrDataUrl: row.status.qrDataUrl,
-                lastConnectedAt: row.status.lastConnectedAt,
-                lastDisconnectedAt: row.status.lastDisconnectedAt,
-                lastErrorAt: row.status.lastErrorAt,
+                pairingPending: pairing.pending.length,
+                pairingApproved: pairing.approved.length,
               },
             ];
             payload.channelDefaultAccountId[channelId] = DEFAULT_CHANNEL_ACCOUNT_ID;
+            payload.channelSnapshots[channelId] = snapshot;
+            payload.channelDiagnostics[channelId] = snapshot.diagnostics;
           }
 
           return { ok: true, result: payload };
+        }
+
+        case "channels.probe": {
+          const channelParam = params.channel;
+          const requestedChannel = channelParam === undefined ? null : parseChannelId(channelParam);
+          if (channelParam !== undefined && !requestedChannel) {
+            return fail({ code: "INVALID_REQUEST", message: "channels.probe requires a valid channel" });
+          }
+
+          const rows = requestedChannel
+            ? (() => {
+                const one = deps.channelManager.getStatus(requestedChannel);
+                return one ? [one] : [];
+              })()
+            : deps.channelManager.listAll();
+
+          if (requestedChannel && rows.length === 0) {
+            return fail({ code: "INVALID_REQUEST", message: `unknown channel: ${requestedChannel}` });
+          }
+
+          const deep = params.deep !== false;
+          const timeoutMs = typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
+            ? params.timeoutMs
+            : undefined;
+          const probes: Record<string, unknown> = {};
+          let okCount = 0;
+          let failCount = 0;
+
+          for (const row of rows) {
+            const channelId = row.config.channelId;
+            try {
+              const probe = await deps.channelManager.probeChannel(channelId, { deep, timeoutMs });
+              probes[channelId] = probe;
+              if (probe.ok) okCount += 1;
+              else failCount += 1;
+            } catch (err) {
+              failCount += 1;
+              probes[channelId] = {
+                channelId,
+                probedAt: Date.now(),
+                connected: row.status.connected,
+                ok: false,
+                checks: [
+                  {
+                    name: "probe_error",
+                    ok: false,
+                    severity: "error",
+                    message: err instanceof Error ? err.message : String(err),
+                  },
+                ],
+              };
+            }
+          }
+
+          return {
+            ok: true,
+            result: {
+              ts: Date.now(),
+              deep,
+              channelOrder: rows.map((row) => row.config.channelId),
+              probes,
+              okCount,
+              failCount,
+            },
+          };
+        }
+
+        case "channels.capabilities": {
+          const channelParam = params.channel;
+          const requestedChannel = channelParam === undefined ? null : parseChannelId(channelParam);
+          if (channelParam !== undefined && !requestedChannel) {
+            return fail({ code: "INVALID_REQUEST", message: "channels.capabilities requires a valid channel" });
+          }
+
+          const list = deps.channelManager.listCapabilities(requestedChannel ?? undefined);
+          const payload = {
+            ts: Date.now(),
+            channelOrder: list.map((entry) => entry.channelId),
+            capabilities: Object.fromEntries(list.map((entry) => [entry.channelId, entry])),
+          };
+          return { ok: true, result: payload };
+        }
+
+        case "channels.logs": {
+          const channelParam = params.channel;
+          const requestedChannel = channelParam === undefined ? null : parseChannelId(channelParam);
+          if (channelParam !== undefined && !requestedChannel) {
+            return fail({ code: "INVALID_REQUEST", message: "channels.logs requires a valid channel" });
+          }
+
+          const limit = typeof params.limit === "number" && Number.isFinite(params.limit)
+            ? Math.max(1, Math.min(1000, Math.floor(params.limit)))
+            : 200;
+
+          const logs = deps.channelManager.listLogs(requestedChannel ?? undefined, limit);
+          return {
+            ok: true,
+            result: {
+              ts: Date.now(),
+              channel: requestedChannel,
+              limit,
+              count: logs.length,
+              logs,
+            },
+          };
+        }
+
+        case "channels.resolve": {
+          const channel = parseChannelId(params.channel);
+          if (!channel) {
+            return fail({ code: "INVALID_REQUEST", message: "channels.resolve requires channel" });
+          }
+
+          const entries = Array.isArray(params.entries)
+            ? params.entries.filter((entry): entry is string => typeof entry === "string")
+            : typeof params.entry === "string"
+              ? [params.entry]
+              : typeof params.target === "string"
+                ? [params.target]
+                : [];
+          if (entries.length === 0) {
+            return fail({ code: "INVALID_REQUEST", message: "channels.resolve requires entries" });
+          }
+
+          const kind = parseResolveKind(params.kind);
+          const resolved = await deps.channelManager.resolveTargets(channel, entries, kind);
+          return {
+            ok: true,
+            result: {
+              channel,
+              kind,
+              resolved,
+            },
+          };
+        }
+
+        case "pairing.list":
+        case "channels.pairing.list": {
+          const channelParam = params.channel;
+          const requestedChannel = channelParam === undefined ? null : parseChannelId(channelParam);
+          if (channelParam !== undefined && !requestedChannel) {
+            return fail({ code: "INVALID_REQUEST", message: `${method} requires a valid channel` });
+          }
+
+          const pairing = deps.channelManager.listPairing(requestedChannel ?? undefined);
+          return {
+            ok: true,
+            result: {
+              channel: requestedChannel,
+              ...pairing,
+            },
+          };
+        }
+
+        case "pairing.approve":
+        case "channels.pairing.approve": {
+          const requestId = typeof params.requestId === "string" && params.requestId.trim()
+            ? params.requestId.trim()
+            : undefined;
+          const channel = params.channel === undefined ? undefined : parseChannelId(params.channel);
+          if (params.channel !== undefined && !channel) {
+            return fail({ code: "INVALID_REQUEST", message: `${method} requires a valid channel` });
+          }
+          const code = typeof params.code === "string" && params.code.trim() ? params.code.trim() : undefined;
+          if (!requestId && !(channel && code)) {
+            return fail({ code: "INVALID_REQUEST", message: `${method} requires requestId OR channel+code` });
+          }
+          const approvedBy = typeof params.approvedBy === "string" && params.approvedBy.trim()
+            ? params.approvedBy.trim()
+            : undefined;
+          const result = deps.channelManager.approvePairing({
+            requestId,
+            channelId: channel ?? undefined,
+            code,
+            approvedBy,
+          });
+          if (!result.ok) {
+            return fail({ code: "INVALID_REQUEST", message: result.error ?? "pairing approval failed" });
+          }
+          return { ok: true, result };
+        }
+
+        case "pairing.reject":
+        case "channels.pairing.reject": {
+          const requestId = typeof params.requestId === "string" && params.requestId.trim()
+            ? params.requestId.trim()
+            : undefined;
+          const channel = params.channel === undefined ? undefined : parseChannelId(params.channel);
+          if (params.channel !== undefined && !channel) {
+            return fail({ code: "INVALID_REQUEST", message: `${method} requires a valid channel` });
+          }
+          const code = typeof params.code === "string" && params.code.trim() ? params.code.trim() : undefined;
+          if (!requestId && !(channel && code)) {
+            return fail({ code: "INVALID_REQUEST", message: `${method} requires requestId OR channel+code` });
+          }
+          const rejectedBy = typeof params.rejectedBy === "string" && params.rejectedBy.trim()
+            ? params.rejectedBy.trim()
+            : undefined;
+          const result = deps.channelManager.rejectPairing({
+            requestId,
+            channelId: channel ?? undefined,
+            code,
+            rejectedBy,
+          });
+          if (!result.ok) {
+            return fail({ code: "INVALID_REQUEST", message: result.error ?? "pairing reject failed" });
+          }
+          return { ok: true, result };
+        }
+
+        case "pairing.revoke":
+        case "channels.pairing.revoke": {
+          const channel = parseChannelId(params.channel);
+          if (!channel) {
+            return fail({ code: "INVALID_REQUEST", message: `${method} requires channel` });
+          }
+          const userId = typeof params.userId === "string" && params.userId.trim() ? params.userId.trim() : "";
+          if (!userId) {
+            return fail({ code: "INVALID_REQUEST", message: `${method} requires userId` });
+          }
+          const result = deps.channelManager.revokePairing(channel, userId);
+          if (!result.ok) {
+            return fail({ code: "INVALID_REQUEST", message: result.error ?? "pairing revoke failed" });
+          }
+          return { ok: true, result };
         }
 
         case "channels.logout": {
@@ -1152,9 +1405,13 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
             // Continue logout flow even if channel was not started.
           }
 
+          const existingExtra = (existing.config.extra ?? {}) as Record<string, unknown>;
+          const remainingExtra = { ...existingExtra };
+          delete remainingExtra.appToken;
           await deps.channelManager.updateConfig(channelId, {
             enabled: false,
             token: undefined,
+            extra: remainingExtra,
           });
 
           return {

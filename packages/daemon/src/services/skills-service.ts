@@ -131,10 +131,36 @@ function normalizeSkillDirName(name: string): string {
 
 function parseSkillReferences(output: string): string[] {
   const refs = new Set<string>();
-  const refRegex = /([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+)/g;
+  const add = (raw: string) => {
+    const parsed = parseRepositoryReference(raw);
+    if (!parsed) return;
+    refs.add(normalizeReference(parsed));
+  };
+
+  const urlRegex =
+    /(?:https?:\/\/)?skills\.sh\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)?/gi;
+  const atRefRegex =
+    /([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+)/g;
+  const slashRefRegex =
+    /([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+)/g;
+  const repoOnlyRegex =
+    /([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+)/g;
+
   let match: RegExpExecArray | null;
-  while ((match = refRegex.exec(output)) !== null) {
-    refs.add(match[1]!);
+  while ((match = urlRegex.exec(output)) !== null) {
+    add(match[0]!);
+  }
+  while ((match = atRefRegex.exec(output)) !== null) {
+    add(match[1]!);
+  }
+  while ((match = slashRefRegex.exec(output)) !== null) {
+    const parts = match[1]!.split("/");
+    if (parts.length === 3) {
+      add(`${parts[0]}/${parts[1]}@${parts[2]}`);
+    }
+  }
+  while ((match = repoOnlyRegex.exec(output)) !== null) {
+    add(match[1]!);
   }
   return [...refs].sort((a, b) => a.localeCompare(b));
 }

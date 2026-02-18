@@ -19,6 +19,8 @@ import { swarmCommand } from "./commands/swarm.js";
 import { chatCommand } from "./commands/chat.js";
 import { pluginCommand } from "./commands/plugin.js";
 import { quickstartCommand } from "./commands/quickstart.js";
+import { channelsCommand } from "./commands/channels.js";
+import { pairingCommand } from "./commands/pairing.js";
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -45,6 +47,8 @@ export function buildProgram(): Command {
   program.addCommand(swarmCommand());
   program.addCommand(agentCommand());
   program.addCommand(chatCommand());
+  program.addCommand(channelsCommand());
+  program.addCommand(pairingCommand());
   program.addCommand(configCommand());
   program.addCommand(pluginCommand());
   program.addCommand(doctorCommand());

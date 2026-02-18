@@ -5,21 +5,40 @@
 <h1 align="center">Undoable</h1>
 
 <p align="center">
-  <strong>Security-first, local-first AI runtime with undoable actions and swarm workflows.</strong>
+  <strong>Security-first, local-first AI runtime with undoable actions, channel adapters, and SWARM workflows.</strong>
 </p>
 
 <p align="center">
-  <em>Undo anything. Ship with confidence.</em>
+  <em>Everything the AI does is recorded and can be undone.</em>
 </p>
 
-## What It Is
+## Table of Contents
 
-Undoable is an AI runtime built around safe execution:
+- [What Undoable Is](#what-undoable-is)
+- [Core Guarantees](#core-guarantees)
+- [Requirements](#requirements)
+- [Install](#install)
+- [First Run](#first-run)
+- [UI and API Endpoints](#ui-and-api-endpoints)
+- [CLI Overview](#cli-overview)
+- [Undo and Redo](#undo-and-redo)
+- [SWARM Workflows](#swarm-workflows)
+- [Skills](#skills)
+- [Channels and Pairing](#channels-and-pairing)
+- [Economy Mode and Spend Controls](#economy-mode-and-spend-controls)
+- [Media Reliability (Images and Audio)](#media-reliability-images-and-audio)
+- [Configuration](#configuration)
+- [Manual Setup from Source](#manual-setup-from-source)
+- [Docker Operations](#docker-operations)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [Project Layout](#project-layout)
+- [Security](#security)
+- [License](#license)
 
-- Every action is recorded
-- Risky actions can be gated by approval
-- Runs can be undone and replayed
-- Workflows can be orchestrated via SWARM nodes
+## What Undoable Is
+
+Undoable is an agent runtime for people who want real execution power without losing control.
 
 Core loop:
 
@@ -27,62 +46,83 @@ Core loop:
 PLAN -> EXECUTE -> REVIEW -> APPLY -> UNDO
 ```
 
+Undoable includes:
+
+- A daemon API and tool runtime
+- A web UI for chat, history, undo/redo, skills, channels, and SWARM/canvas
+- A CLI (`nrn`, alias `undoable`) for onboarding, operations, and diagnostics
+- Persistent local state in `~/.undoable`
+
+## Core Guarantees
+
+`Undo Guarantee` (strict mode) is on by default.
+
+- Every tool call is recorded
+- Undoable mutations are restorable via undo/redo
+- Non-undoable mutate/exec actions are blocked in strict mode
+- You can switch to power mode (allow irreversible actions) when needed
+
+Important scope boundary:
+
+- File edits and supported tool mutations can be undone
+- External side effects (for example third-party APIs, sent messages, remote systems) may not be fully reversible
+- Use `undo(action:"list")` / `nrn undo list` to inspect `recordedCount`, `undoable`, `redoable`, and `nonUndoableRecent`
+
 ## Requirements
 
-- Node.js `22+`
-- pnpm `10+`
+- Node.js `>=22.12.0`
+- pnpm `>=10`
 - PostgreSQL `16+` (native mode)
 - Docker + Docker Compose (docker mode)
 
 ## Install
 
-### Native (recommended for local development)
+### Native Install
 
 ```bash
 curl -fsSL https://undoable.xyz/install.sh | bash
 ```
 
-What this does:
+This installer:
 
-- Installs prerequisites (if missing)
-- Clones/updates Undoable
-- Builds the project
-- Bootstraps built-in skills (`github`, `web-search`) into `~/.undoable/skills`
-- Creates CLI wrappers (`undoable`, `nrn`, `undoable-daemon`, `undoable-dev`)
-- Applies DB schema (unless `--skip-db`)
+- Installs prerequisites when needed (Node, pnpm, Git, PostgreSQL)
+- Clones/updates the repository
+- Builds project artifacts
+- Bootstraps built-in skills into `~/.undoable/skills`
+- Creates CLI wrappers: `undoable`, `nrn`, `undoable-daemon`, `undoable-dev`
+- Applies DB schema unless `--skip-db`
 
-### Docker
+### Docker Install
 
 ```bash
 curl -fsSL https://undoable.xyz/install.sh | bash -s -- --docker
 ```
 
-What this does:
+This installer:
 
-- Clones/updates Undoable
+- Clones/updates the repository
 - Builds and starts Docker services
-- Applies DB schema in the daemon container
-- Persists daemon skill state in a Docker volume (`undoable-home`)
+- Applies DB schema in daemon container
+- Persists Undoable home (including skills) in Docker volume `undoable-home`
 
-Built-in skills are bootstrapped automatically on daemon startup (first run).
-
-### Installer options
+### Installer Options
 
 ```bash
 curl -fsSL https://undoable.xyz/install.sh | bash -s -- --help
 ```
 
-Useful options:
+Common options:
 
 - `--docker`
-- `--git-dir <path>`
+- `--git-dir <path>` (or `--dir <path>`)
 - `--no-git-update`
 - `--skip-db`
 - `--dry-run`
+- `--verbose`
 
 ## First Run
 
-### Native
+### Start App (daemon + UI)
 
 ```bash
 undoable start
@@ -90,32 +130,277 @@ undoable start
 nrn start
 ```
 
-For development hot reload:
-
-```bash
-undoable-dev
-```
-
-Daemon only:
-
-```bash
-undoable-daemon
-```
-
-Start directly in economy mode:
+### Start in Economy Mode
 
 ```bash
 undoable start --economy
 ```
 
-### Docker
+### Daemon Only
+
+```bash
+undoable start --no-ui
+# or
+undoable-daemon
+```
+
+### Development Hot Reload
+
+```bash
+undoable-dev
+```
+
+### Onboarding
+
+```bash
+undoable onboard
+# or
+nrn onboard
+
+# one-command guided defaults
+nrn quickstart
+```
+
+## UI and API Endpoints
+
+- UI: `http://localhost:5173`
+- API: `http://localhost:7433`
+- Health: `http://localhost:7433/health`
+
+## CLI Overview
+
+Show all commands:
+
+```bash
+nrn --help
+```
+
+Main command groups:
+
+- `setup`, `quickstart`, `onboard`, `start`, `status`, `doctor`, `daemon`
+- `chat`, `agent`, `swarm`, `run`, `undo`
+- `plan`, `shadow`, `apply`, `verify`, `receipt`, `stream`
+- `channels`, `pairing`, `config`, `plugin`
+
+Useful daemon lifecycle commands:
+
+```bash
+nrn daemon start
+nrn daemon status
+nrn daemon stop
+```
+
+Interactive terminal chat:
+
+```bash
+nrn chat --economy
+```
+
+Inside chat:
+
+- `/help`
+- `/status`
+- `/sessions`
+- `/economy on|off|status`
+- `/thinking on|off`
+- `/abort`
+
+## Undo and Redo
+
+CLI:
+
+```bash
+nrn undo list
+nrn undo last 2
+nrn undo one <action-id>
+nrn undo all
+```
+
+Tool API (`undo` tool) supports:
+
+- `list`
+- `one`
+- `last`
+- `all`
+- `redo_one`
+- `redo_last`
+- `redo_all`
+
+`redo_one` can run without an `id` and auto-select the most recent redoable action.
+
+## SWARM Workflows
+
+Undoable supports multi-node SWARM workflows with editable nodes and edges.
+
+CLI examples:
+
+```bash
+nrn swarm list
+nrn swarm create --name "sdr-automation"
+nrn swarm add-node <workflowId> --name source --prompt "Collect new leads"
+nrn swarm add-node <workflowId> --name outreach --prompt "Send welcome email"
+nrn swarm link <workflowId> --from <sourceNodeId> --to <outreachNodeId>
+```
+
+Canvas and SWARM views in UI are for visual design, run tracing, and node-level edits.
+
+## Skills
+
+Built-in skills are bootstrapped by installer/startup:
+
+- `github`
+- `web-search`
+
+Skill sources discovered by daemon include:
+
+- `~/.undoable/skills`
+- `~/.codex/skills`
+- `~/.claude/skills`
+- `~/.cursor/skills`
+- `~/.cursor/skills-cursor`
+- `~/.windsurf/skills`
+- `~/.codeium/windsurf/skills`
+- `~/.opencode/skills`
+
+If CLI-detected installed skills do not show as cards yet, use Skills `Refresh` and check local skill directories.
+
+## Channels and Pairing
+
+Current channel adapters:
+
+- `telegram`
+- `discord`
+- `slack`
+- `whatsapp`
+
+Status/probe/capabilities/logs/resolve surfaces:
+
+```bash
+nrn channels status --details
+nrn channels probe --channel telegram
+nrn channels capabilities
+nrn channels logs --channel slack --limit 100
+nrn channels resolve --channel discord "#sales" "@owner"
+```
+
+Pairing approval lifecycle:
+
+```bash
+nrn pairing list
+nrn pairing approve --channel telegram --code ABC123
+nrn pairing reject --request-id <id>
+nrn pairing revoke --channel telegram --user-id <user-id>
+```
+
+## Economy Mode and Spend Controls
+
+Economy mode is optional and off by default.
+
+When enabled, Undoable reduces token usage by tightening runtime budgets and context policies while preserving core functionality.
+
+Runtime controls:
+
+- UI header toggle (`Economy`)
+- `nrn start --economy`
+- `nrn chat --economy`
+- `/economy on|off|status` in chat
+
+Budget guardrails (rolling 24h):
+
+- `UNDOABLE_DAILY_BUDGET_USD`
+- `UNDOABLE_DAILY_BUDGET_AUTO_PAUSE`
+
+## Media Reliability (Images and Audio)
+
+Defaults:
+
+- Request body limit: `32MB` (`UNDOABLE_BODY_LIMIT_MB`)
+- Attachment limit: `10MB` (`UNDOABLE_ATTACHMENT_MAX_MB`)
+- STT audio limit: `20MB` (`UNDOABLE_STT_MAX_AUDIO_MB`)
+
+If uploads fail with `413`:
+
+1. Increase `UNDOABLE_BODY_LIMIT_MB`
+2. Optionally increase `UNDOABLE_ATTACHMENT_MAX_MB` and `UNDOABLE_STT_MAX_AUDIO_MB`
+3. Restart daemon
+
+## Configuration
+
+Copy and edit:
+
+```bash
+cp .env.example .env
+```
+
+Minimal required:
+
+```bash
+DATABASE_URL=postgresql://undoable:undoable_dev@localhost:5432/undoable
+OPENAI_API_KEY=sk-...
+```
+
+Common server/runtime:
+
+```bash
+NRN_PORT=7433
+NODE_ENV=development
+UNDOABLE_ALLOW_IRREVERSIBLE_ACTIONS=0
+```
+
+Provider keys (any one is enough to start):
+
+- `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `GOOGLE_API_KEY`
+- `DEEPSEEK_API_KEY`
+- `GROQ_API_KEY`
+
+Voice keys (optional):
+
+- `ELEVENLABS_API_KEY`
+- `DEEPGRAM_API_KEY`
+
+Channel keys (optional):
+
+- `WHATSAPP_PHONE_ID`
+- `WHATSAPP_TOKEN`
+- `TELEGRAM_BOT_TOKEN`
+- `DISCORD_BOT_TOKEN`
+- `SLACK_BOT_TOKEN`
+
+## Manual Setup from Source
+
+```bash
+git clone https://github.com/neurana/undoable.git
+cd undoable
+pnpm install
+cp .env.example .env
+```
+
+Apply schema and run:
+
+```bash
+pnpm db:push
+pnpm dev
+```
+
+Build production artifacts:
+
+```bash
+pnpm build
+pnpm start
+```
+
+## Docker Operations
+
+From repository root:
 
 ```bash
 cd docker
 ./start.sh --build
 ```
 
-Other Docker commands:
+Other operations:
 
 ```bash
 ./start.sh --logs
@@ -124,125 +409,42 @@ Other Docker commands:
 ./start.sh --help
 ```
 
-## Access Points
+## Troubleshooting
 
-- UI: `http://localhost:5173`
-- API: `http://localhost:7433`
-- Health: `http://localhost:7433/health`
+### 1) Skills installed but not visible in Installed tab
 
-## Onboarding and CLI
+- Click Skills `Refresh`
+- Confirm entries with Skills CLI panel (`list`)
+- Check skill folders under supported directories listed in [Skills](#skills)
 
-Open onboarding wizard:
+### 2) `413 Request body is too large`
 
-```bash
-undoable onboard
-# alias
-nrn onboard
-```
+- Increase `UNDOABLE_BODY_LIMIT_MB`
+- For voice/images also verify `UNDOABLE_STT_MAX_AUDIO_MB` and `UNDOABLE_ATTACHMENT_MAX_MB`
+- Restart daemon
 
-Show all CLI commands:
+### 3) Tool call blocked by Undo Guarantee mode
 
-```bash
-undoable --help
-```
-
-Interactive terminal chat economy controls:
+- Keep strict mode for safest behavior
+- If you intentionally need irreversible actions, enable them in run settings or set:
 
 ```bash
-undoable chat --economy
-# inside chat:
-/economy on
-/economy off
-/economy status
+UNDOABLE_ALLOW_IRREVERSIBLE_ACTIONS=1
 ```
 
-Main command groups:
+### 4) Persistence issues
 
-- `setup`, `quickstart`, `onboard`, `start`, `status`, `doctor`
-- `chat`, `agent`, `swarm`, `run`, `undo`
-- `plan`, `shadow`, `apply`, `verify`, `receipt`, `stream`
-- `config`, `plugin`
+- Validate `DATABASE_URL`
+- Run `pnpm db:push`
+- Check daemon logs for DB initialization warnings
 
-## Environment Variables
-
-Minimal:
+### 5) Docker services up but UI cannot call API
 
 ```bash
-DATABASE_URL=postgresql://undoable:undoable_dev@localhost:5432/undoable
-OPENAI_API_KEY=sk-...
+cd docker
+./start.sh --down
+./start.sh --build
 ```
-
-Optional provider keys:
-
-- `ANTHROPIC_API_KEY`
-- `GOOGLE_API_KEY`
-- `DEEPSEEK_API_KEY`
-- `GROQ_API_KEY`
-
-Server:
-
-```bash
-NRN_PORT=7433
-NODE_ENV=development
-```
-
-Economy mode controls (optional):
-
-```bash
-UNDOABLE_ECONOMY_MODE=1
-UNDOABLE_ECONOMY_MAX_ITERATIONS=6
-UNDOABLE_ECONOMY_TOOL_RESULT_CHARS=8000
-UNDOABLE_ECONOMY_CONTEXT_MAX_TOKENS=64000
-UNDOABLE_ECONOMY_CONTEXT_THRESHOLD=0.55
-```
-
-Media upload limit (fixes 413 for large files):
-
-```bash
-UNDOABLE_BODY_LIMIT_MB=64
-# or
-UNDOABLE_BODY_LIMIT_BYTES=67108864
-```
-
-## Manual Setup (from source)
-
-```bash
-git clone https://github.com/neurana/undoable.git
-cd undoable
-pnpm install
-
-# create .env (edit keys)
-cat > .env << 'ENVEOF'
-DATABASE_URL=postgresql://undoable:undoable_dev@localhost:5432/undoable
-OPENAI_API_KEY=sk-your-key-here
-ENVEOF
-
-# create/update DB schema
-pnpm db:push
-
-# run
-pnpm dev
-# or
-./dev.sh
-```
-
-## Reliability Notes
-
-- If image/audio uploads fail with `413 Request body is too large`, increase `UNDOABLE_BODY_LIMIT_MB` and restart daemon.
-- If chat history or jobs do not persist, check `DATABASE_URL` and run `pnpm db:push`.
-- If Docker services are up but UI cannot talk to API, restart with `./start.sh --down && ./start.sh --build`.
-
-## Economy Mode
-
-Economy mode is optional and off by default. Full-power behavior remains the default.
-
-When enabled, Undoable reduces token burn by:
-
-- Capping effective iterations per request
-- Tightening tool-result context size
-- Compacting context earlier
-- Disabling thinking output/costly reasoning paths
-- Using a shorter runtime system prompt profile
 
 ## Development
 
@@ -253,7 +455,7 @@ pnpm test
 pnpm build
 ```
 
-Database commands:
+Database helpers:
 
 ```bash
 pnpm db:push
@@ -266,18 +468,25 @@ pnpm db:studio
 
 ```text
 packages/
-  core/      # engine, scheduler, undo primitives
+  core/      # runtime engine, scheduler, undo primitives
   daemon/    # API routes, services, tool runtime
-  cli/       # terminal commands
+  cli/       # terminal command surface
   shared/    # shared types/utilities
 ui/          # web UI (Lit + Vite)
 docker/      # compose files and launcher
-install.sh   # one-line installer entrypoint
+install.sh   # one-line installer
 ```
 
 ## Security
 
-Undoable can execute commands and modify files. Run with least privilege and review approval/sandbox settings before enabling broad tool access.
+Undoable can execute commands, read/write files, and call external systems. Use least privilege and approvals for sensitive workflows.
+
+Recommended posture:
+
+- Keep `Undo Guarantee` strict by default
+- Keep approvals on for mutation-heavy workflows
+- Use sandboxing/isolation where possible
+- Review third-party skills before enabling
 
 ## License
 

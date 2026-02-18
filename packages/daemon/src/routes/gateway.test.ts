@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import Fastify from "fastify";
 import type { JobCreate, JobPatch, ScheduledJob } from "@undoable/core";
 import { DEFAULT_CONFIG } from "@undoable/core";
+import type { ChannelId } from "../channels/types.js";
 import type { ConnectorConfig } from "../connectors/types.js";
 import { gatewayRoutes } from "./gateway.js";
 
@@ -200,6 +201,76 @@ describe("gateway routes", () => {
       return row.config;
     },
     stopChannel: async (_channelId: string) => { },
+    probeChannel: async (channelId: ChannelId) => ({
+      channelId,
+      probedAt: Date.now(),
+      connected: channelState[channelId as keyof typeof channelState]?.status.connected ?? false,
+      ok: true,
+      checks: [{ name: "mock_probe", ok: true, severity: "info" as const, message: "ok" }],
+    }),
+    listCapabilities: (channelId?: ChannelId) => {
+      const all: Array<{
+        channelId: ChannelId;
+        name: string;
+        auth: string[];
+        supports: string[];
+        toolActions: string[];
+        notes: string[];
+      }> = [
+        {
+          channelId: "telegram",
+          name: "Telegram",
+          auth: ["bot_token"],
+          supports: ["dm", "groups"],
+          toolActions: ["send_message"],
+          notes: ["mock"],
+        },
+        {
+          channelId: "discord",
+          name: "Discord",
+          auth: ["bot_token"],
+          supports: ["dm", "groups"],
+          toolActions: ["send_message"],
+          notes: ["mock"],
+        },
+      ];
+      return channelId ? all.filter((entry) => entry.channelId === channelId) : all;
+    },
+    listLogs: (channelId?: ChannelId, limit = 200) =>
+      [{ id: "log-1", ts: Date.now(), channelId: "telegram" as ChannelId, level: "info" as const, event: "test", message: "hello" }]
+        .filter((entry) => !channelId || entry.channelId === channelId)
+        .slice(0, limit),
+    resolveTargets: async (_channelId: ChannelId, entries: string[]) =>
+      entries.map((entry) => ({ input: entry, resolved: entry, type: "user" as const, confidence: "high" as const })),
+    listPairing: (_channelId?: ChannelId) => ({
+      pending: [
+        {
+          requestId: "req-1",
+          channelId: "telegram" as ChannelId,
+          userId: "u-1",
+          chatId: "c-1",
+          code: "ABC123",
+          status: "pending" as const,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          promptCount: 1,
+        },
+      ],
+      approved: [
+        {
+          channelId: "telegram" as ChannelId,
+          userId: "u-2",
+          approvedAt: Date.now(),
+          requestId: "req-0",
+        },
+      ],
+      recent: [],
+    }),
+    approvePairing: (_params: { requestId?: string; channelId?: ChannelId; code?: string; approvedBy?: string }) =>
+      ({ ok: true, request: { requestId: "req-1", channelId: "telegram" as ChannelId, userId: "u-1", chatId: "c-1", code: "ABC123", status: "approved" as const, createdAt: Date.now(), updatedAt: Date.now(), promptCount: 1 }, approval: { channelId: "telegram" as ChannelId, userId: "u-1", approvedAt: Date.now(), requestId: "req-1" } }),
+    rejectPairing: (_params: { requestId?: string; channelId?: ChannelId; code?: string; rejectedBy?: string }) =>
+      ({ ok: true, request: { requestId: "req-1", channelId: "telegram" as ChannelId, userId: "u-1", chatId: "c-1", code: "ABC123", status: "rejected" as const, createdAt: Date.now(), updatedAt: Date.now(), promptCount: 1 } }),
+    revokePairing: (_channelId: ChannelId, _userId: string) => ({ ok: true, removed: { channelId: "telegram" as ChannelId, userId: "u-2", approvedAt: Date.now() } }),
   };
 
   let headless = true;
@@ -1074,6 +1145,100 @@ describe("gateway routes", () => {
     expect(body.ok).toBe(true);
     expect(body.result.channel).toBe("telegram");
     expect(body.result.cleared).toBe(true);
+  });
+
+  it("handles channels.probe", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "channels.probe", params: { deep: true } },
+    });
+    const body = response.json();
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.result.channelOrder).toContain("telegram");
+    expect(body.result.probes.telegram.ok).toBe(true);
+  });
+
+  it("handles channels.capabilities", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "channels.capabilities", params: {} },
+    });
+    const body = response.json();
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.result.channelOrder).toContain("telegram");
+    expect(body.result.capabilities.telegram.name).toBe("Telegram");
+  });
+
+  it("handles channels.logs", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "channels.logs", params: { channel: "telegram", limit: 20 } },
+    });
+    const body = response.json();
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.result.channel).toBe("telegram");
+    expect(body.result.logs.length).toBeGreaterThan(0);
+  });
+
+  it("handles channels.resolve", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "channels.resolve", params: { channel: "telegram", entries: ["@demo"] } },
+    });
+    const body = response.json();
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.result.channel).toBe("telegram");
+    expect(body.result.resolved[0].resolved).toBe("@demo");
+  });
+
+  it("handles channel pairing lifecycle methods", async () => {
+    const list = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "pairing.list", params: { channel: "telegram" } },
+    });
+    const listBody = list.json();
+    expect(list.statusCode).toBe(200);
+    expect(listBody.ok).toBe(true);
+    expect(listBody.result.pending.length).toBeGreaterThan(0);
+
+    const approve = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "pairing.approve", params: { requestId: "req-1" } },
+    });
+    const approveBody = approve.json();
+    expect(approve.statusCode).toBe(200);
+    expect(approveBody.ok).toBe(true);
+    expect(approveBody.result.ok).toBe(true);
+
+    const reject = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "pairing.reject", params: { requestId: "req-1" } },
+    });
+    const rejectBody = reject.json();
+    expect(reject.statusCode).toBe(200);
+    expect(rejectBody.ok).toBe(true);
+    expect(rejectBody.result.ok).toBe(true);
+
+    const revoke = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "pairing.revoke", params: { channel: "telegram", userId: "u-2" } },
+    });
+    const revokeBody = revoke.json();
+    expect(revoke.statusCode).toBe(200);
+    expect(revokeBody.ok).toBe(true);
+    expect(revokeBody.result.ok).toBe(true);
   });
 
   it("handles browser.request", async () => {

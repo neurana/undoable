@@ -165,6 +165,27 @@ describe("UndoService", () => {
     expect(undoService.listUndoable().length).toBe(1);
   });
 
+  it("removes successfully undone actions from listUndoable", async () => {
+    const filePath = path.join(tmpDir, "stateful.txt");
+    await fs.writeFile(filePath, "before");
+
+    const action = await actionLog.record({
+      toolName: "edit_file",
+      category: "mutate",
+      args: { path: filePath },
+      approval: "auto-approved",
+      undoable: true,
+      undoData: { type: "file", path: filePath, previousContent: "before", previousExisted: true },
+    });
+    await fs.writeFile(filePath, "after");
+    await actionLog.complete(action.id, { edited: true });
+
+    expect(undoService.listUndoable().map((a) => a.id)).toContain(action.id);
+    const undone = await undoService.undoAction(action.id);
+    expect(undone.success).toBe(true);
+    expect(undoService.listUndoable().map((a) => a.id)).not.toContain(action.id);
+  });
+
   it("redo restores content after undo", async () => {
     const filePath = path.join(tmpDir, "redo.txt");
     await fs.writeFile(filePath, "before");
@@ -190,6 +211,31 @@ describe("UndoService", () => {
     const redone = await undoService.redoAction(action.id);
     expect(redone.success).toBe(true);
     expect(await fs.readFile(filePath, "utf-8")).toBe("after");
+  });
+
+  it("accepts minor action-id typos when matching a unique action", async () => {
+    const filePath = path.join(tmpDir, "typo.txt");
+    await fs.writeFile(filePath, "before");
+
+    const action = await actionLog.record({
+      toolName: "edit_file",
+      category: "mutate",
+      args: { path: filePath },
+      approval: "auto-approved",
+      undoable: true,
+      undoData: { type: "file", path: filePath, previousContent: "before", previousExisted: true },
+    });
+    await fs.writeFile(filePath, "after");
+    await actionLog.complete(action.id, { edited: true });
+
+    const typoId = `${action.id}x`;
+    const undone = await undoService.undoAction(typoId);
+    expect(undone.success).toBe(true);
+    expect(undone.note).toContain("Matched action id");
+
+    const redone = await undoService.redoAction(typoId);
+    expect(redone.success).toBe(true);
+    expect(redone.note).toContain("Matched action id");
   });
 
   it("redoAll reapplies multiple undone actions", async () => {

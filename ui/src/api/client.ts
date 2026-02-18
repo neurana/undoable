@@ -49,10 +49,42 @@ export const api = {
   channels: {
     list: () => request<ChannelItem[]>("/channels"),
     get: (id: string) => request<ChannelItem>(`/channels/${id}`),
-    update: (id: string, patch: { enabled?: boolean; token?: string; extra?: Record<string, unknown> }) =>
+    update: (
+      id: string,
+      patch: {
+        enabled?: boolean;
+        token?: string;
+        extra?: Record<string, unknown>;
+        allowDMs?: boolean;
+        allowGroups?: boolean;
+        userAllowlist?: string[];
+        userBlocklist?: string[];
+        rateLimit?: number;
+        maxMediaBytes?: number;
+      },
+    ) =>
       request<ChannelConfigItem>(`/channels/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
     start: (id: string) => request<{ started: boolean }>(`/channels/${id}/start`, { method: "POST" }),
     stop: (id: string) => request<{ stopped: boolean }>(`/channels/${id}/stop`, { method: "POST" }),
+    probe: (channel?: string, deep = true) =>
+      gatewayRequest("channels.probe", channel ? { channel, deep } : { deep }),
+    capabilities: (channel?: string) =>
+      gatewayRequest("channels.capabilities", channel ? { channel } : {}),
+    logs: (opts?: { channel?: string; limit?: number }) =>
+      gatewayRequest("channels.logs", {
+        ...(opts?.channel ? { channel: opts.channel } : {}),
+        ...(typeof opts?.limit === "number" ? { limit: opts.limit } : {}),
+      }),
+    resolve: (channel: string, entries: string[], kind: "auto" | "user" | "group" = "auto") =>
+      gatewayRequest("channels.resolve", { channel, entries, kind }),
+    pairingList: (channel?: string) =>
+      gatewayRequest("pairing.list", channel ? { channel } : {}),
+    pairingApprove: (input: { requestId?: string; channel?: string; code?: string; approvedBy?: string }) =>
+      gatewayRequest("pairing.approve", input),
+    pairingReject: (input: { requestId?: string; channel?: string; code?: string; rejectedBy?: string }) =>
+      gatewayRequest("pairing.reject", input),
+    pairingRevoke: (channel: string, userId: string) =>
+      gatewayRequest("pairing.revoke", { channel, userId }),
   },
   sessions: {
     list: (opts?: { limit?: number; active_minutes?: number; include_internal?: boolean }) => {
@@ -372,6 +404,12 @@ export type ChannelConfigItem = {
   enabled: boolean;
   token?: string;
   extra?: Record<string, unknown>;
+  allowDMs?: boolean;
+  allowGroups?: boolean;
+  userAllowlist?: string[];
+  userBlocklist?: string[];
+  rateLimit?: number;
+  maxMediaBytes?: number;
 };
 
 export type ChannelStatusItem = {
@@ -382,9 +420,27 @@ export type ChannelStatusItem = {
   qrDataUrl?: string;
 };
 
+export type ChannelSnapshotItem = {
+  channelId: string;
+  configured: boolean;
+  enabled: boolean;
+  connected: boolean;
+  status: "connected" | "awaiting_scan" | "error" | "offline";
+  dmPolicy: "pairing" | "allowlist" | "open" | "disabled";
+  allowlistCount: number;
+  error?: string;
+  diagnostics: Array<{
+    code: string;
+    severity: "info" | "warn" | "error";
+    message: string;
+    recovery?: string;
+  }>;
+};
+
 export type ChannelItem = {
   config: ChannelConfigItem;
   status: ChannelStatusItem;
+  snapshot?: ChannelSnapshotItem;
 };
 
 type GatewayRpcResponse<T> =
@@ -455,8 +511,16 @@ export type UndoResult = {
 };
 
 export type UndoListResult = {
+  recordedCount?: number;
   undoable: UndoActionSummary[];
   redoable: UndoActionSummary[];
+  nonUndoableRecent?: Array<{
+    id: string;
+    tool: string;
+    category: string;
+    startedAt: string;
+    error?: string | null;
+  }>;
 };
 
 export type UndoOneResult = {

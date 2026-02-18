@@ -5,3 +5,5 @@ export { createTelegramChannel } from "./telegram.js";
 export { createDiscordChannel } from "./discord.js";
 export { createSlackChannel } from "./slack.js";
 export { createWhatsAppChannel } from "./whatsapp.js";
+export { buildChannelStatusSnapshot } from "./status-snapshot.js";
+export type { ChannelStatusSnapshot, ChannelStatusDiagnostic, ChannelDmPolicy } from "./status-snapshot.js";

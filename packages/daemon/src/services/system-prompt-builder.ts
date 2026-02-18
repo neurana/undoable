@@ -13,6 +13,7 @@ export type SystemPromptParams = {
   toolDefinitions?: ToolDefinition[];
   contextFiles?: ContextFile[];
   economyMode?: boolean;
+  undoGuaranteeEnabled?: boolean;
   workspaceDir?: string;
   runtime?: {
     model?: string;
@@ -23,10 +24,17 @@ export type SystemPromptParams = {
   };
 };
 
-function buildIdentitySection(agentName?: string): string[] {
+function buildIdentitySection(
+  agentName?: string,
+  undoGuaranteeEnabled = true,
+): string[] {
   const name = agentName?.trim() || "Undoable";
+  const modeLine = undoGuaranteeEnabled
+    ? "Undo Guarantee mode is strict: irreversible mutate/exec tools are blocked unless explicitly enabled."
+    : "Irreversible actions are allowed in this run; prefer undoable operations when possible.";
   return [
     `You are ${name}, a personal AI assistant running inside Undoable — a workflow system where every action is recorded and can be undone.`,
+    modeLine,
     "",
   ];
 }
@@ -349,8 +357,9 @@ function buildContextFilesSection(files?: ContextFile[]): string[] {
 
 export function buildSystemPrompt(params: SystemPromptParams): string {
   const economyMode = params.economyMode === true;
+  const undoGuaranteeEnabled = params.undoGuaranteeEnabled !== false;
   const lines = [
-    ...buildIdentitySection(params.agentName),
+    ...buildIdentitySection(params.agentName, undoGuaranteeEnabled),
     ...buildSafetySection(),
     ...buildToolingSection(params.toolDefinitions, economyMode),
     ...buildToolCallStyleSection(economyMode),

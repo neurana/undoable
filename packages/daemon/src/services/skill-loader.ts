@@ -137,15 +137,31 @@ export function loadSkillsFromDir(dir: string, source: LoadedSkill["source"]): L
 // ---------- multi-source loader ----------
 
 const UNDOABLE_DIR = path.join(os.homedir(), ".undoable");
+const DEFAULT_AGENT_SKILLS_DIRS = [
+  path.join(os.homedir(), ".codex", "skills"),
+  path.join(os.homedir(), ".claude", "skills"),
+  path.join(os.homedir(), ".cursor", "skills"),
+  path.join(os.homedir(), ".cursor", "skills-cursor"),
+  path.join(os.homedir(), ".windsurf", "skills"),
+  path.join(os.homedir(), ".codeium", "windsurf", "skills"),
+  path.join(os.homedir(), ".opencode", "skills"),
+];
 
 export function loadAllSkills(opts?: {
   workspaceDir?: string;
   bundledDir?: string;
   userDir?: string;
+  extraUserDirs?: string[];
   includeBundled?: boolean;
 }): LoadedSkill[] {
   const bundledDir = opts?.bundledDir ?? path.join(path.resolve(import.meta.dirname, "../.."), "skills");
   const userDir = opts?.userDir ?? path.join(UNDOABLE_DIR, "skills");
+  const candidateUserDirs = opts?.extraUserDirs ?? (opts?.userDir ? [] : DEFAULT_AGENT_SKILLS_DIRS);
+  const userDirs = Array.from(
+    new Set(
+      [...candidateUserDirs, userDir].map((dir) => path.resolve(dir)),
+    ),
+  );
   const workspaceDir = opts?.workspaceDir;
   const includeBundled = opts?.includeBundled === true;
 
@@ -157,8 +173,10 @@ export function loadAllSkills(opts?: {
       merged.set(skill.name, skill);
     }
   }
-  for (const skill of loadSkillsFromDir(userDir, "user")) {
-    merged.set(skill.name, skill);
+  for (const dir of userDirs) {
+    for (const skill of loadSkillsFromDir(dir, "user")) {
+      merged.set(skill.name, skill);
+    }
   }
   if (workspaceDir) {
     const wsSkills = path.join(workspaceDir, "skills");
