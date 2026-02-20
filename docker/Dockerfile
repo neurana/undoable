@@ -1,5 +1,25 @@
 FROM node:22-bookworm-slim
 
+# Install system dependencies:
+# - Chromium + rendering libs for Playwright browser automation
+# - Common dev tools the daemon's exec-tool allowlist expects (git, python3, curl, jq, etc.)
+# - Build tools for native Node.js addons
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      chromium fonts-liberation libnss3 libatk-bridge2.0-0 libdrm2 \
+      libxkbcommon0 libgbm1 \
+      git curl wget jq \
+      python3 python3-pip \
+      bash procps openssh-client \
+      zip unzip xz-utils \
+      make g++ \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Tell Playwright to use system Chromium instead of downloading its own
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
 RUN corepack enable
 
 WORKDIR /app

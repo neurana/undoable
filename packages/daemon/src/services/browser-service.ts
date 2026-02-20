@@ -104,9 +104,16 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
 
   async function ensureContext(): Promise<BrowserContext> {
     if (!browser) {
+      const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined;
+      const chromiumArgs = launchArgs.length > 0 ? [...launchArgs] : [];
+      // System Chromium in Docker needs sandbox disabled
+      if (executablePath) {
+        chromiumArgs.push("--no-sandbox", "--disable-setuid-sandbox");
+      }
       browser = await chromium.launch({
         headless,
-        args: launchArgs.length > 0 ? launchArgs : undefined,
+        executablePath,
+        args: chromiumArgs.length > 0 ? chromiumArgs : undefined,
         proxy: proxyOpts ? { server: proxyOpts.server, username: proxyOpts.username, password: proxyOpts.password } : undefined,
       });
     }
