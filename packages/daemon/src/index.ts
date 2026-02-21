@@ -1,8 +1,8 @@
 import process from "node:process";
 import { createServer } from "./server/server.js";
 import { GracefulShutdown } from "./lifecycle/shutdown.js";
+import { resolveDaemonLaunchConfig } from "./lifecycle/launch-config.js";
 
-const DEFAULT_PORT = 7433;
 const gracefulShutdown = new GracefulShutdown();
 let activeServer: Awaited<ReturnType<typeof createServer>> | null = null;
 
@@ -32,12 +32,11 @@ process.on("unhandledRejection", (reason) => {
 });
 
 async function main() {
-  const port = Number(process.env.NRN_PORT) || DEFAULT_PORT;
-  const host =
-    process.env.NRN_HOST?.trim() ||
-    process.env.UNDOABLE_DAEMON_HOST?.trim() ||
-    undefined;
-  const server = await createServer({ port, host });
+  const launchConfig = resolveDaemonLaunchConfig(process.env);
+  const server = await createServer({
+    port: launchConfig.port,
+    host: launchConfig.host,
+  });
   activeServer = server;
   gracefulShutdown.register(async () => {
     await stopServer().catch(() => {});

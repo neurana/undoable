@@ -22,6 +22,7 @@ import { quickstartCommand } from "./commands/quickstart.js";
 import { channelsCommand } from "./commands/channels.js";
 import { pairingCommand } from "./commands/pairing.js";
 import { settingsCommand } from "./commands/settings.js";
+import { registerCliPreActionHooks } from "./preaction.js";
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -30,6 +31,8 @@ export function buildProgram(): Command {
     .name("nrn")
     .description("UNDOABLE — Swarm AI that actually executes")
     .version("0.1.0");
+
+  registerCliPreActionHooks(program);
 
   program.addCommand(setupCommand());
   program.addCommand(quickstartCommand());

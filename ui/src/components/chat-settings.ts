@@ -1,5 +1,5 @@
 import { LitElement, html, css, nothing } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { customElement, property, query, state } from "lit/decorators.js";
 import {
   api,
   type ChannelItem,
@@ -12,6 +12,7 @@ import {
   type DaemonSettingsSnapshot,
   type UndoListResult,
 } from "../api/client.js";
+import "./browser-control-panel.js";
 
 type ModelInfo = {
   id: string;
@@ -112,14 +113,15 @@ export class ChatSettings extends LitElement {
       background: var(--bg-base, #fff);
     }
     .standalone-header-title {
-      font-size: 14px;
-      font-weight: 600;
+      font-size: 15px;
+      font-weight: 700;
       color: var(--text-primary, #1a1a1a);
     }
     .standalone-header-sub {
-      font-size: 11px;
-      color: var(--text-tertiary, #999);
+      font-size: 12px;
+      color: var(--text-secondary, #5f6763);
       margin-top: 2px;
+      line-height: 1.4;
     }
     .standalone-badge {
       font-size: 10px;
@@ -147,7 +149,7 @@ export class ChatSettings extends LitElement {
     }
     .panel {
       background: var(--bg-base, #fff); border: 1px solid var(--border-divider, #e0e0e0);
-      border-radius: 16px; width: min(760px, 96vw); max-height: 84vh;
+      border-radius: 16px; width: min(880px, 96vw); max-height: 86vh;
       overflow: hidden; display: flex; flex-direction: column;
       box-shadow: 0 24px 48px rgba(0,0,0,0.15);
     }
@@ -155,7 +157,13 @@ export class ChatSettings extends LitElement {
       padding: 14px 16px; display: flex; align-items: center; gap: 10px;
       border-bottom: 1px solid var(--border-divider, #e0e0e0);
     }
-    .panel-title { font-size: 14px; font-weight: 600; color: var(--text-primary, #1a1a1a); flex: 1; }
+    .panel-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary, #1a1a1a);
+      flex: 1;
+      letter-spacing: -0.01em;
+    }
     .btn-close {
       width: 28px; height: 28px; border-radius: 8px; border: none;
       background: transparent; color: var(--text-tertiary, #999);
@@ -168,16 +176,35 @@ export class ChatSettings extends LitElement {
       overflow-x: auto;
       white-space: nowrap;
       scrollbar-width: thin;
+      background: var(--bg-base, #fff);
+      align-items: center;
+      min-height: 40px;
     }
     .tab {
       padding: 8px 12px; font-size: 12px; font-weight: 500;
       color: var(--text-tertiary, #999); cursor: pointer;
       border-bottom: 2px solid transparent; background: none; border-top: none; border-left: none; border-right: none;
       font-family: inherit;
+      flex: 0 0 auto;
+      line-height: 1.25;
+      display: inline-flex;
+      align-items: center;
+      min-height: 40px;
     }
-    .tab:hover { color: var(--text-secondary, #666); }
-    .tab[data-active] { color: var(--text-primary, #1a1a1a); border-bottom-color: var(--accent, #00D090); }
-    .panel-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
+    .tab:hover { color: var(--text-primary, #303734); }
+    .tab[data-active] {
+      color: var(--text-primary, #1a1a1a);
+      border-bottom-color: var(--accent, #00D090);
+      background: var(--accent-subtle, #e6f9f1);
+      border-top-left-radius: 8px;
+      border-top-right-radius: 8px;
+    }
+    .panel-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 18px 18px;
+      background: color-mix(in srgb, var(--bg-base, #fff) 93%, #f2f5f3);
+    }
 
     /* Models */
     .provider-group { margin-bottom: 12px; }
@@ -213,12 +240,23 @@ export class ChatSettings extends LitElement {
       display: flex; align-items: center; justify-content: space-between;
     }
     .btn-refresh {
-      padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border-strong, #ccc);
-      background: transparent; color: var(--text-tertiary, #999);
-      font-size: 9px; font-weight: 600; cursor: pointer; font-family: inherit;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border-strong, #ccc);
+      background: var(--surface-1, #fff);
+      color: var(--text-secondary, #4f5753);
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
       transition: all 120ms ease;
+      line-height: 1.2;
     }
-    .btn-refresh:hover { background: var(--wash, #f0f0f0); color: var(--text-secondary, #666); }
+    .btn-refresh:hover {
+      background: var(--wash, #f0f0f0);
+      color: var(--text-primary, #1a1a1a);
+      border-color: color-mix(in srgb, var(--mint-strong, #9ed9be) 58%, var(--border-strong, #ccc));
+    }
     .btn-refresh:disabled { opacity: 0.5; cursor: not-allowed; }
     .server-status {
       font-size: 10px; color: var(--text-tertiary, #999); padding: 2px 0;
@@ -234,48 +272,79 @@ export class ChatSettings extends LitElement {
     }
     .provider-row:last-child { border-bottom: none; }
     .provider-info { flex: 1; }
-    .provider-label { font-size: 12px; font-weight: 600; color: var(--text-primary, #1a1a1a); }
-    .provider-url { font-size: 10px; color: var(--text-tertiary, #999); }
+    .provider-label { font-size: 13px; font-weight: 700; color: var(--text-primary, #1a1a1a); }
+    .provider-url { font-size: 11px; color: var(--text-secondary, #6a736f); }
     .key-status {
-      font-size: 10px; padding: 2px 6px; border-radius: 4px;
-      font-weight: 600;
+      font-size: 10px;
+      padding: 3px 7px;
+      border-radius: 5px;
+      font-weight: 700;
+      line-height: 1.2;
     }
     .key-set { background: var(--accent-subtle, #e6f9f1); color: var(--accent, #00D090); }
     .key-missing { background: var(--wash, #f0f0f0); color: var(--text-tertiary, #999); }
     .btn-key {
-      padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border-strong, #ccc);
-      background: transparent; color: var(--text-secondary, #666);
-      font-size: 10px; font-weight: 600; cursor: pointer; font-family: inherit;
+      padding: 5px 11px;
+      border-radius: 7px;
+      border: 1px solid var(--border-strong, #c4cbc8);
+      background: var(--surface-1, #fff);
+      color: var(--text-secondary, #4f5753);
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+      min-height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1.2;
+      transition: all 120ms ease;
     }
     .form-select,
     .form-input {
       min-width: 140px;
-      padding: 6px 8px;
+      padding: 7px 10px;
       border-radius: 6px;
       border: 1px solid var(--border-strong, #ccc);
       background: var(--surface-1, #fff);
       color: var(--text-primary, #1a1a1a);
-      font-size: 11px;
+      font-size: 12px;
       font-family: inherit;
+      min-height: 34px;
+      line-height: 1.25;
     }
     .form-select:focus,
     .form-input:focus {
       outline: none;
       border-color: var(--accent, #00D090);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #00D090) 22%, transparent);
     }
-    .btn-key:hover { background: var(--wash, #f0f0f0); }
-    .btn-key.danger { color: var(--danger, #c0392b); border-color: var(--danger, #c0392b); }
-    .btn-key.danger:hover { background: rgba(192,57,43,0.05); }
+    .btn-key:hover {
+      background: var(--wash, #f0f0f0);
+      color: var(--text-primary, #1a1a1a);
+      border-color: color-mix(in srgb, var(--mint-strong, #9ed9be) 60%, var(--border-strong, #ccc));
+    }
+    .btn-key.danger {
+      color: var(--danger, #c0392b);
+      border-color: color-mix(in srgb, var(--danger, #c0392b) 58%, #d9b6b2);
+      background: rgba(192,57,43,0.06);
+    }
+    .btn-key.danger:hover { background: rgba(192,57,43,0.11); border-color: var(--danger, #c0392b); }
     .runtime-grid {
       display: grid;
       grid-template-columns: 1fr;
-      gap: 10px;
+      gap: 12px;
     }
     .runtime-card {
-      border: 1px solid var(--border-divider, #e0e0e0);
-      border-radius: 10px;
-      padding: 10px;
-      background: var(--surface-1, #fff);
+      border: 1px solid color-mix(in srgb, var(--border-divider, #e0e0e0) 88%, transparent);
+      border-radius: 12px;
+      padding: 12px;
+      background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--surface-1, #fff) 94%, #f9fbfa),
+        var(--surface-1, #fff)
+      );
+      box-shadow: 0 6px 16px rgba(17, 26, 23, 0.04);
     }
     .runtime-title {
       font-size: 11px;
@@ -283,25 +352,53 @@ export class ChatSettings extends LitElement {
       text-transform: uppercase;
       letter-spacing: 0.4px;
       color: var(--text-tertiary, #999);
-      margin-bottom: 8px;
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border-divider, #e0e0e0);
     }
     .runtime-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
-      margin-bottom: 8px;
+      margin-bottom: 0;
+      padding: 8px 0;
+      border-bottom: 1px solid color-mix(in srgb, var(--border-divider, #e0e0e0) 78%, transparent);
     }
-    .runtime-row:last-child { margin-bottom: 0; }
+    .runtime-row:last-child {
+      margin-bottom: 0;
+      border-bottom: none;
+      padding-bottom: 0;
+    }
     .runtime-label {
-      font-size: 12px;
-      font-weight: 600;
+      font-size: 13px;
+      font-weight: 700;
       color: var(--text-primary, #1a1a1a);
     }
     .runtime-sub {
-      font-size: 10px;
-      color: var(--text-tertiary, #999);
+      font-size: 11px;
+      color: var(--text-secondary, #6a736f);
       margin-top: 2px;
+      line-height: 1.4;
+    }
+    .runtime-row .form-select,
+    .runtime-row .form-input {
+      width: 220px;
+      max-width: 48%;
+      min-width: 170px;
+    }
+    .runtime-row .btn-key {
+      min-width: 108px;
+      justify-content: center;
+      text-align: center;
+      min-height: 30px;
+    }
+    .runtime-card-priority {
+      border-color: color-mix(in srgb, var(--mint-strong, #9ed9be) 58%, var(--border-divider, #e0e0e0));
+      box-shadow: 0 8px 18px rgba(46, 69, 57, 0.08);
+    }
+    .runtime-card-wide {
+      border-color: color-mix(in srgb, var(--border-strong, #cdd4d1) 82%, transparent);
     }
     .runtime-stats {
       display: grid;
@@ -322,7 +419,7 @@ export class ChatSettings extends LitElement {
       font-weight: 700;
     }
     .runtime-stat-value {
-      font-size: 12px;
+      font-size: 13px;
       color: var(--text-primary, #1a1a1a);
       font-weight: 600;
       margin-top: 3px;
@@ -370,17 +467,18 @@ export class ChatSettings extends LitElement {
     .advanced-search {
       flex: 1;
       min-width: 0;
-      padding: 6px 8px;
+      padding: 7px 10px;
       border-radius: 8px;
       border: 1px solid var(--border-strong, #ccc);
       background: var(--surface-1, #fff);
       color: var(--text-primary, #1a1a1a);
-      font-size: 11px;
+      font-size: 12px;
       font-family: inherit;
     }
     .advanced-search:focus {
       outline: none;
       border-color: var(--accent, #00D090);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #00D090) 22%, transparent);
     }
     .advanced-section {
       border: 1px solid var(--border-divider, #e0e0e0);
@@ -413,14 +511,15 @@ export class ChatSettings extends LitElement {
       padding-top: 0;
     }
     .advanced-label {
-      font-size: 12px;
-      font-weight: 600;
+      font-size: 13px;
+      font-weight: 700;
       color: var(--text-primary, #1a1a1a);
     }
     .advanced-sub {
-      font-size: 10px;
-      color: var(--text-tertiary, #999);
+      font-size: 11px;
+      color: var(--text-secondary, #6a736f);
       margin-top: 2px;
+      line-height: 1.4;
     }
     .advanced-code {
       font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -508,8 +607,28 @@ export class ChatSettings extends LitElement {
       padding: 8px;
     }
     @media (max-width: 700px) {
+      .runtime-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .runtime-row .form-select,
+      .runtime-row .form-input,
+      .runtime-row .btn-key {
+        width: 100%;
+        max-width: 100%;
+      }
       .advanced-split {
         grid-template-columns: 1fr;
+      }
+    }
+    @media (min-width: 900px) {
+      .runtime-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .runtime-card-priority,
+      .runtime-card-wide {
+        grid-column: 1 / -1;
       }
     }
     @media (max-width: 960px) {
@@ -701,6 +820,8 @@ export class ChatSettings extends LitElement {
   @state() private gatewayConfig: Record<string, unknown> | null = null;
   @state() private gatewayConfigDefault: Record<string, unknown> | null = null;
   @state() private configPatchText = "";
+  @query(".panel-body") private panelBodyEl?: HTMLElement;
+  @query(".tabs") private tabsEl?: HTMLElement;
   @state() private channelDrafts: Record<
     string,
     { allowlist: string; blocklist: string; rateLimit: string; maxMediaBytes: string }
@@ -718,6 +839,7 @@ export class ChatSettings extends LitElement {
   updated(changed: Map<string, unknown>) {
     if (changed.has("open") && this.open) {
       void this.loadData();
+      this.schedulePanelReset(true);
     }
     if (changed.has("tab") && this.open && this.tab === "advanced") {
       void this.refreshAdvanced();
@@ -728,6 +850,31 @@ export class ChatSettings extends LitElement {
     if (changed.has("tab") && this.open && this.tab === "config") {
       void this.refreshConfigConsole();
     }
+    if (changed.has("tab")) {
+      this.schedulePanelReset(false);
+    }
+  }
+
+  private schedulePanelReset(resetTabStrip: boolean) {
+    requestAnimationFrame(() => {
+      if (this.panelBodyEl) {
+        this.panelBodyEl.scrollTop = 0;
+      }
+      if (this.tabsEl) {
+        if (resetTabStrip) {
+          this.tabsEl.scrollLeft = 0;
+        } else {
+          const activeTab = this.renderRoot.querySelector(
+            ".tab[data-active]",
+          ) as HTMLElement | null;
+          activeTab?.scrollIntoView({
+            block: "nearest",
+            inline: "nearest",
+            behavior: "smooth",
+          });
+        }
+      }
+    });
   }
 
   private applyRunConfigSnapshot(config: ChatRunConfig) {
@@ -1340,7 +1487,7 @@ export class ChatSettings extends LitElement {
   private renderRuntime() {
     return html`
       <div class="runtime-grid">
-        <div class="runtime-card">
+        <div class="runtime-card runtime-card-priority">
           <div class="runtime-title">Execution</div>
           <div class="runtime-row">
             <div>
@@ -1565,7 +1712,7 @@ export class ChatSettings extends LitElement {
           </div>
         </div>
 
-        <div class="runtime-card">
+        <div class="runtime-card runtime-card-wide">
           <div class="runtime-title">Spend Guard</div>
           <div class="runtime-row">
             <div>
@@ -2572,16 +2719,15 @@ export class ChatSettings extends LitElement {
 
   private renderBrowser() {
     return html`
-      <div class="provider-row">
-        <div class="provider-info">
-          <div class="provider-label">Browser Mode</div>
-          <div class="provider-url">${this.browserHeadless ? "Headless (invisible)" : "Headful (visible window)"}</div>
-        </div>
-        <span class="key-status ${this.browserHeadless ? "key-missing" : "key-set"}">${this.browserHeadless ? "Headless" : "Visible"}</span>
-        <button class="btn-key" @click=${() => this.toggleBrowserHeadless(!this.browserHeadless)}>
-          ${this.browserHeadless ? "Show Browser" : "Hide Browser"}
-        </button>
-      </div>
+      <browser-control-panel
+        .headless=${this.browserHeadless}
+        @browser-headless-change=${(event: CustomEvent<{ headless: boolean }>) => {
+          const next = event.detail?.headless;
+          if (typeof next === "boolean") {
+            this.browserHeadless = next;
+          }
+        }}
+      ></browser-control-panel>
     `;
   }
 

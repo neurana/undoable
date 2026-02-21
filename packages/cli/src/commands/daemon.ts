@@ -13,6 +13,7 @@ import {
   uninstallDaemonService,
   type DaemonServiceStatus,
 } from "./daemon-service.js";
+import { daemonRequest } from "./daemon-client.js";
 
 const DEFAULT_PORT = 7433;
 const PID_FILE = path.join(os.homedir(), ".undoable", "daemon.pid.json");
@@ -438,13 +439,18 @@ export function daemonCommand(): Command {
           removeState();
         }
 
+        const managed = Boolean(state && processRunning);
+        const external = !managed && healthy;
+        const running = managed || external;
+
         const out = {
-          running: processRunning,
+          running,
           healthy,
-          pid: processRunning ? pid : null,
+          pid: managed ? pid : null,
           port,
           url: daemonUrl(port),
-          managed: Boolean(state),
+          managed,
+          external,
           startedAt: state?.startedAt,
           supervised: state?.supervised === true,
           logFile: state?.logFile,
@@ -458,7 +464,13 @@ export function daemonCommand(): Command {
         const statusLabel = out.running ? "running" : "stopped";
         const healthLabel = out.healthy ? "ok" : "down";
         const pidLabel = out.pid ?? "-";
+        const sourceLabel = out.managed
+          ? "managed"
+          : out.external
+            ? "external"
+            : "none";
         console.log(`Daemon: ${statusLabel}`);
+        console.log(`Source: ${sourceLabel}`);
         console.log(`Health: ${healthLabel}`);
         console.log(`PID: ${pidLabel}`);
         console.log(`URL: ${out.url}`);
@@ -473,6 +485,66 @@ export function daemonCommand(): Command {
         process.exitCode = 1;
       }
     });
+
+  cmd
+    .command("mode [mode]")
+    .description(
+      "Get or set daemon operation mode (normal, drain, paused)",
+    )
+    .option("--reason <reason>", "Optional operator reason when setting mode")
+    .option("--url <url>", "Daemon base URL (default http://127.0.0.1:7433)")
+    .option("--token <token>", "Daemon auth token")
+    .option("--json", "Output raw JSON", false)
+    .action(
+      async (opts: {
+        mode?: string;
+        reason?: string;
+        url?: string;
+        token?: string;
+        json?: boolean;
+      }) => {
+        try {
+          const requestedMode = opts.mode?.trim().toLowerCase();
+          const validModes = new Set(["normal", "drain", "paused"]);
+          if (requestedMode && !validModes.has(requestedMode)) {
+            throw new Error("mode must be one of: normal, drain, paused");
+          }
+          const response = requestedMode
+            ? await daemonRequest<{
+                mode: "normal" | "drain" | "paused";
+                reason: string;
+                updatedAt: string;
+              }>("/control/operation", {
+                url: opts.url,
+                token: opts.token,
+                method: "PATCH",
+                body: { mode: requestedMode, reason: opts.reason ?? "" },
+              })
+            : await daemonRequest<{
+                mode: "normal" | "drain" | "paused";
+                reason: string;
+                updatedAt: string;
+              }>("/control/operation", {
+                url: opts.url,
+                token: opts.token,
+              });
+
+          if (opts.json) {
+            console.log(JSON.stringify(response, null, 2));
+            return;
+          }
+
+          console.log(`Mode: ${response.mode}`);
+          if (response.reason) {
+            console.log(`Reason: ${response.reason}`);
+          }
+          console.log(`Updated: ${response.updatedAt}`);
+        } catch (err) {
+          console.error(String(err));
+          process.exitCode = 1;
+        }
+      },
+    );
 
   const serviceCmd = cmd
     .command("service")

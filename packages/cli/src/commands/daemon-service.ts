@@ -106,6 +106,11 @@ export function renderLaunchdPlist(input: {
   const args = [input.nodeBinary, input.daemonEntry]
     .map((arg) => `      <string>${escapeXml(arg)}</string>`)
     .join("\n");
+  const settingsFile = path.join(
+    input.homeDir,
+    ".undoable",
+    "daemon-settings.json",
+  );
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -128,6 +133,8 @@ ${args}
       <string>${input.port}</string>
       <key>HOME</key>
       <string>${escapeXml(input.homeDir)}</string>
+      <key>UNDOABLE_DAEMON_SETTINGS_FILE</key>
+      <string>${escapeXml(settingsFile)}</string>
     </dict>
     <key>StandardOutPath</key>
     <string>${escapeXml(input.logPath)}</string>
@@ -144,6 +151,10 @@ function escapeSystemdExecArg(value: string): string {
     .replaceAll(" ", "\\ ");
 }
 
+function renderSystemdEnvironment(name: string, value: string): string {
+  return `Environment=${escapeSystemdExecArg(`${name}=${value}`)}`;
+}
+
 export function renderSystemdUnit(input: {
   nodeBinary: string;
   daemonEntry: string;
@@ -151,14 +162,20 @@ export function renderSystemdUnit(input: {
   homeDir: string;
 }): string {
   const execStart = `${escapeSystemdExecArg(input.nodeBinary)} ${escapeSystemdExecArg(input.daemonEntry)}`;
+  const settingsFile = path.join(
+    input.homeDir,
+    ".undoable",
+    "daemon-settings.json",
+  );
   return `[Unit]
 Description=Undoable daemon service
 After=network.target
 
 [Service]
 Type=simple
-Environment=NRN_PORT=${input.port}
-Environment=HOME=${input.homeDir}
+${renderSystemdEnvironment("NRN_PORT", String(input.port))}
+${renderSystemdEnvironment("HOME", input.homeDir)}
+${renderSystemdEnvironment("UNDOABLE_DAEMON_SETTINGS_FILE", settingsFile)}
 ExecStart=${execStart}
 Restart=always
 RestartSec=2

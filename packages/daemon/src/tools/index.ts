@@ -78,7 +78,7 @@ export function createToolRegistry(deps: {
 }): ToolRegistry {
   const connectorRegistry = deps.connectorRegistry ?? new ConnectorRegistry();
   const actionLog = new ActionLog();
-  const approvalGate = new ApprovalGate(deps.approvalMode ?? "always");
+  const approvalGate = new ApprovalGate(deps.approvalMode ?? "off");
   const undoService = new UndoService(actionLog);
 
   const rawTools: AgentTool[] = [

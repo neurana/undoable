@@ -54,6 +54,7 @@ describe("buildProgram", () => {
     expect(subNames).toContain("start");
     expect(subNames).toContain("stop");
     expect(subNames).toContain("status");
+    expect(subNames).toContain("mode");
     expect(subNames).toContain("service");
   });
 

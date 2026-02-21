@@ -42,20 +42,86 @@ export type ChatSession = {
 
 const DEFAULT_CHATS_DIR = path.join(os.homedir(), ".undoable", "chats");
 const FALLBACK_CHATS_DIR = path.join(os.tmpdir(), "undoable", "chats");
+const DEFAULT_MAX_SESSIONS = 1000;
+const DEFAULT_MAX_MESSAGES_PER_SESSION = 4000;
+const DEFAULT_MAX_CACHED_SESSIONS = 128;
 
 export const SYSTEM_PROMPT = buildSystemPrompt({});
 
+function parsePositiveInt(
+  raw: string | undefined,
+  fallback: number,
+  min = 1,
+): number {
+  if (typeof raw !== "string" || raw.trim().length === 0) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.floor(parsed);
+  if (rounded < min) return fallback;
+  return rounded;
+}
+
+function toEpochMs(value: number | string | undefined): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
 
 export class ChatService {
   private sessions = new Map<string, ChatSession>();
   private indexCache: SessionMeta[] | null = null;
   private chatsDir: string;
   private indexFile: string;
+  private readonly maxSessions: number;
+  private readonly maxMessagesPerSession: number;
+  private readonly maxCachedSessions: number;
+  private readonly retentionMs: number | null;
 
-  constructor(opts?: { chatsDir?: string }) {
+  constructor(opts?: {
+    chatsDir?: string;
+    maxSessions?: number;
+    maxMessagesPerSession?: number;
+    maxCachedSessions?: number;
+    retentionDays?: number;
+  }) {
     const configured = opts?.chatsDir?.trim() || process.env.UNDOABLE_CHATS_DIR?.trim();
     this.chatsDir = configured ? path.resolve(configured) : DEFAULT_CHATS_DIR;
     this.indexFile = path.join(this.chatsDir, "index.json");
+    this.maxSessions = Math.max(
+      1,
+      opts?.maxSessions ??
+        parsePositiveInt(
+          process.env.UNDOABLE_CHAT_MAX_SESSIONS,
+          DEFAULT_MAX_SESSIONS,
+        ),
+    );
+    this.maxMessagesPerSession = Math.max(
+      2,
+      opts?.maxMessagesPerSession ??
+        parsePositiveInt(
+          process.env.UNDOABLE_CHAT_MAX_MESSAGES_PER_SESSION,
+          DEFAULT_MAX_MESSAGES_PER_SESSION,
+          2,
+        ),
+    );
+    this.maxCachedSessions = Math.max(
+      1,
+      opts?.maxCachedSessions ??
+        parsePositiveInt(
+          process.env.UNDOABLE_CHAT_CACHE_MAX_SESSIONS,
+          DEFAULT_MAX_CACHED_SESSIONS,
+        ),
+    );
+    const retentionDaysRaw =
+      typeof opts?.retentionDays === "number"
+        ? String(opts.retentionDays)
+        : process.env.UNDOABLE_CHAT_RETENTION_DAYS;
+    const retentionDays = parsePositiveInt(retentionDaysRaw, 0, 0);
+    this.retentionMs =
+      retentionDays > 0 ? retentionDays * 24 * 60 * 60 * 1000 : null;
   }
 
   private async ensureWritableChatsDir(dir: string): Promise<boolean> {
@@ -103,8 +169,67 @@ export class ChatService {
     await fsp.writeFile(this.indexFile, JSON.stringify(index, null, 2), "utf-8");
   }
 
+  private touchSessionCache(session: ChatSession): void {
+    if (this.sessions.has(session.id)) {
+      this.sessions.delete(session.id);
+    }
+    this.sessions.set(session.id, session);
+    while (this.sessions.size > this.maxCachedSessions) {
+      const oldest = this.sessions.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.sessions.delete(oldest);
+    }
+  }
+
+  private compactSessionMessages(session: ChatSession): void {
+    if (session.messages.length <= this.maxMessagesPerSession) return;
+    const system = session.messages.find((entry) => entry.role === "system");
+    const nonSystem = session.messages.filter((entry) => entry.role !== "system");
+    const maxNonSystem = Math.max(
+      0,
+      this.maxMessagesPerSession - (system ? 1 : 0),
+    );
+    session.messages = [
+      ...(system ? [system] : []),
+      ...nonSystem.slice(-maxNonSystem),
+    ];
+    session.updatedAt = Date.now();
+  }
+
+  private applyIndexRetention(index: SessionMeta[]): {
+    retained: SessionMeta[];
+    removedIds: string[];
+  } {
+    const sorted = [...index].sort((a, b) => b.updatedAt - a.updatedAt);
+    const retentionMs = this.retentionMs;
+    const fresh = retentionMs
+      ? sorted.filter(
+          (entry) => Date.now() - toEpochMs(entry.updatedAt) <= retentionMs,
+        )
+      : sorted;
+    const retained = fresh.slice(0, this.maxSessions);
+    const retainedIds = new Set(retained.map((entry) => entry.id));
+    const removedIds = sorted
+      .map((entry) => entry.id)
+      .filter((id) => !retainedIds.has(id));
+    return { retained, removedIds };
+  }
+
+  private async removeSessionFiles(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      this.sessions.delete(id);
+      try {
+        await fsp.unlink(this.sessionFile(id));
+      } catch {
+        // best effort cleanup
+      }
+    }
+  }
+
   private async persistSession(session: ChatSession): Promise<void> {
     await this.init();
+    this.compactSessionMessages(session);
+    this.touchSessionCache(session);
     await fsp.writeFile(this.sessionFile(session.id), JSON.stringify(session), "utf-8");
     await this.updateIndex(session);
   }
@@ -130,12 +255,18 @@ export class ChatService {
     } else {
       index.unshift(meta);
     }
-    index.sort((a, b) => b.updatedAt - a.updatedAt);
-    await this.saveIndex(index);
+    const { retained, removedIds } = this.applyIndexRetention(index);
+    await this.saveIndex(retained);
+    if (removedIds.length > 0) {
+      await this.removeSessionFiles(removedIds);
+    }
   }
 
-  async listSessions(): Promise<SessionMeta[]> {
-    return this.loadIndex();
+  async listSessions(opts?: { limit?: number }): Promise<SessionMeta[]> {
+    const all = await this.loadIndex();
+    const limit = opts?.limit;
+    if (!Number.isFinite(limit) || !limit || limit <= 0) return all;
+    return all.slice(0, Math.floor(limit));
   }
 
   async createSession(opts?: { title?: string; systemPrompt?: string; agentId?: string }): Promise<ChatSession> {
@@ -149,7 +280,7 @@ export class ChatService {
       createdAt: now,
       updatedAt: now,
     };
-    this.sessions.set(id, session);
+    this.touchSessionCache(session);
     await this.persistSession(session);
     return session;
   }
@@ -161,7 +292,7 @@ export class ChatService {
     try {
       const raw = await fsp.readFile(this.sessionFile(sessionId), "utf-8");
       session = JSON.parse(raw) as ChatSession;
-      this.sessions.set(sessionId, session);
+      this.touchSessionCache(session);
       return session;
     } catch {
       const now = Date.now();
@@ -173,7 +304,7 @@ export class ChatService {
         createdAt: now,
         updatedAt: now,
       };
-      this.sessions.set(sessionId, session);
+      this.touchSessionCache(session);
       await this.persistSession(session);
       return session;
     }
@@ -185,7 +316,7 @@ export class ChatService {
     try {
       const raw = await fsp.readFile(this.sessionFile(sessionId), "utf-8");
       const session = JSON.parse(raw) as ChatSession;
-      this.sessions.set(sessionId, session);
+      this.touchSessionCache(session);
       return session;
     } catch {
       return null;

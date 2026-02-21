@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
 import { ChatService, SYSTEM_PROMPT } from "./chat-service.js";
 
@@ -190,6 +193,59 @@ describe("ChatService", () => {
       const history = await service.getHistory(cronId);
       expect(history).toHaveLength(4);
       expect(history.every((m) => m.role !== "system")).toBe(true);
+    });
+  });
+
+  describe("retention and compaction", () => {
+    it("compacts session message history to configured max size", async () => {
+      const dir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "undoable-chat-compact-"),
+      );
+      const compactService = new ChatService({
+        chatsDir: dir,
+        maxMessagesPerSession: 4,
+      });
+      await compactService.init();
+
+      const sessionId = `compact-${uid()}`;
+      await compactService.getOrCreate(sessionId);
+      await compactService.addUserMessage(sessionId, "u1");
+      await compactService.addAssistantMessage(sessionId, "a1");
+      await compactService.addUserMessage(sessionId, "u2");
+      await compactService.addAssistantMessage(sessionId, "a2");
+      await compactService.addUserMessage(sessionId, "u3");
+
+      const session = await compactService.loadSession(sessionId);
+      expect(session).toBeTruthy();
+      expect(session!.messages.length).toBeLessThanOrEqual(4);
+      expect(session!.messages[0]!.role).toBe("system");
+
+      await fs.rm(dir, { recursive: true, force: true });
+    });
+
+    it("retains only the newest sessions and deletes old session files", async () => {
+      const dir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "undoable-chat-retention-"),
+      );
+      const retentionService = new ChatService({
+        chatsDir: dir,
+        maxSessions: 2,
+      });
+      await retentionService.init();
+
+      const ids = [`s-${uid()}`, `s-${uid()}`, `s-${uid()}`];
+      await retentionService.addUserMessage(ids[0]!, "first");
+      await retentionService.addUserMessage(ids[1]!, "second");
+      await retentionService.addUserMessage(ids[2]!, "third");
+
+      const sessions = await retentionService.listSessions();
+      expect(sessions).toHaveLength(2);
+      expect(sessions.map((entry) => entry.id)).toEqual([ids[2], ids[1]]);
+
+      const removed = await retentionService.loadSession(ids[0]!);
+      expect(removed).toBeNull();
+
+      await fs.rm(dir, { recursive: true, force: true });
     });
   });
 });

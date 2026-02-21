@@ -47,6 +47,7 @@ export type SwarmWorkflow = {
   name: string;
   description?: string;
   orchestratorAgentId: string;
+  workspaceDir?: string;
   enabled: boolean;
   version: number;
   nodes: SwarmWorkflowNode[];
@@ -60,6 +61,7 @@ export type CreateSwarmWorkflowInput = {
   name: string;
   description?: string;
   orchestratorAgentId?: string;
+  workspaceDir?: string;
   enabled?: boolean;
   nodes?: CreateSwarmNodeInput[];
   edges?: SwarmEdge[];
@@ -69,6 +71,7 @@ export type UpdateSwarmWorkflowPatch = {
   name?: string;
   description?: string;
   orchestratorAgentId?: string;
+  workspaceDir?: string | null;
   enabled?: boolean;
 };
 
@@ -107,4 +110,5 @@ export type SwarmServiceOptions = {
   scheduler: SchedulerService;
   persistence?: SwarmPersistenceMode;
   stateFilePath?: string;
+  workspaceRoot?: string;
 };

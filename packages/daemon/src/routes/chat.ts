@@ -20,7 +20,10 @@ import { DriftDetector, buildStabilizer } from "../alignment/index.js";
 import { parseAttachments, type ChatAttachment } from "../services/chat-attachments.js";
 import type { ProviderService } from "../services/provider-service.js";
 import { buildSystemPrompt } from "../services/system-prompt-builder.js";
-import { needsCompaction, compactMessages } from "../services/context-window.js";
+import {
+  needsCompaction,
+  compactMessagesWithMeta,
+} from "../services/context-window.js";
 import { filterToolsByPolicy } from "../services/tool-policy.js";
 import { loadContextFiles } from "../services/context-files.js";
 import { OnboardingService } from "../services/onboarding-service.js";
@@ -52,6 +55,7 @@ import { parseDirectives, DIRECTIVE_HELP } from "../services/directive-parser.js
 import type { TtsService } from "../services/tts-service.js";
 import type { SttService } from "../services/stt-service.js";
 import type { SkillsService } from "../services/skills-service.js";
+import type { DaemonOperationalState } from "../services/daemon-settings-service.js";
 
 const MAX_TOOL_RESULT_CHARS = 30_000;
 const DEFAULT_MAX_ITERATIONS = 10;
@@ -327,6 +331,9 @@ export function chatRoutes(
   usageService?: import("../services/usage-service.js").UsageService,
   ttsService?: TtsService,
   sttService?: SttService,
+  getOperationalState?: () =>
+    | DaemonOperationalState
+    | Promise<DaemonOperationalState>,
 ) {
   let runModeConfig = config.runMode ?? resolveRunMode();
   let economyMode: EconomyModeConfig = resolveEconomyMode(config.economy);
@@ -338,7 +345,7 @@ export function chatRoutes(
   let allowIrreversibleActions = process.env.UNDOABLE_ALLOW_IRREVERSIBLE_ACTIONS === "1";
   const autoPauseOnBudgetLimit = process.env.UNDOABLE_DAILY_BUDGET_AUTO_PAUSE !== "0";
   let spendPaused = false;
-  const approvalMode = shouldAutoApprove(runModeConfig) ? "off" as const : undefined;
+  const approvalMode = "off" as const;
   const registry = createToolRegistry({
     runManager,
     scheduler,
@@ -431,6 +438,24 @@ export function chatRoutes(
     if (providerService) return providerService.shouldDisableStreaming(model);
     return false;
   };
+  const resolveOperationalState = async (): Promise<DaemonOperationalState> => {
+    if (!getOperationalState) {
+      return {
+        mode: "normal",
+        reason: "",
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    try {
+      return await getOperationalState();
+    } catch {
+      return {
+        mode: "normal",
+        reason: "",
+        updatedAt: new Date().toISOString(),
+      };
+    }
+  };
   const syncOpenAIVoiceKeys = () => {
     if (!providerService) return;
     const openaiConfig = providerService.getProviderConfig("openai");
@@ -509,9 +534,10 @@ export function chatRoutes(
     return { agents, defaultId };
   });
 
-  const buildRunConfigResponse = () => {
+  const buildRunConfigResponse = async () => {
     const active = getActiveConfig();
     const spend = getSpendStatus();
+    const operation = await resolveOperationalState();
     return {
       mode: runModeConfig.mode,
       maxIterations: getMaxIterationsForRun(),
@@ -540,11 +566,12 @@ export function chatRoutes(
         autoPauseOnLimit: spend.autoPauseOnLimit,
         paused: spend.paused,
       },
+      operation,
     };
   };
 
   app.get("/chat/run-config", async () => {
-    return buildRunConfigResponse();
+    return await buildRunConfigResponse();
   });
 
   app.post<{ Body: { mode?: string; maxIterations?: number; economyMode?: boolean; dailyBudgetUsd?: number | null; spendPaused?: boolean; allowIrreversibleActions?: boolean } }>("/chat/run-config", async (req, reply) => {
@@ -623,7 +650,7 @@ export function chatRoutes(
     getSpendStatus();
     return {
       ok: true,
-      ...buildRunConfigResponse(),
+      ...(await buildRunConfigResponse()),
     };
   });
 
@@ -851,6 +878,17 @@ export function chatRoutes(
     if (directiveModelOverride) agentModelOverride = directiveModelOverride;
     const directivesOnly = directives.length > 0 && !cleanMessage;
 
+    const operationState = await resolveOperationalState();
+    if (operationState.mode !== "normal" && !directivesOnly) {
+      return reply.code(423).send({
+        error: `Daemon is in ${operationState.mode} mode; new chat runs are blocked.`,
+        code: "DAEMON_OPERATION_MODE_BLOCK",
+        operation: operationState,
+        recovery:
+          "Set operation mode back to normal via /control/operation or `nrn daemon mode normal`.",
+      });
+    }
+
     const spendStatusBeforeRun = getSpendStatus();
     if (
       spendStatusBeforeRun.dailyBudgetUsd !== null &&
@@ -1038,8 +1076,13 @@ export function chatRoutes(
           messages[0] = { role: "system" as const, content: dynamicSystemPrompt };
         }
         if (needsCompaction(messages, compactionConfig)) {
-          messages = compactMessages(messages, compactionConfig);
-          sse({ type: "compaction", messageCount: messages.length });
+          const compacted = compactMessagesWithMeta(messages, compactionConfig);
+          messages = compacted.messages;
+          sse({
+            type: "compaction",
+            messageCount: messages.length,
+            ...compacted.meta,
+          });
         }
         const activeThinkLevel = canThinkNow() ? thinkingConfig.level : "off";
         const baseConf: ChatRouteConfig = { ...config, ...getActiveConfig(), ...(agentModelOverride ? { model: agentModelOverride } : {}) };
@@ -1369,9 +1412,24 @@ export function chatRoutes(
 
   const INTERNAL_SESSION_PREFIXES = ["run-", "cron-", "channel-", "send-", "agent-", "test-"];
 
-  app.get("/chat/sessions", async () => {
-    const all = await chatService.listSessions();
-    return all.filter((s) => !INTERNAL_SESSION_PREFIXES.some((p) => s.id.startsWith(p)));
+  app.get<{ Querystring: { limit?: string } }>("/chat/sessions", async (req) => {
+    const requestedLimit = Number(req.query.limit);
+    const normalizedLimit = Number.isFinite(requestedLimit)
+      ? Math.min(1000, Math.max(20, Math.floor(requestedLimit)))
+      : 200;
+    const scanLimit = Math.min(5000, normalizedLimit * 4);
+    const all = await chatService.listSessions({ limit: scanLimit });
+    const visible: typeof all = [];
+    for (const session of all) {
+      if (INTERNAL_SESSION_PREFIXES.some((p) => session.id.startsWith(p))) {
+        continue;
+      }
+      visible.push(session);
+      if (visible.length >= normalizedLimit) {
+        break;
+      }
+    }
+    return visible;
   });
 
   app.post<{ Body: { title?: string; agentId?: string } }>("/chat/sessions", async (req) => {

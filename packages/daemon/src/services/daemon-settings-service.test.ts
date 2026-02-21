@@ -78,4 +78,22 @@ describe("DaemonSettingsService", () => {
     expect(snapshot.desired.authMode).toBe("token");
     expect(snapshot.desired.token.length).toBeGreaterThan(0);
   });
+
+  it("updates and returns operational mode state", async () => {
+    const settingsFile = await createTempSettingsFile();
+    const service = new DaemonSettingsService(settingsFile);
+
+    const updated = await service.setOperationalState(
+      "paused",
+      "Maintenance window",
+    );
+    expect(updated.mode).toBe("paused");
+    expect(updated.reason).toBe("Maintenance window");
+
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.desired.operationMode).toBe("paused");
+    expect(snapshot.desired.operationReason).toBe("Maintenance window");
+    expect(snapshot.effective.operationMode).toBe("paused");
+    expect(snapshot.effective.operationReason).toBe("Maintenance window");
+  });
 });

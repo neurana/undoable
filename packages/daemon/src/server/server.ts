@@ -24,7 +24,6 @@ import {
 } from "../auth/middleware.js";
 import {
   resolveRunMode,
-  shouldAutoApprove,
   type RunMode,
 } from "../actions/run-mode.js";
 import { ProviderService } from "../services/provider-service.js";
@@ -147,17 +146,40 @@ export async function createServer(opts: ServerOptions) {
     return reply.code(statusCode).send({ error: message });
   });
 
-  if (isDatabaseEnabled()) {
+  const runtimeHealth = {
+    database: {
+      enabled: isDatabaseEnabled(),
+      initialized: false,
+      error: undefined as string | undefined,
+    },
+    scheduler: {
+      started: false,
+      error: undefined as string | undefined,
+    },
+    channels: {
+      started: false,
+      error: undefined as string | undefined,
+    },
+    shuttingDown: false,
+  };
+
+  if (runtimeHealth.database.enabled) {
     try {
       initDatabase();
+      runtimeHealth.database.initialized = true;
+      runtimeHealth.database.error = undefined;
       app.log.info("Database connection initialized");
     } catch (err) {
+      runtimeHealth.database.initialized = false;
+      runtimeHealth.database.error =
+        err instanceof Error ? err.message : String(err);
       app.log.warn(
         { err },
         "Database initialization failed - running without persistence",
       );
     }
   } else {
+    runtimeHealth.database.initialized = true;
     app.log.info("DATABASE_URL not set - running without database persistence");
   }
 
@@ -212,6 +234,7 @@ export async function createServer(opts: ServerOptions) {
 
   const storePath = path.join(os.homedir(), ".undoable", "scheduler-jobs.json");
   const cronRuns = new CronRunLogService();
+  const daemonSettingsService = new DaemonSettingsService();
 
   const SCHEDULED_JOB_SYSTEM_PROMPT = [
     "You are Undoable executing a SCHEDULED JOB. This is an automated task — not an interactive conversation.",
@@ -234,6 +257,17 @@ export async function createServer(opts: ServerOptions) {
   const scheduler = new SchedulerService({
     config: { enabled: true, storePath },
     executor: async (job) => {
+      const operationState = await daemonSettingsService.getOperationalState();
+      if (operationState.mode !== "normal") {
+        app.log.warn(
+          { jobId: job.id, operationMode: operationState.mode },
+          "scheduler execution blocked by daemon operation mode",
+        );
+        return {
+          status: "error",
+          error: `Daemon operation mode is ${operationState.mode}; scheduled jobs are paused.`,
+        };
+      }
       if (job.payload.kind === "run") {
         const agentId = job.payload.agentId ?? "default";
         const run = runManager.create({
@@ -333,7 +367,11 @@ export async function createServer(opts: ServerOptions) {
       return;
     }
 
-    const identity = authorizeGatewayHeaders(req.headers, gatewayToken);
+    const identity = authorizeGatewayHeaders(
+      req.headers,
+      gatewayToken,
+      req.socket.remoteAddress,
+    );
     if (!identity) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
@@ -394,7 +432,11 @@ export async function createServer(opts: ServerOptions) {
     onSessionDead: (id) =>
       app.log.info({ sessionId: id }, "session marked dead by heartbeat"),
   });
-  const browserHeadless = process.env.UNDOABLE_BROWSER_HEADLESS === "true";
+  const browserHeadless = (() => {
+    const raw = process.env.UNDOABLE_BROWSER_HEADLESS?.trim().toLowerCase();
+    if (!raw) return true;
+    return !["0", "false", "no", "off"].includes(raw);
+  })();
   const browserViewport = process.env.UNDOABLE_BROWSER_VIEWPORT
     ? (() => {
         const [w, h] = process.env
@@ -435,7 +477,6 @@ export async function createServer(opts: ServerOptions) {
   }
 
   const usageService = new UsageService();
-  const daemonSettingsService = new DaemonSettingsService();
   await usageService.init();
 
   const { createToolRegistry } = await import("../tools/index.js");
@@ -450,7 +491,7 @@ export async function createServer(opts: ServerOptions) {
     swarmService,
     sandboxExec,
     sandboxSessionId: "daemon",
-    approvalMode: shouldAutoApprove(runMode) ? ("off" as const) : undefined,
+    approvalMode: "off",
     execApprovalService,
     skillsService,
   });
@@ -544,9 +585,70 @@ export async function createServer(opts: ServerOptions) {
   };
   await pluginRegistry.activateAll(pluginCtx);
 
-  await app.register(healthRoutes);
+  await app.register(healthRoutes, {
+    version: "0.1.0",
+    getSnapshot: async () => {
+      const operationState = await daemonSettingsService.getOperationalState();
+      let schedulerStatus:
+        | Awaited<ReturnType<typeof scheduler.status>>
+        | undefined;
+      if (runtimeHealth.scheduler.started) {
+        try {
+          schedulerStatus = await scheduler.status();
+          runtimeHealth.scheduler.error = undefined;
+        } catch (err) {
+          runtimeHealth.scheduler.error =
+            err instanceof Error ? err.message : String(err);
+          runtimeHealth.scheduler.started = false;
+        }
+      }
+
+      const channels = channelManager.listAll();
+      const connectedChannels = channels.filter(
+        (entry) => entry.status.connected,
+      ).length;
+      const checks = {
+        database: {
+          enabled: runtimeHealth.database.enabled,
+          initialized: runtimeHealth.database.initialized,
+          ...(runtimeHealth.database.error
+            ? { error: runtimeHealth.database.error }
+            : {}),
+        },
+        scheduler: {
+          started: runtimeHealth.scheduler.started,
+          ...(runtimeHealth.scheduler.error
+            ? { error: runtimeHealth.scheduler.error }
+            : {}),
+          ...(schedulerStatus
+            ? {
+                jobCount: schedulerStatus.jobCount,
+                nextWakeAtMs: schedulerStatus.nextWakeAtMs,
+              }
+            : {}),
+        },
+        channels: {
+          started: runtimeHealth.channels.started,
+          total: channels.length,
+          connected: connectedChannels,
+          ...(runtimeHealth.channels.error
+            ? { error: runtimeHealth.channels.error }
+            : {}),
+        },
+        operation: operationState,
+        acceptingNewRuns: operationState.mode === "normal",
+        shuttingDown: runtimeHealth.shuttingDown,
+      };
+      const ready =
+        !runtimeHealth.shuttingDown &&
+        runtimeHealth.scheduler.started &&
+        (!runtimeHealth.database.enabled || runtimeHealth.database.initialized);
+      return { ready, checks };
+    },
+  });
   runRoutes(app, runManager, auditService, {
     eventBus,
+    getOperationalState: () => daemonSettingsService.getOperationalState(),
     executorDeps: {
       chatService,
       registry: runRegistry,
@@ -638,6 +740,7 @@ export async function createServer(opts: ServerOptions) {
     usageService,
     ttsService,
     sttService,
+    () => daemonSettingsService.getOperationalState(),
   );
   fileRoutes(app);
   channelRoutes(app, channelManager);
@@ -667,20 +770,36 @@ export async function createServer(opts: ServerOptions) {
 
   return {
     start: async () => {
-      await scheduler.start();
-      await channelManager.startAll();
-      const host = opts.host ?? "127.0.0.1";
-      await app.listen({ port: opts.port, host });
+      runtimeHealth.shuttingDown = false;
+      try {
+        await scheduler.start();
+        runtimeHealth.scheduler.started = true;
+        runtimeHealth.scheduler.error = undefined;
+
+        await channelManager.startAll();
+        runtimeHealth.channels.started = true;
+        runtimeHealth.channels.error = undefined;
+
+        const host = opts.host ?? "127.0.0.1";
+        await app.listen({ port: opts.port, host });
+      } catch (err) {
+        runtimeHealth.scheduler.started = false;
+        runtimeHealth.channels.started = false;
+        throw err;
+      }
     },
     stop: async () => {
+      runtimeHealth.shuttingDown = true;
       clearInterval(mediaCleanupInterval);
       scheduler.stop();
+      runtimeHealth.scheduler.started = false;
       heartbeatSvc.stop();
       await usageService.destroy();
       for (const p of pluginRegistry.list().filter((x) => x.active)) {
         await pluginRegistry.deactivate(p.name).catch(() => {});
       }
       await channelManager.stopAll();
+      runtimeHealth.channels.started = false;
       await providerSvc.destroy();
       await canvasHost.close();
       await browserSvc.close();

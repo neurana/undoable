@@ -34,6 +34,7 @@ describe("swarm routes", () => {
   let app: ReturnType<typeof Fastify>;
   let swarmService: SwarmService;
   let runManager: RunManager;
+  let eventBus: EventBus;
 
   beforeEach(async () => {
     app = Fastify();
@@ -41,8 +42,9 @@ describe("swarm routes", () => {
       scheduler: new FakeScheduler() as unknown as SchedulerService,
       persistence: "off",
     });
-    runManager = new RunManager(new EventBus(), { persistence: "off" });
-    swarmRoutes(app, swarmService, runManager);
+    eventBus = new EventBus();
+    runManager = new RunManager(eventBus, { persistence: "off" });
+    swarmRoutes(app, swarmService, runManager, { eventBus });
     await app.ready();
   });
 
@@ -108,5 +110,65 @@ describe("swarm routes", () => {
     expect(body.skipped[0]?.nodeId).toBe("runner");
     expect(body.skipped[0]?.reason).toBe("node already has an active run");
     expect(body.skipped[0]?.activeRunId).toBeTruthy();
+  });
+
+  it("orchestrates dependency graph and unlocks downstream nodes on completion", async () => {
+    const workflow = await swarmService.create({
+      name: "dag-workflow",
+      nodes: [
+        { id: "a", name: "A", enabled: true },
+        { id: "b", name: "B", enabled: true },
+        { id: "c", name: "C", enabled: true },
+      ],
+      edges: [
+        { from: "a", to: "c" },
+        { from: "b", to: "c" },
+      ],
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/swarm/workflows/${workflow.id}/run`,
+      payload: { allowConcurrent: true, maxParallel: 2 },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json() as {
+      orchestrationId: string;
+      launched: Array<{ nodeId: string; runId: string }>;
+      pendingNodes: string[];
+    };
+
+    expect(body.launched.map((entry) => entry.nodeId).sort()).toEqual(["a", "b"]);
+    expect(body.pendingNodes).toContain("c");
+
+    const runA = body.launched.find((entry) => entry.nodeId === "a")?.runId;
+    const runB = body.launched.find((entry) => entry.nodeId === "b")?.runId;
+    expect(runA).toBeTruthy();
+    expect(runB).toBeTruthy();
+
+    runManager.updateStatus(runA!, "completed", "swarm");
+    let orchestrationRes = await app.inject({
+      method: "GET",
+      url: `/swarm/workflows/${workflow.id}/orchestrations/${body.orchestrationId}`,
+    });
+    let orchestration = orchestrationRes.json() as {
+      launched: Array<{ nodeId: string }>;
+      pendingNodes: string[];
+    };
+    expect(orchestration.launched.some((entry) => entry.nodeId === "c")).toBe(false);
+    expect(orchestration.pendingNodes).toContain("c");
+
+    runManager.updateStatus(runB!, "completed", "swarm");
+    orchestrationRes = await app.inject({
+      method: "GET",
+      url: `/swarm/workflows/${workflow.id}/orchestrations/${body.orchestrationId}`,
+    });
+    orchestration = orchestrationRes.json() as {
+      launched: Array<{ nodeId: string }>;
+      pendingNodes: string[];
+    };
+    expect(orchestration.launched.some((entry) => entry.nodeId === "c")).toBe(true);
+    expect(orchestration.pendingNodes).toContain("c");
   });
 });

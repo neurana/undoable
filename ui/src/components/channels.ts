@@ -1,9 +1,16 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { api, type ChannelItem } from "../api/client.js";
+import {
+  api,
+  type ChannelItem,
+  type ChannelPairingApproval,
+  type ChannelPairingListResult,
+  type ChannelPairingRequest,
+} from "../api/client.js";
 
 type ChannelId = "telegram" | "discord" | "slack" | "whatsapp";
 type DmPolicy = "pairing" | "allowlist" | "open" | "disabled";
+const CHANNEL_IDS: ChannelId[] = ["telegram", "discord", "slack", "whatsapp"];
 
 type WizardStep =
   | "select"      // Select channel
@@ -130,6 +137,12 @@ function parseAllowlist(value: unknown): string[] {
   return value
     .map((entry) => String(entry).trim())
     .filter(Boolean);
+}
+
+function parseChannelId(value: unknown): ChannelId | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return CHANNEL_IDS.includes(normalized as ChannelId) ? (normalized as ChannelId) : null;
 }
 
 function deriveDmPolicy(channel: ChannelItem): DmPolicy {
@@ -556,21 +569,194 @@ export class ChannelList extends LitElement {
       margin-bottom: 16px;
     }
 
+    /* Pairing management */
+    .pairing-section {
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      background: rgba(230, 240, 236, 0.25);
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+    .pairing-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .pairing-title {
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 2px;
+    }
+    .pairing-subtitle {
+      font-family: var(--font-sans);
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .pairing-code-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .pairing-group {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px;
+      background: var(--bg);
+      display: grid;
+      gap: 8px;
+    }
+    .pairing-group-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-family: var(--font-sans);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .pairing-empty {
+      font-family: var(--font-sans);
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .pairing-item {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px;
+      background: var(--wash);
+      display: grid;
+      gap: 7px;
+    }
+    .pairing-item-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .pairing-item-id {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--ink-soft);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pairing-item-code,
+    .pairing-item-status {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-strong);
+      padding: 2px 8px;
+      background: var(--bg);
+      color: var(--ink-soft);
+      white-space: nowrap;
+    }
+    .pairing-item-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-family: var(--font-sans);
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .pairing-item-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .pairing-recent {
+      display: grid;
+      gap: 6px;
+    }
+    .pairing-recent-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: center;
+      font-family: var(--font-sans);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .pairing-recent-item > span:first-child {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pairing-recent-status {
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-strong);
+      padding: 2px 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+      background: var(--bg);
+      color: var(--ink-soft);
+    }
+    .pairing-recent-status.approved {
+      border-color: rgba(34, 197, 94, 0.2);
+      color: #15803d;
+      background: rgba(34, 197, 94, 0.08);
+    }
+    .pairing-recent-status.rejected,
+    .pairing-recent-status.expired {
+      border-color: rgba(192, 57, 43, 0.2);
+      color: var(--danger);
+      background: rgba(192, 57, 43, 0.08);
+    }
+    .btn-mini-action {
+      padding: 8px 12px;
+      min-height: 34px;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+
     @media (max-width: 768px) {
       .grid { grid-template-columns: 1fr; gap: 24px; }
       .card-header, .card-body, .card-actions { padding-left: 20px; padding-right: 20px; }
       .page-title { font-size: 26px; }
+      .pairing-code-row { grid-template-columns: 1fr; }
     }
   `;
 
   @state() private channels: ChannelItem[] = [];
   @state() private loading = true;
+  @state() private pairingData: Record<ChannelId, ChannelPairingListResult> = this.initByChannel((channelId) => ({
+    channel: channelId,
+    pending: [],
+    approved: [],
+    recent: [],
+  }));
+  @state() private pairingLoading: Record<ChannelId, boolean> = this.initByChannel(() => false);
+  @state() private pairingError: Record<ChannelId, string | null> = this.initByChannel(() => null);
+  @state() private pairingCodeDraft: Record<ChannelId, string> = this.initByChannel(() => "");
   @state() private wizardState: Record<ChannelId, WizardState> = {
     telegram: this.defaultWizardState(),
     discord: this.defaultWizardState(),
     slack: this.defaultWizardState(),
     whatsapp: this.defaultWizardState(),
   };
+  private pairingPollTimer?: ReturnType<typeof setInterval>;
+
+  private initByChannel<T>(factory: (channelId: ChannelId) => T): Record<ChannelId, T> {
+    return {
+      telegram: factory("telegram"),
+      discord: factory("discord"),
+      slack: factory("slack"),
+      whatsapp: factory("whatsapp"),
+    };
+  }
 
   private defaultWizardState(): WizardState {
     return {
@@ -587,7 +773,24 @@ export class ChannelList extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.load();
+    void this.load();
+    this.startLiveRefresh();
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.pairingPollTimer) {
+      clearInterval(this.pairingPollTimer);
+      this.pairingPollTimer = undefined;
+    }
+  }
+
+  private startLiveRefresh() {
+    if (this.pairingPollTimer) clearInterval(this.pairingPollTimer);
+    this.pairingPollTimer = setInterval(() => {
+      void this.refreshChannelStatuses();
+      void this.refreshPairingAll({ silent: true });
+    }, 7000);
   }
 
   private async load() {
@@ -606,10 +809,19 @@ export class ChannelList extends LitElement {
           allowlist: deriveAllowlist(ch),
         };
       }
+      await this.refreshPairingAll({ silent: true });
     } catch {
       this.channels = [];
     }
     this.loading = false;
+  }
+
+  private async refreshChannelStatuses() {
+    try {
+      this.channels = await api.channels.list();
+    } catch {
+      // best effort only
+    }
   }
 
   private updateWizard(channelId: ChannelId, updates: Partial<WizardState>) {
@@ -617,6 +829,135 @@ export class ChannelList extends LitElement {
       ...this.wizardState,
       [channelId]: { ...this.wizardState[channelId], ...updates },
     };
+  }
+
+  private setPairingLoading(channelId: ChannelId, loading: boolean) {
+    this.pairingLoading = {
+      ...this.pairingLoading,
+      [channelId]: loading,
+    };
+  }
+
+  private setPairingError(channelId: ChannelId, error: string | null) {
+    this.pairingError = {
+      ...this.pairingError,
+      [channelId]: error,
+    };
+  }
+
+  private setPairingCodeDraft(channelId: ChannelId, value: string) {
+    this.pairingCodeDraft = {
+      ...this.pairingCodeDraft,
+      [channelId]: value.toUpperCase(),
+    };
+  }
+
+  private applyPairingData(channelId: ChannelId, list: ChannelPairingListResult) {
+    const sortedPending = [...list.pending].sort((a, b) => b.updatedAt - a.updatedAt);
+    const sortedApproved = [...list.approved].sort((a, b) => b.approvedAt - a.approvedAt);
+    const sortedRecent = [...list.recent].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 8);
+    this.pairingData = {
+      ...this.pairingData,
+      [channelId]: {
+        channel: channelId,
+        pending: sortedPending,
+        approved: sortedApproved,
+        recent: sortedRecent,
+      },
+    };
+  }
+
+  private async refreshPairing(channelId: ChannelId, opts?: { silent?: boolean }) {
+    if (!opts?.silent) this.setPairingLoading(channelId, true);
+    try {
+      const list = await api.channels.pairingList(channelId);
+      const resolvedChannel = parseChannelId(list.channel) ?? channelId;
+      this.applyPairingData(resolvedChannel, list);
+      this.setPairingError(channelId, null);
+    } catch (e) {
+      this.setPairingError(channelId, String(e));
+    } finally {
+      if (!opts?.silent) this.setPairingLoading(channelId, false);
+    }
+  }
+
+  private async refreshPairingAll(opts?: { silent?: boolean }) {
+    if (!opts?.silent) {
+      this.pairingLoading = this.initByChannel(() => true);
+    }
+    await Promise.all(CHANNEL_IDS.map((channelId) => this.refreshPairing(channelId, { silent: true })));
+    if (!opts?.silent) {
+      this.pairingLoading = this.initByChannel(() => false);
+    }
+  }
+
+  private async approvePairingByCode(channelId: ChannelId) {
+    const code = this.pairingCodeDraft[channelId].trim();
+    if (!code) {
+      this.setPairingError(channelId, "Enter a pairing code first.");
+      return;
+    }
+
+    this.setPairingLoading(channelId, true);
+    try {
+      await api.channels.pairingApprove({
+        channel: channelId,
+        code,
+        approvedBy: "ui",
+      });
+      this.setPairingCodeDraft(channelId, "");
+      this.setPairingError(channelId, null);
+      await this.refreshPairing(channelId, { silent: true });
+    } catch (e) {
+      this.setPairingError(channelId, String(e));
+    } finally {
+      this.setPairingLoading(channelId, false);
+    }
+  }
+
+  private async approvePairingRequest(channelId: ChannelId, requestId: string) {
+    this.setPairingLoading(channelId, true);
+    try {
+      await api.channels.pairingApprove({
+        requestId,
+        approvedBy: "ui",
+      });
+      this.setPairingError(channelId, null);
+      await this.refreshPairing(channelId, { silent: true });
+    } catch (e) {
+      this.setPairingError(channelId, String(e));
+    } finally {
+      this.setPairingLoading(channelId, false);
+    }
+  }
+
+  private async rejectPairingRequest(channelId: ChannelId, requestId: string) {
+    this.setPairingLoading(channelId, true);
+    try {
+      await api.channels.pairingReject({
+        requestId,
+        rejectedBy: "ui",
+      });
+      this.setPairingError(channelId, null);
+      await this.refreshPairing(channelId, { silent: true });
+    } catch (e) {
+      this.setPairingError(channelId, String(e));
+    } finally {
+      this.setPairingLoading(channelId, false);
+    }
+  }
+
+  private async revokePairingApproval(channelId: ChannelId, userId: string) {
+    this.setPairingLoading(channelId, true);
+    try {
+      await api.channels.pairingRevoke(channelId, userId);
+      this.setPairingError(channelId, null);
+      await this.refreshPairing(channelId, { silent: true });
+    } catch (e) {
+      this.setPairingError(channelId, String(e));
+    } finally {
+      this.setPairingLoading(channelId, false);
+    }
   }
 
   private getStepIndex(step: WizardStep, hasToken: boolean): number {
@@ -655,7 +996,8 @@ export class ChannelList extends LitElement {
         userAllowlist: state.dmPolicy === "allowlist" ? state.allowlist : [],
       });
       await api.channels.start(channelId);
-      await this.load();
+      await this.refreshChannelStatuses();
+      await this.refreshPairing(channelId, { silent: true });
     } catch (e) {
       this.updateWizard(channelId, { error: String(e) });
     }
@@ -668,7 +1010,8 @@ export class ChannelList extends LitElement {
     try {
       await api.channels.stop(channelId);
       await api.channels.update(channelId, { enabled: false });
-      await this.load();
+      await this.refreshChannelStatuses();
+      await this.refreshPairing(channelId, { silent: true });
     } catch { /* error shown in status */ }
     this.updateWizard(channelId, { loading: false });
   }
@@ -769,6 +1112,7 @@ export class ChannelList extends LitElement {
             : nothing}
 
           ${connected ? this.renderConnectedState(ch, id, platform) : hasQR ? this.renderQRState(ch, id, platform) : this.renderWizard(id, platform, state)}
+          ${this.renderPairingSection(id)}
         </div>
 
         ${this.renderActions(ch, id, platform, state, connected, hasQR)}
@@ -938,10 +1282,143 @@ export class ChannelList extends LitElement {
     `;
   }
 
+  private formatTimestamp(value?: number): string {
+    if (!value || !Number.isFinite(value)) return "unknown";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "unknown";
+    return date.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  private renderPairingRequestRow(channelId: ChannelId, request: ChannelPairingRequest) {
+    const busy = this.pairingLoading[channelId];
+    return html`
+      <div class="pairing-item">
+        <div class="pairing-item-head">
+          <span class="pairing-item-id">${request.userId}</span>
+          <span class="pairing-item-code">${request.code}</span>
+        </div>
+        <div class="pairing-item-meta">
+          <span>chat ${request.chatId}</span>
+          <span>prompted ${request.promptCount}x</span>
+          <span>updated ${this.formatTimestamp(request.updatedAt)}</span>
+        </div>
+        <div class="pairing-item-actions">
+          <button class="btn-secondary btn-mini-action" ?disabled=${busy} @click=${() => this.approvePairingRequest(channelId, request.requestId)}>Approve</button>
+          <button class="btn-danger btn-mini-action" ?disabled=${busy} @click=${() => this.rejectPairingRequest(channelId, request.requestId)}>Reject</button>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderPairingApprovalRow(channelId: ChannelId, approval: ChannelPairingApproval) {
+    const busy = this.pairingLoading[channelId];
+    return html`
+      <div class="pairing-item">
+        <div class="pairing-item-head">
+          <span class="pairing-item-id">${approval.userId}</span>
+          <span class="pairing-item-status">Approved</span>
+        </div>
+        <div class="pairing-item-meta">
+          <span>${this.formatTimestamp(approval.approvedAt)}</span>
+          ${approval.approvedBy ? html`<span>by ${approval.approvedBy}</span>` : nothing}
+        </div>
+        <div class="pairing-item-actions">
+          <button class="btn-secondary btn-mini-action" ?disabled=${busy} @click=${() => this.revokePairingApproval(channelId, approval.userId)}>Revoke</button>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderPairingRecentRow(request: ChannelPairingRequest) {
+    return html`
+      <div class="pairing-recent-item">
+        <span>${request.userId}</span>
+        <span class="pairing-recent-status ${request.status}">${request.status}</span>
+        <span>${this.formatTimestamp(request.updatedAt)}</span>
+      </div>
+    `;
+  }
+
+  private renderPairingSection(channelId: ChannelId) {
+    const pairing = this.pairingData[channelId];
+    const busy = this.pairingLoading[channelId];
+    const error = this.pairingError[channelId];
+    const code = this.pairingCodeDraft[channelId];
+
+    return html`
+      <div class="pairing-section">
+        <div class="pairing-header">
+          <div>
+            <div class="pairing-title">Access approvals</div>
+            <div class="pairing-subtitle">Approve users directly from the UI when a bot sends a pairing code.</div>
+          </div>
+          <button class="btn-secondary btn-mini-action" ?disabled=${busy} @click=${() => this.refreshPairing(channelId)}>
+            ${busy ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+
+        ${error ? html`<div class="error-banner">${error}</div>` : nothing}
+
+        <div class="pairing-code-row">
+          <input
+            placeholder="Pairing code (example: 5GF7RB)"
+            .value=${code}
+            @input=${(event: InputEvent) => this.setPairingCodeDraft(channelId, (event.target as HTMLInputElement).value)}
+          />
+          <button class="btn-primary btn-mini-action" ?disabled=${busy} @click=${() => this.approvePairingByCode(channelId)}>
+            Approve Code
+          </button>
+        </div>
+
+        <div class="pairing-group">
+          <div class="pairing-group-head">
+            <span>Pending requests</span>
+            <span>${pairing.pending.length}</span>
+          </div>
+          ${pairing.pending.length === 0
+            ? html`<div class="pairing-empty">No pending requests.</div>`
+            : pairing.pending.map((request) => this.renderPairingRequestRow(channelId, request))}
+        </div>
+
+        <div class="pairing-group">
+          <div class="pairing-group-head">
+            <span>Approved users</span>
+            <span>${pairing.approved.length}</span>
+          </div>
+          ${pairing.approved.length === 0
+            ? html`<div class="pairing-empty">No approved users yet.</div>`
+            : pairing.approved.slice(0, 8).map((approval) => this.renderPairingApprovalRow(channelId, approval))}
+        </div>
+
+        ${pairing.recent.length > 0
+          ? html`
+            <div class="pairing-group">
+              <div class="pairing-group-head">
+                <span>Recent decisions</span>
+                <span>${pairing.recent.length}</span>
+              </div>
+              <div class="pairing-recent">
+                ${pairing.recent.map((request) => this.renderPairingRecentRow(request))}
+              </div>
+            </div>
+          `
+          : nothing}
+      </div>
+    `;
+  }
+
   private renderActions(_ch: ChannelItem, id: ChannelId, platform: PlatformInfo, state: WizardState, connected: boolean, hasQR: boolean) {
     if (connected) {
       return html`
         <div class="card-actions">
+          <button class="btn-secondary" ?disabled=${state.loading} @click=${() => this.refreshChannelStatuses()}>
+            Refresh
+          </button>
           <button class="btn-danger" ?disabled=${state.loading} @click=${() => this.stopChannel(id)}>
             ${state.loading ? "Stopping..." : "Disconnect"}
           </button>
@@ -952,6 +1429,9 @@ export class ChannelList extends LitElement {
     if (hasQR) {
       return html`
         <div class="card-actions">
+          <button class="btn-secondary" ?disabled=${state.loading} @click=${() => this.refreshChannelStatuses()}>
+            Refresh
+          </button>
           <button class="btn-secondary" ?disabled=${state.loading} @click=${() => this.stopChannel(id)}>
             Cancel
           </button>
@@ -965,6 +1445,9 @@ export class ChannelList extends LitElement {
 
     return html`
       <div class="card-actions">
+        <button class="btn-secondary" ?disabled=${state.loading} @click=${() => this.refreshChannelStatuses()}>
+          Refresh
+        </button>
         ${!isFirstStep ? html`
           <button class="btn-secondary" @click=${() => this.prevStep(id)}>Back</button>
         ` : nothing}

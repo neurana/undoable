@@ -83,6 +83,30 @@ describe("api.jobs", () => {
   });
 });
 
+describe("api.health", () => {
+  it("status calls GET /api/health", async () => {
+    mockFetch.mockResolvedValue(mockResponse({ status: "ok", ready: true, version: "0.1.0", uptime: 1, checks: {} }));
+    const result = await api.health.status();
+    expect(result.ready).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith("/api/health", expect.objectContaining({ headers: expect.any(Object) }));
+  });
+});
+
+describe("api.settings.operation", () => {
+  it("update calls PATCH /api/control/operation", async () => {
+    mockFetch.mockResolvedValue(mockResponse({ mode: "drain", reason: "maintenance", updatedAt: "2026-02-20T00:00:00.000Z" }));
+    const result = await api.settings.operation.update("drain", "maintenance");
+    expect(result.mode).toBe("drain");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/control/operation",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ mode: "drain", reason: "maintenance" }),
+      }),
+    );
+  });
+});
+
 describe("api.gateway", () => {
   it("tts.status calls gateway RPC", async () => {
     mockFetch.mockResolvedValue(mockResponse({ ok: true, result: { enabled: true, provider: "system", providers: ["system"] } }));
@@ -108,6 +132,35 @@ describe("api.gateway", () => {
         body: JSON.stringify({
           method: "agents.files.set",
           params: { agentId: "a1", path: "instructions.md", content: "hello", summary: "summary" },
+        }),
+      }),
+    );
+  });
+
+  it("browser.tabs calls gateway browser.request tabs action", async () => {
+    mockFetch.mockResolvedValue(mockResponse({ ok: true, result: { tabs: [{ index: 0, url: "https://example.com", title: "Example", active: true }] } }));
+    const result = await api.gateway.browser.tabs();
+    expect(result.tabs[0]?.url).toBe("https://example.com");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/gateway",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ method: "browser.request", params: { action: "tabs" } }),
+      }),
+    );
+  });
+
+  it("browser.navigate calls gateway browser.request navigate action", async () => {
+    mockFetch.mockResolvedValue(mockResponse({ ok: true, result: { message: "Navigated" } }));
+    const result = await api.gateway.browser.navigate("https://example.com");
+    expect(result.message).toContain("Navigated");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/gateway",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          method: "browser.request",
+          params: { action: "navigate", url: "https://example.com" },
         }),
       }),
     );

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
 import { SwarmService } from "./service.js";
 
 type FakeJob = {
@@ -103,5 +104,26 @@ describe("SwarmService", () => {
     const updated = service.getById(workflow.id);
     expect(updated?.nodes[0]?.jobId).toBeUndefined();
     expect(scheduler.count()).toBe(0);
+  });
+
+  it("creates workflow prompt scaffold files for planner/subplanner/worker runtime", async () => {
+    const workflow = await service.create({
+      name: "scaffold-check",
+      nodes: [{ id: "planner", name: "Planner" }],
+    });
+
+    const workspaceDir = workflow.workspaceDir;
+    expect(workspaceDir).toBeTruthy();
+    expect(fs.existsSync(`${workspaceDir}/ENTRY_POINT.md`)).toBe(true);
+    expect(fs.existsSync(`${workspaceDir}/AGENTS.md`)).toBe(true);
+    expect(fs.existsSync(`${workspaceDir}/SPEC.md`)).toBe(true);
+    expect(fs.existsSync(`${workspaceDir}/DECISIONS.md`)).toBe(true);
+    expect(fs.existsSync(`${workspaceDir}/RUNBOOK.md`)).toBe(true);
+    expect(fs.existsSync(`${workspaceDir}/INSTRUCTIONS.md`)).toBe(true);
+    expect(fs.existsSync(`${workspaceDir}/README.md`)).toBe(true);
+    expect(fs.existsSync(`${workspaceDir}/infra/root-planner.md`)).toBe(true);
+    expect(fs.existsSync(`${workspaceDir}/infra/subplanner.md`)).toBe(true);
+    expect(fs.existsSync(`${workspaceDir}/infra/worker.md`)).toBe(true);
+    expect(fs.existsSync(`${workspaceDir}/infra/reconciler.md`)).toBe(true);
   });
 });

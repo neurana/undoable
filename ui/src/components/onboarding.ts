@@ -716,6 +716,9 @@ export class UndoableOnboarding extends LitElement {
   @state() private dailyBudgetDraft = "";
   @state() private activeProvider = "";
   @state() private activeModel = "";
+  @state() private providerApiKeyDraft = "";
+  @state() private providerBaseUrlDraft = "";
+  @state() private providerBaseUrlTouched = false;
   @state() private providers: ProviderInfo[] = [];
   @state() private models: ModelInfo[] = [];
   @state() private channels: ChannelItem[] = [];
@@ -797,6 +800,26 @@ export class UndoableOnboarding extends LitElement {
     return this.models.filter((m) => m.provider === providerId);
   }
 
+  private selectedProviderInfo(): ProviderInfo | null {
+    return this.providers.find((provider) => provider.id === this.activeProvider)
+      ?? null;
+  }
+
+  private providerIsReady(provider: ProviderInfo | null): boolean {
+    if (!provider) return false;
+    if (provider.local) return provider.available !== false;
+    if (provider.hasKey) return true;
+    return provider.id === this.activeProvider
+      && this.providerApiKeyDraft.trim().length > 0;
+  }
+
+  private resetProviderDraft(providerId: string) {
+    const provider = this.providers.find((entry) => entry.id === providerId);
+    this.providerApiKeyDraft = "";
+    this.providerBaseUrlDraft = provider?.baseUrl ?? "";
+    this.providerBaseUrlTouched = false;
+  }
+
   private pickDefaultProviderAndModel() {
     const providerPool =
       this.providers.filter((p) => p.hasKey || p.local) ?? [];
@@ -804,7 +827,14 @@ export class UndoableOnboarding extends LitElement {
       ? this.activeProvider
       : providerPool[0]?.id ?? this.providers[0]?.id ?? this.models[0]?.provider ?? "";
     if (!providerChoice) return;
+    const providerChanged = this.activeProvider !== providerChoice;
     this.activeProvider = providerChoice;
+    if (providerChanged) {
+      this.resetProviderDraft(providerChoice);
+    } else if (!this.providerBaseUrlTouched && !this.providerBaseUrlDraft) {
+      const provider = this.providers.find((entry) => entry.id === providerChoice);
+      this.providerBaseUrlDraft = provider?.baseUrl ?? "";
+    }
 
     const providerModels = this.modelsForProvider(providerChoice);
     if (
@@ -932,12 +962,7 @@ export class UndoableOnboarding extends LitElement {
     await this.fetchJson("/api/chat/approval-mode", {
       method: "POST",
       body: JSON.stringify({
-        mode:
-          this.preset === "economy"
-            ? "always"
-            : this.preset === "power"
-              ? "off"
-              : "mutate",
+        mode: "off",
       }),
     });
 
@@ -951,6 +976,43 @@ export class UndoableOnboarding extends LitElement {
             : { level: "medium", visibility: "stream" },
       ),
     });
+
+    const selectedProvider = this.selectedProviderInfo();
+    if (!selectedProvider || !this.activeProvider) {
+      throw new Error("Select a provider before finishing onboarding.");
+    }
+    if (!this.activeModel) {
+      throw new Error("Select a model before finishing onboarding.");
+    }
+
+    const providerApiKey = this.providerApiKeyDraft.trim();
+    if (!selectedProvider.local && providerApiKey.length > 0) {
+      const providerBaseUrl = this.providerBaseUrlDraft.trim();
+      await this.fetchJson("/api/chat/providers", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: this.activeProvider,
+          apiKey: providerApiKey,
+          ...(providerBaseUrl ? { baseUrl: providerBaseUrl } : {}),
+        }),
+      });
+
+      this.providers = this.providers.map((entry) =>
+        entry.id === this.activeProvider
+          ? {
+              ...entry,
+              hasKey: true,
+              baseUrl: providerBaseUrl || entry.baseUrl,
+            }
+          : entry,
+      );
+    }
+
+    if (!this.providerIsReady(selectedProvider)) {
+      throw new Error(
+        `Set an API key for ${selectedProvider.name} or choose a ready local provider.`,
+      );
+    }
 
     if (this.activeProvider && this.activeModel) {
       await this.fetchJson("/api/chat/model", {
@@ -1038,7 +1100,11 @@ export class UndoableOnboarding extends LitElement {
 
   private canProceedFromStep(): boolean {
     if (this.step === 0) return this.timezone.trim().length > 0;
-    if (this.step === 1) return this.botName.trim().length > 0;
+    if (this.step === 1) {
+      if (this.botName.trim().length === 0) return false;
+      if (!this.activeProvider || !this.activeModel) return false;
+      return this.providerIsReady(this.selectedProviderInfo());
+    }
     return true;
   }
 
@@ -1167,6 +1233,11 @@ export class UndoableOnboarding extends LitElement {
   private renderStepAssistant() {
     const modelsForProvider = this.modelsForProvider(this.activeProvider);
     const hasProviderOptions = this.providers.length > 0;
+    const selectedProvider = this.selectedProviderInfo();
+    const providerRequiresApiKey = Boolean(
+      selectedProvider && !selectedProvider.local,
+    );
+    const selectedProviderReady = this.providerIsReady(selectedProvider);
     return html`
       <h2 class="step-title">Assistant identity and defaults</h2>
       <p class="step-desc">
@@ -1214,7 +1285,9 @@ export class UndoableOnboarding extends LitElement {
           <select
             .value=${this.activeProvider}
             @change=${(e: Event) => {
-              this.activeProvider = (e.target as HTMLSelectElement).value;
+              const nextProvider = (e.target as HTMLSelectElement).value;
+              this.activeProvider = nextProvider;
+              this.resetProviderDraft(nextProvider);
               const pool = this.modelsForProvider(this.activeProvider);
               this.activeModel = pool[0]?.id ?? "";
             }}
@@ -1252,6 +1325,57 @@ export class UndoableOnboarding extends LitElement {
           </div>
         </div>
       </div>
+
+      ${providerRequiresApiKey
+        ? html`
+            <div class="grid-2">
+              <div class="field">
+                <label>${selectedProvider?.name || "Provider"} API key</label>
+                <input
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder=${selectedProvider?.hasKey
+                    ? "Already configured. Enter a new key to rotate."
+                    : "Paste API key to continue"}
+                  .value=${this.providerApiKeyDraft}
+                  @input=${(e: Event) => {
+                    this.providerApiKeyDraft = (e.target as HTMLInputElement).value;
+                  }}
+                />
+                <div class="field-hint">
+                  ${selectedProviderReady
+                    ? selectedProvider?.hasKey && this.providerApiKeyDraft.trim().length === 0
+                      ? "Key already configured. Enter a value only to replace it."
+                      : "Key will be saved when onboarding completes."
+                    : "Required: add an API key for the selected provider."}
+                </div>
+              </div>
+
+              <div class="field">
+                <label>Base URL (optional)</label>
+                <input
+                  type="url"
+                  placeholder=${selectedProvider?.baseUrl || "https://api.openai.com/v1"}
+                  .value=${this.providerBaseUrlDraft}
+                  @input=${(e: Event) => {
+                    this.providerBaseUrlDraft = (e.target as HTMLInputElement).value;
+                    this.providerBaseUrlTouched = true;
+                  }}
+                />
+                <div class="field-hint">
+                  Override only for compatible OpenAI-style gateways/proxies.
+                </div>
+              </div>
+            </div>
+          `
+        : selectedProvider?.local
+          ? html`
+              <div class="field-hint">
+                Local provider selected. API key is not required.
+              </div>
+            `
+          : nothing}
 
       <div class="field">
         <label>Optional daily budget (USD)</label>
@@ -1294,8 +1418,10 @@ export class UndoableOnboarding extends LitElement {
   }
 
   private renderStepChecks() {
-    const providersReady = this.providers.filter((p) => p.hasKey || p.local)
-      .length;
+    const selectedProvider = this.selectedProviderInfo();
+    const selectedProviderReady = this.providerIsReady(selectedProvider);
+    const providersReady = this.providers.filter((provider) =>
+      this.providerIsReady(provider)).length;
     const totalProviders = this.providers.length;
     const enabledChannels = this.channels.filter((c) => c.config.enabled).length;
     const connectedChannels = this.channels.filter((c) => c.status.connected)
@@ -1312,13 +1438,17 @@ export class UndoableOnboarding extends LitElement {
       {
         title: "Providers",
         ok: providersReady > 0,
-        copy: `${providersReady}/${totalProviders} provider(s) ready with key or local access.`,
+        copy: selectedProvider
+          ? `${providersReady}/${totalProviders} provider(s) ready. Selected ${selectedProvider.name}: ${selectedProviderReady ? "ready" : "needs API key"}.`
+          : `${providersReady}/${totalProviders} provider(s) ready with key or local access.`,
       },
       {
         title: "Active model",
-        ok: modelReady,
+        ok: modelReady && selectedProviderReady,
         copy: modelReady
-          ? `${this.activeProvider}/${this.activeModel}`
+          ? selectedProviderReady
+            ? `${this.activeProvider}/${this.activeModel}`
+            : `${this.activeProvider}/${this.activeModel} selected, but provider access is not ready yet.`
           : "No active model selected yet.",
       },
       {
@@ -1411,8 +1541,10 @@ export class UndoableOnboarding extends LitElement {
   }
 
   private renderStepReview() {
-    const providersReady = this.providers.filter((p) => p.hasKey || p.local)
-      .length;
+    const selectedProvider = this.selectedProviderInfo();
+    const selectedProviderReady = this.providerIsReady(selectedProvider);
+    const providersReady = this.providers.filter((provider) =>
+      this.providerIsReady(provider)).length;
     const enabledChannels = this.channels.filter((c) => c.config.enabled).length;
     const connectedChannels = this.channels.filter((c) => c.status.connected)
       .length;
@@ -1445,6 +1577,17 @@ export class UndoableOnboarding extends LitElement {
             ${this.activeProvider && this.activeModel
               ? html`<strong>${this.activeProvider}/${this.activeModel}</strong>`
               : "No model selected (can be configured later)."}
+          </div>
+        </div>
+        <div class="summary-row">
+          <div class="summary-key">Provider access</div>
+          <div class="summary-value">
+            ${selectedProvider
+              ? html`
+                  <strong>${selectedProvider.name}</strong>:
+                  <strong>${selectedProviderReady ? "ready" : "needs API key"}</strong>
+                `
+              : "No provider selected."}
           </div>
         </div>
         <div class="summary-row">

@@ -12,6 +12,27 @@ export function resolveDaemonToken(raw?: string): string | undefined {
   return token || undefined;
 }
 
+function normalizeHost(raw: string): string {
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    return trimmed.slice(1, -1);
+  }
+  if (trimmed.startsWith("::ffff:")) {
+    return trimmed.slice("::ffff:".length);
+  }
+  return trimmed;
+}
+
+export function isLoopbackDaemonBaseUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    const host = normalizeHost(parsed.hostname);
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
 type DaemonRequestOptions = {
   url?: string;
   token?: string;
@@ -22,6 +43,13 @@ type DaemonRequestOptions = {
 
 export async function daemonRequest<T>(apiPath: string, opts: DaemonRequestOptions = {}): Promise<T> {
   const baseUrl = resolveDaemonBaseUrl(opts.url);
+  const explicitToken = opts.token?.trim();
+  const explicitUrl = opts.url?.trim();
+  if (explicitUrl && !isLoopbackDaemonBaseUrl(baseUrl) && !explicitToken) {
+    throw new Error(
+      `Remote daemon URL override requires an explicit token (--token). Refusing unauthenticated call to ${baseUrl}.`,
+    );
+  }
   const token = resolveDaemonToken(opts.token);
   const target = `${baseUrl}${apiPath.startsWith("/") ? apiPath : `/${apiPath}`}`;
 

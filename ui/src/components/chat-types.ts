@@ -5,7 +5,14 @@ export type ChatEntry =
   | { kind: "tool_call"; name: string; args: Record<string, unknown>; iteration?: number; maxIterations?: number }
   | { kind: "tool_result"; name: string; result: unknown }
   | { kind: "approval"; id: string; tool: string; description?: string; args?: Record<string, unknown>; resolved?: boolean; approved?: boolean }
-  | { kind: "warning"; content: string };
+  | {
+    kind: "warning";
+    content: string;
+    code?: string;
+    recovery?: string;
+    tool?: string;
+    actionable?: boolean;
+  };
 
 export type SessionItem = {
   id: string;

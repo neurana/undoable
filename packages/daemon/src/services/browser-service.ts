@@ -69,6 +69,144 @@ export type BrowserLaunchOptions = {
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
 const DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const STORAGE_STATE_PATH = path.join(os.homedir(), ".undoable", "browser-state.json");
+const DEFAULT_NAVIGATION_TIMEOUT_MS = 20_000;
+const FALLBACK_SEARCH_URL = "https://duckduckgo.com/?q=";
+const VM_SAFE_CHROMIUM_ARGS = [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-dev-shm-usage",
+  "--disable-gpu",
+  "--no-zygote",
+  "--no-first-run",
+  "--no-default-browser-check",
+];
+
+type NavigationTarget = {
+  targetUrl: string;
+  mode: "navigate" | "search";
+  original: string;
+};
+
+function normalizeBooleanEnv(raw: string | undefined): boolean | null {
+  if (!raw) return null;
+  const value = raw.trim().toLowerCase();
+  if (!value) return null;
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  return null;
+}
+
+function shouldUseVmCompatibilityArgs(): boolean {
+  const envValue = normalizeBooleanEnv(process.env.UNDOABLE_BROWSER_VM_COMPAT);
+  if (envValue !== null) return envValue;
+  return process.platform === "linux";
+}
+
+function dedupeArgs(args: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const arg of args) {
+    const normalized = arg.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function buildChromiumArgs(baseArgs: string[]): string[] {
+  const merged = [...baseArgs];
+  if (shouldUseVmCompatibilityArgs()) {
+    merged.push(...VM_SAFE_CHROMIUM_ARGS);
+  }
+  return dedupeArgs(merged);
+}
+
+function isHeadfulUnavailableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /missing x server/i.test(message) ||
+    /failed to launch browser process/i.test(message) ||
+    /\$display/i.test(message) ||
+    /ozone platform x11/i.test(message);
+}
+
+function normalizeNavigationTarget(rawUrl: string): NavigationTarget {
+  const input = rawUrl.trim();
+  if (!input) {
+    throw new Error("URL is required.");
+  }
+
+  if (/^javascript:/i.test(input)) {
+    throw new Error("javascript: URLs are not allowed.");
+  }
+
+  if (/\s/.test(input)) {
+    return {
+      targetUrl: `${FALLBACK_SEARCH_URL}${encodeURIComponent(input)}`,
+      mode: "search",
+      original: input,
+    };
+  }
+
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(input) ? input : `https://${input}`;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return { targetUrl: parsed.toString(), mode: "navigate", original: input };
+    }
+    if (parsed.protocol === "about:" || parsed.protocol === "file:" || parsed.protocol === "data:") {
+      return { targetUrl: parsed.toString(), mode: "navigate", original: input };
+    }
+    throw new Error(`Unsupported URL protocol: ${parsed.protocol}`);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Unsupported URL protocol:")) {
+      throw error;
+    }
+    return {
+      targetUrl: `${FALLBACK_SEARCH_URL}${encodeURIComponent(input)}`,
+      mode: "search",
+      original: input,
+    };
+  }
+}
+
+async function gotoWithFallback(page: Page, targetUrl: string): Promise<void> {
+  const attempts: Array<{
+    waitUntil: "domcontentloaded" | "load" | "networkidle";
+    timeout: number;
+  }> = [
+    { waitUntil: "domcontentloaded", timeout: DEFAULT_NAVIGATION_TIMEOUT_MS },
+    { waitUntil: "load", timeout: DEFAULT_NAVIGATION_TIMEOUT_MS + 5_000 },
+    { waitUntil: "networkidle", timeout: DEFAULT_NAVIGATION_TIMEOUT_MS + 10_000 },
+  ];
+  let lastError: unknown;
+
+  for (const attempt of attempts) {
+    try {
+      await page.goto(targetUrl, attempt);
+      try {
+        await page.waitForLoadState("networkidle", { timeout: 3_000 });
+      } catch {
+        // Some pages keep long-lived connections. This is best-effort only.
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const reason = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`Navigation failed for ${targetUrl}: ${reason}`);
+}
+
+async function safePageTitle(page: Page): Promise<string> {
+  try {
+    const title = await page.title();
+    return title.trim() || "(untitled)";
+  } catch {
+    return "(untitled)";
+  }
+}
 
 export async function createBrowserService(opts?: BrowserLaunchOptions): Promise<BrowserService> {
   let headless = opts?.headless ?? true;
@@ -81,6 +219,7 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
   let context: BrowserContext | null = null;
   let activePage: Page | null = null;
   let pendingDialogHandler: ((dialog: Dialog) => void) | null = null;
+  let launchNotice: string | null = null;
 
   async function saveStorageState(): Promise<void> {
     if (!persistSession || !context) return;
@@ -105,23 +244,47 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
   async function ensureContext(): Promise<BrowserContext> {
     if (!browser) {
       const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined;
-      const chromiumArgs = launchArgs.length > 0 ? [...launchArgs] : [];
-      // System Chromium in Docker needs sandbox disabled
-      if (executablePath) {
-        chromiumArgs.push("--no-sandbox", "--disable-setuid-sandbox");
+      const chromiumArgs = buildChromiumArgs(launchArgs);
+      const proxy =
+        proxyOpts
+          ? { server: proxyOpts.server, username: proxyOpts.username, password: proxyOpts.password }
+          : undefined;
+
+      try {
+        browser = await chromium.launch({
+          headless,
+          executablePath,
+          args: chromiumArgs.length > 0 ? chromiumArgs : undefined,
+          proxy,
+        });
+      } catch (error) {
+        if (!headless && isHeadfulUnavailableError(error)) {
+          headless = true;
+          launchNotice =
+            "Headful browser is unavailable in this VM/environment; switched to headless automatically.";
+          browser = await chromium.launch({
+            headless: true,
+            executablePath,
+            args: chromiumArgs.length > 0 ? chromiumArgs : undefined,
+            proxy,
+          });
+        } else {
+          throw error;
+        }
       }
-      browser = await chromium.launch({
-        headless,
-        executablePath,
-        args: chromiumArgs.length > 0 ? chromiumArgs : undefined,
-        proxy: proxyOpts ? { server: proxyOpts.server, username: proxyOpts.username, password: proxyOpts.password } : undefined,
-      });
     }
     if (!context) {
       const storageState = persistSession && fs.existsSync(STORAGE_STATE_PATH) ? STORAGE_STATE_PATH : undefined;
       context = await browser.newContext({ userAgent, viewport, storageState });
     }
     return context;
+  }
+
+  function consumeLaunchNotice(): string | null {
+    if (!launchNotice) return null;
+    const notice = launchNotice;
+    launchNotice = null;
+    return notice;
   }
 
   async function ensurePage(): Promise<Page> {
@@ -148,9 +311,16 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
 
     async navigate(url: string) {
       const p = await ensurePage();
-      await p.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
-      const title = await p.title();
-      return `Navigated to ${url} — title: "${title}"`;
+      const target = normalizeNavigationTarget(url);
+      await gotoWithFallback(p, target.targetUrl);
+      const resolvedUrl = p.url();
+      const title = await safePageTitle(p);
+      const summary =
+        target.mode === "search"
+          ? `Searched for "${target.original}" and opened ${resolvedUrl} — title: "${title}"`
+          : `Navigated to ${resolvedUrl} — title: "${title}"`;
+      const notice = consumeLaunchNotice();
+      return notice ? `${summary}. ${notice}` : summary;
     },
 
     async click(selector: string) {
@@ -214,14 +384,17 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
       const ctx = await ensureContext();
       const newPage = await ctx.newPage();
       if (url) {
-        await newPage.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+        const target = normalizeNavigationTarget(url);
+        await gotoWithFallback(newPage, target.targetUrl);
       }
       activePage = newPage;
       const pages = getPages();
+      const title = await safePageTitle(newPage);
+      consumeLaunchNotice();
       return {
         index: pages.indexOf(newPage),
         url: newPage.url(),
-        title: await newPage.title(),
+        title,
         active: true,
       };
     },
@@ -348,6 +521,7 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
     async setHeadless(value: boolean) {
       if (value === headless) return;
       headless = value;
+      launchNotice = null;
       await closeBrowser();
     },
 

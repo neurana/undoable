@@ -76,4 +76,32 @@ describe("settings routes", () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toMatch(/port/i);
   });
+
+  it("gets and sets operation mode via control routes", async () => {
+    const before = await app.inject({
+      method: "GET",
+      url: "/control/operation",
+    });
+    expect(before.statusCode).toBe(200);
+    expect(before.json().mode).toBe("normal");
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/control/operation",
+      payload: { mode: "drain", reason: "deploy in progress" },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().mode).toBe("drain");
+    expect(updated.json().reason).toBe("deploy in progress");
+  });
+
+  it("rejects invalid control operation payload", async () => {
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/control/operation",
+      payload: { reason: "missing mode" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/mode/i);
+  });
 });

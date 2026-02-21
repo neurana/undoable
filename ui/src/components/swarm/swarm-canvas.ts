@@ -1,10 +1,14 @@
 import { LitElement, css, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { SwarmWorkflow } from "../../api/client.js";
+import type { SwarmOrchestrationNodeStatus, SwarmWorkflow } from "../../api/client.js";
 
 type NodePos = { x: number; y: number };
 type NodeRunSnapshot = { runId: string; status: string; updatedAt: string };
-type NodeVisualStatus = "idle" | "running" | "success" | "failed" | "paused";
+type NodeOrchestrationSnapshot = {
+  status: SwarmOrchestrationNodeStatus;
+  reason?: string;
+};
+type NodeVisualStatus = "idle" | "running" | "success" | "failed" | "paused" | "queued" | "blocked";
 type NodeSelectSource = "click" | "drag";
 
 const NODE_WIDTH = 252;
@@ -190,6 +194,14 @@ export class SwarmCanvas extends LitElement {
       opacity: 0.8;
       background: linear-gradient(120deg, rgba(184, 134, 11, 0.6), rgba(184, 134, 11, 0.2), rgba(184, 134, 11, 0.6));
     }
+    .node[data-status="queued"]::before {
+      opacity: 0.88;
+      background: linear-gradient(120deg, rgba(23, 103, 158, 0.55), rgba(23, 103, 158, 0.15), rgba(23, 103, 158, 0.55));
+    }
+    .node[data-status="blocked"]::before {
+      opacity: 0.9;
+      background: linear-gradient(120deg, rgba(120, 75, 24, 0.7), rgba(120, 75, 24, 0.18), rgba(120, 75, 24, 0.7));
+    }
     @keyframes running-border-heartbeat {
       0%, 100% {
         opacity: 0.8;
@@ -320,6 +332,16 @@ export class SwarmCanvas extends LitElement {
       border-color: rgba(184, 134, 11, 0.24);
       color: var(--warning);
       background: rgba(184, 134, 11, 0.08);
+    }
+    .status-pill.queued {
+      border-color: rgba(23, 103, 158, 0.3);
+      color: #17679e;
+      background: rgba(23, 103, 158, 0.09);
+    }
+    .status-pill.blocked {
+      border-color: rgba(120, 75, 24, 0.34);
+      color: #784b18;
+      background: rgba(120, 75, 24, 0.1);
     }
     @keyframes status-breathe {
       0%, 100% { transform: scale(1); }
@@ -465,6 +487,7 @@ export class SwarmCanvas extends LitElement {
   @property({ attribute: false }) positions: Record<string, NodePos> = {};
   @property({ attribute: false }) activeRunsByNode: Record<string, string> = {};
   @property({ attribute: false }) latestRunsByNode: Record<string, NodeRunSnapshot> = {};
+  @property({ attribute: false }) orchestrationNodeStatesByNode: Record<string, NodeOrchestrationSnapshot> = {};
   @state() private draggingNodeId = "";
 
   private drag?: { nodeId: string; pointerId: number; offsetX: number; offsetY: number; startX: number; startY: number; moved: boolean };
@@ -563,13 +586,27 @@ export class SwarmCanvas extends LitElement {
   private runClass(status: string): string {
     const lower = status.toLowerCase();
     if (["created", "planning", "applying", "running"].includes(lower)) return "running";
+    if (["pending", "queued"].includes(lower)) return "running";
     if (["completed", "done", "success"].includes(lower)) return "success";
-    if (["failed", "cancelled", "error"].includes(lower)) return "failed";
+    if (["failed", "cancelled", "error", "blocked", "skipped"].includes(lower)) return "failed";
     return "";
+  }
+
+  private orchestrationVisualStatus(nodeId: string): NodeVisualStatus | null {
+    const state = this.orchestrationNodeStatesByNode[nodeId];
+    if (!state) return null;
+    if (state.status === "running") return "running";
+    if (state.status === "pending") return "queued";
+    if (state.status === "completed") return "success";
+    if (state.status === "failed" || state.status === "cancelled") return "failed";
+    if (state.status === "blocked" || state.status === "skipped") return "blocked";
+    return null;
   }
 
   private nodeStatus(nodeId: string, enabled: boolean): NodeVisualStatus {
     if (!enabled) return "paused";
+    const orchestrated = this.orchestrationVisualStatus(nodeId);
+    if (orchestrated) return orchestrated;
     if (this.activeRunsByNode[nodeId]) return "running";
     const latest = this.latestRunsByNode[nodeId];
     if (!latest) return "idle";
@@ -585,6 +622,8 @@ export class SwarmCanvas extends LitElement {
     if (status === "success") return "Healthy";
     if (status === "failed") return "Attention";
     if (status === "paused") return "Paused";
+    if (status === "queued") return "Queued";
+    if (status === "blocked") return "Blocked";
     return "Idle";
   }
 

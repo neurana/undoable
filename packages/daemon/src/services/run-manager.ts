@@ -21,6 +21,8 @@ type RunManagerPersistenceMode = "on" | "off";
 type RunManagerOptions = {
   persistence?: RunManagerPersistenceMode;
   stateFilePath?: string;
+  maxRuns?: number;
+  retentionDays?: number;
 };
 
 type PersistedRunState = {
@@ -32,6 +34,8 @@ type PersistedRunState = {
 
 const DEFAULT_STATE_FILE = path.join(os.homedir(), ".undoable", "runs-state.json");
 const MAX_EVENTS_PER_RUN = 4_000;
+const DEFAULT_MAX_RUNS = 2_000;
+const DEFAULT_RETENTION_DAYS = 30;
 const IN_PROGRESS_STATUSES = new Set<RunStatus>([
   "planning",
   "planned",
@@ -41,6 +45,32 @@ const IN_PROGRESS_STATUSES = new Set<RunStatus>([
   "applying",
   "undoing",
 ]);
+const TERMINAL_STATUSES = new Set<RunStatus>([
+  "applied",
+  "undone",
+  "cancelled",
+  "failed",
+  "completed",
+]);
+
+function parsePositiveInt(
+  raw: string | undefined,
+  fallback: number,
+  min = 1,
+): number {
+  if (typeof raw !== "string" || raw.trim().length === 0) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.floor(parsed);
+  if (rounded < min) return fallback;
+  return rounded;
+}
+
+function toEpochMs(value: string | undefined): number {
+  if (typeof value !== "string" || value.trim().length === 0) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 export class RunManager {
   private runs = new Map<string, RunRecord>();
@@ -48,6 +78,8 @@ export class RunManager {
   private eventBus: EventBus;
   private readonly persistenceEnabled: boolean;
   private readonly stateFilePath: string;
+  private readonly maxRuns: number;
+  private readonly retentionMs: number | null;
   private persistTimer: NodeJS.Timeout | null = null;
 
   constructor(eventBus: EventBus, opts?: RunManagerOptions) {
@@ -55,6 +87,25 @@ export class RunManager {
     const defaultMode: RunManagerPersistenceMode = process.env.NODE_ENV === "test" ? "off" : "on";
     this.persistenceEnabled = (opts?.persistence ?? defaultMode) === "on";
     this.stateFilePath = opts?.stateFilePath ?? DEFAULT_STATE_FILE;
+    this.maxRuns = Math.max(
+      1,
+      opts?.maxRuns ??
+        parsePositiveInt(
+          process.env.UNDOABLE_RUN_MAX_RECORDS,
+          DEFAULT_MAX_RUNS,
+        ),
+    );
+    const retentionDays = Math.max(
+      0,
+      opts?.retentionDays ??
+        parsePositiveInt(
+          process.env.UNDOABLE_RUN_RETENTION_DAYS,
+          DEFAULT_RETENTION_DAYS,
+          0,
+        ),
+    );
+    this.retentionMs =
+      retentionDays > 0 ? retentionDays * 24 * 60 * 60 * 1000 : null;
     this.restoreFromDisk();
   }
 
@@ -90,6 +141,7 @@ export class RunManager {
     };
     this.runs.set(run.id, run);
     this.eventBus.emit(run.id, "RUN_CREATED", { instruction: input.instruction }, input.userId);
+    this.compactState();
     this.persistNow();
     return run;
   }
@@ -114,6 +166,7 @@ export class RunManager {
     run.status = status;
     run.updatedAt = nowISO();
     this.eventBus.emit(runId, "STATUS_CHANGED", { status }, userId);
+    this.compactState();
     this.persistNow();
     return run;
   }
@@ -123,6 +176,7 @@ export class RunManager {
     if (!run) return undefined;
     run.plan = plan;
     run.updatedAt = nowISO();
+    this.compactState();
     this.persistNow();
     return run;
   }
@@ -170,6 +224,7 @@ export class RunManager {
           restoredAny = true;
         }
       }
+      this.compactState();
       if (restoredAny) this.persistNow();
     } catch {
       // best effort restore; ignore corrupt snapshots
@@ -185,6 +240,7 @@ export class RunManager {
   }
 
   private persistNow(): void {
+    this.compactState();
     if (!this.persistenceEnabled) return;
     try {
       if (this.persistTimer) {
@@ -211,6 +267,57 @@ export class RunManager {
       }
     } catch {
       // best effort persistence; never break run lifecycle
+    }
+  }
+
+  private compactState(): void {
+    const cutoffMs =
+      this.retentionMs !== null ? Date.now() - this.retentionMs : null;
+
+    if (cutoffMs !== null) {
+      for (const run of [...this.runs.values()]) {
+        if (!TERMINAL_STATUSES.has(run.status)) continue;
+        const updatedMs = toEpochMs(run.updatedAt || run.createdAt);
+        if (updatedMs <= 0) continue;
+        if (updatedMs < cutoffMs) {
+          this.runs.delete(run.id);
+          this.eventLogs.delete(run.id);
+        }
+      }
+    }
+
+    if (this.runs.size <= this.maxRuns) return;
+
+    const active: RunRecord[] = [];
+    const terminal: RunRecord[] = [];
+    for (const run of this.runs.values()) {
+      if (TERMINAL_STATUSES.has(run.status)) terminal.push(run);
+      else active.push(run);
+    }
+
+    const byNewest = (a: RunRecord, b: RunRecord) =>
+      toEpochMs(b.updatedAt || b.createdAt) - toEpochMs(a.updatedAt || a.createdAt);
+
+    if (active.length >= this.maxRuns) {
+      active.sort(byNewest);
+      const keep = new Set(active.slice(0, this.maxRuns).map((run) => run.id));
+      for (const run of [...this.runs.values()]) {
+        if (keep.has(run.id)) continue;
+        this.runs.delete(run.id);
+        this.eventLogs.delete(run.id);
+      }
+      return;
+    }
+
+    const allowedTerminal = this.maxRuns - active.length;
+    terminal.sort(byNewest);
+    const keepTerminal = new Set(
+      terminal.slice(0, allowedTerminal).map((run) => run.id),
+    );
+    for (const run of terminal) {
+      if (keepTerminal.has(run.id)) continue;
+      this.runs.delete(run.id);
+      this.eventLogs.delete(run.id);
     }
   }
 }

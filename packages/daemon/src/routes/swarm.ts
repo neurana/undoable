@@ -6,32 +6,17 @@ import type {
   CreateSwarmNodeInput,
   CreateSwarmWorkflowInput,
   SwarmEdge,
+  SwarmOrchestrationRecord,
   SwarmService,
+  SwarmWorkflowRunInput,
   UpdateSwarmNodePatch,
   UpdateSwarmWorkflowPatch,
 } from "../services/swarm-service.js";
+import { SwarmOrchestrator } from "../services/swarm-service.js";
 
 function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
-
-const ACTIVE_RUN_STATUSES = new Set([
-  "created",
-  "planning",
-  "planned",
-  "shadowing",
-  "shadowed",
-  "approval_required",
-  "applying",
-  "running",
-  "undoing",
-]);
-
-type SwarmWorkflowRunBody = {
-  nodeIds?: string[];
-  includeDisabled?: boolean;
-  allowConcurrent?: boolean;
-};
 
 type SwarmNodeLaunchResult = {
   nodeId: string;
@@ -40,19 +25,15 @@ type SwarmNodeLaunchResult = {
   agentId: string;
 };
 
-type SwarmNodeSkipResult = {
-  nodeId: string;
-  reason: string;
-  activeRunId?: string;
-};
-
 function startNodeRun(
   runManager: RunManager,
   workflowName: string,
   node: { id: string; name: string; prompt?: string; jobId?: string; agentId?: string },
   extra?: SwarmRouteDeps,
 ): SwarmNodeLaunchResult {
-  const instruction = node.prompt || `Execute SWARM node "${node.name}" from workflow "${workflowName}".`;
+  const instruction =
+    node.prompt ||
+    `Execute SWARM node "${node.name}" from workflow "${workflowName}".`;
   const jobId = node.jobId ?? `swarm-node-${node.id}`;
   const agentId = node.agentId ?? "default";
 
@@ -81,8 +62,33 @@ function startNodeRun(
   };
 }
 
+function summarizeOrchestration(orchestration: SwarmOrchestrationRecord) {
+  const pendingNodes = orchestration.nodes
+    .filter((node) => node.status === "pending" || node.status === "running")
+    .map((node) => node.nodeId);
+  const failedNodes = orchestration.nodes
+    .filter((node) => node.status === "failed" || node.status === "cancelled")
+    .map((node) => node.nodeId);
+  const blockedNodes = orchestration.nodes
+    .filter((node) => node.status === "blocked")
+    .map((node) => node.nodeId);
+
+  return {
+    orchestrationId: orchestration.id,
+    status: orchestration.status,
+    launched: orchestration.launched,
+    skipped: orchestration.skipped,
+    pendingNodes,
+    failedNodes,
+    blockedNodes,
+    options: orchestration.options,
+    startedAt: orchestration.startedAt,
+    completedAt: orchestration.completedAt,
+  };
+}
+
 export type SwarmRouteDeps = {
-  eventBus: EventBus;
+  eventBus?: EventBus;
   executorDeps?: Omit<RunExecutorDeps, "runManager" | "eventBus">;
 };
 
@@ -92,6 +98,13 @@ export function swarmRoutes(
   runManager: RunManager,
   extra?: SwarmRouteDeps,
 ) {
+  const orchestrator = new SwarmOrchestrator({
+    runManager,
+    eventBus: extra?.eventBus,
+    startNodeRun: (workflow, node) =>
+      startNodeRun(runManager, workflow.name, node, extra),
+  });
+
   app.get("/swarm/workflows", async () => {
     return swarmService.list();
   });
@@ -240,61 +253,52 @@ export function swarmRoutes(
     return reply.code(201).send(run);
   });
 
-  app.post<{ Params: { id: string }; Body: SwarmWorkflowRunBody }>("/swarm/workflows/:id/run", async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: SwarmWorkflowRunInput }>("/swarm/workflows/:id/run", async (req, reply) => {
     const workflow = swarmService.getById(req.params.id);
     if (!workflow) {
       return reply.code(404).send({ error: "Workflow not found" });
     }
 
-    const body = req.body ?? {};
-    const allowConcurrent = body.allowConcurrent === true;
-    const includeDisabled = body.includeDisabled === true;
-    const requestedNodeIds = Array.isArray(body.nodeIds)
-      ? [...new Set(body.nodeIds.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean))]
-      : [];
+    try {
+      const orchestration = orchestrator.start(workflow, req.body ?? {});
+      return reply.code(201).send({
+        workflowId: workflow.id,
+        ...summarizeOrchestration(orchestration),
+      });
+    } catch (err) {
+      return reply.code(400).send({ error: toErrorMessage(err) });
+    }
+  });
 
-    const skipped: SwarmNodeSkipResult[] = [];
-    const launched: SwarmNodeLaunchResult[] = [];
-    const nodeById = new Map(workflow.nodes.map((node) => [node.id, node] as const));
-
-    const nodes = requestedNodeIds.length > 0
-      ? requestedNodeIds.map((nodeId) => {
-        const node = nodeById.get(nodeId);
-        if (!node) {
-          skipped.push({ nodeId, reason: "node not found" });
-          return null;
-        }
-        return node;
-      }).filter((node): node is (typeof workflow.nodes)[number] => node !== null)
-      : workflow.nodes;
-
-    for (const node of nodes) {
-      if (!node.enabled && !includeDisabled) {
-        skipped.push({ nodeId: node.id, reason: "node is disabled" });
-        continue;
-      }
-
-      const jobId = node.jobId ?? `swarm-node-${node.id}`;
-      if (!allowConcurrent) {
-        const activeRun = runManager.listByJobId(jobId).find((run) => ACTIVE_RUN_STATUSES.has(run.status));
-        if (activeRun) {
-          skipped.push({
-            nodeId: node.id,
-            reason: "node already has an active run",
-            activeRunId: activeRun.id,
-          });
-          continue;
-        }
-      }
-
-      launched.push(startNodeRun(runManager, workflow.name, node, extra));
+  app.get<{ Params: { id: string } }>("/swarm/workflows/:id/orchestrations", async (req, reply) => {
+    const workflow = swarmService.getById(req.params.id);
+    if (!workflow) {
+      return reply.code(404).send({ error: "Workflow not found" });
     }
 
-    return reply.code(201).send({
+    return {
       workflowId: workflow.id,
-      launched,
-      skipped,
-      startedAt: new Date().toISOString(),
-    });
+      orchestrations: orchestrator
+        .listByWorkflow(workflow.id)
+        .map((entry) => summarizeOrchestration(entry)),
+    };
+  });
+
+  app.get<{ Params: { id: string; orchestrationId: string } }>("/swarm/workflows/:id/orchestrations/:orchestrationId", async (req, reply) => {
+    const workflow = swarmService.getById(req.params.id);
+    if (!workflow) {
+      return reply.code(404).send({ error: "Workflow not found" });
+    }
+
+    const orchestration = orchestrator.get(req.params.orchestrationId);
+    if (!orchestration || orchestration.workflowId !== workflow.id) {
+      return reply.code(404).send({ error: "Orchestration not found" });
+    }
+
+    return {
+      workflowId: workflow.id,
+      ...summarizeOrchestration(orchestration),
+      nodes: orchestration.nodes,
+    };
   });
 }

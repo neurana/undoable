@@ -1,17 +1,47 @@
 const BASE = "/api";
 
-async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
+function authHeaders(): Record<string, string> {
   const token = localStorage.getItem("undoable_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function throwHttpError(res: Response): Promise<never> {
+  const body = await res.json().catch(() => ({}));
+  throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+}
+
+function fileNameFromDisposition(disposition: string | null): string | null {
+  if (!disposition) return null;
+
+  const utf8 = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8?.[1]) {
+    try {
+      return decodeURIComponent(utf8[1]);
+    } catch {
+      return utf8[1];
+    }
+  }
+
+  const plain = disposition.match(/filename="?([^";]+)"?/i);
+  return plain?.[1] || null;
+}
+
+function fallbackFileName(filePath: string): string {
+  const parts = filePath.split(/[\\/]/);
+  const name = parts[parts.length - 1]?.trim();
+  return name || "download";
+}
+
+async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     ...(opts.body ? { "Content-Type": "application/json" } : {}),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...authHeaders(),
     ...(opts.headers as Record<string, string>),
   };
 
   const res = await fetch(`${BASE}${path}`, { ...opts, headers });
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    await throwHttpError(res);
   }
   return res.json() as Promise<T>;
 }
@@ -21,7 +51,7 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
     method: "POST",
     body: JSON.stringify({ method, params }),
   });
-  if (!rpc.ok) {
+  if ("error" in rpc) {
     throw new Error(rpc.error.message);
   }
   return rpc.result;
@@ -45,6 +75,21 @@ export const api = {
   },
   files: {
     open: (path: string) => request<{ opened: boolean; path: string }>("/files/open", { method: "POST", body: JSON.stringify({ path }) }),
+    download: async (path: string): Promise<{ blob: Blob; fileName: string }> => {
+      const res = await fetch(`${BASE}/files/download?path=${encodeURIComponent(path)}`, {
+        method: "GET",
+        headers: authHeaders(),
+      });
+      if (!res.ok) {
+        await throwHttpError(res);
+      }
+
+      const blob = await res.blob();
+      const fileName =
+        fileNameFromDisposition(res.headers.get("content-disposition")) ||
+        fallbackFileName(path);
+      return { blob, fileName };
+    },
   },
   chat: {
     getRunConfig: () => request<ChatRunConfig>("/chat/run-config"),
@@ -87,24 +132,24 @@ export const api = {
     start: (id: string) => request<{ started: boolean }>(`/channels/${id}/start`, { method: "POST" }),
     stop: (id: string) => request<{ stopped: boolean }>(`/channels/${id}/stop`, { method: "POST" }),
     probe: (channel?: string, deep = true) =>
-      gatewayRequest("channels.probe", channel ? { channel, deep } : { deep }),
+      gatewayRequest<ChannelProbeSummaryResult>("channels.probe", channel ? { channel, deep } : { deep }),
     capabilities: (channel?: string) =>
-      gatewayRequest("channels.capabilities", channel ? { channel } : {}),
+      gatewayRequest<ChannelCapabilitiesResult>("channels.capabilities", channel ? { channel } : {}),
     logs: (opts?: { channel?: string; limit?: number }) =>
-      gatewayRequest("channels.logs", {
+      gatewayRequest<ChannelLogsResult>("channels.logs", {
         ...(opts?.channel ? { channel: opts.channel } : {}),
         ...(typeof opts?.limit === "number" ? { limit: opts.limit } : {}),
       }),
     resolve: (channel: string, entries: string[], kind: "auto" | "user" | "group" = "auto") =>
       gatewayRequest("channels.resolve", { channel, entries, kind }),
     pairingList: (channel?: string) =>
-      gatewayRequest("pairing.list", channel ? { channel } : {}),
+      gatewayRequest<ChannelPairingListResult>("pairing.list", channel ? { channel } : {}),
     pairingApprove: (input: { requestId?: string; channel?: string; code?: string; approvedBy?: string }) =>
-      gatewayRequest("pairing.approve", input),
+      gatewayRequest<ChannelPairingApproveResult>("pairing.approve", input),
     pairingReject: (input: { requestId?: string; channel?: string; code?: string; rejectedBy?: string }) =>
-      gatewayRequest("pairing.reject", input),
+      gatewayRequest<ChannelPairingRejectResult>("pairing.reject", input),
     pairingRevoke: (channel: string, userId: string) =>
-      gatewayRequest("pairing.revoke", { channel, userId }),
+      gatewayRequest<ChannelPairingRevokeResult>("pairing.revoke", { channel, userId }),
   },
   sessions: {
     list: (opts?: { limit?: number; active_minutes?: number; include_internal?: boolean }) => {
@@ -124,6 +169,10 @@ export const api = {
       return request<{ messages: unknown[]; count: number }>(`/sessions/${id}/history${qs ? `?${qs}` : ""}`);
     },
   },
+  health: {
+    status: () => request<HealthStatusResponse>("/health"),
+    permissions: () => request<PermissionStatusResponse>("/permissions"),
+  },
   settings: {
     daemon: {
       get: () => request<DaemonSettingsSnapshot>("/settings/daemon"),
@@ -131,6 +180,14 @@ export const api = {
         request<DaemonSettingsSnapshot>("/settings/daemon", {
           method: "PATCH",
           body: JSON.stringify(patch),
+        }),
+    },
+    operation: {
+      get: () => request<DaemonOperationalState>("/control/operation"),
+      update: (mode: DaemonOperationMode, reason?: string) =>
+        request<DaemonOperationalState>("/control/operation", {
+          method: "PATCH",
+          body: JSON.stringify({ mode, ...(reason !== undefined ? { reason } : {}) }),
         }),
     },
   },
@@ -171,6 +228,10 @@ export const api = {
       request<RunItem>(`/swarm/workflows/${workflowId}/nodes/${nodeId}/run`, { method: "POST" }),
     runWorkflow: (workflowId: string, input: SwarmWorkflowRunInput = {}) =>
       request<SwarmWorkflowRunResult>(`/swarm/workflows/${workflowId}/run`, { method: "POST", body: JSON.stringify(input) }),
+    listOrchestrations: (workflowId: string) =>
+      request<SwarmOrchestrationListResult>(`/swarm/workflows/${workflowId}/orchestrations`),
+    getOrchestration: (workflowId: string, orchestrationId: string) =>
+      request<SwarmOrchestrationDetail>(`/swarm/workflows/${workflowId}/orchestrations/${orchestrationId}`),
   },
   undo: {
     list: () => request<UndoListResult>("/chat/undo", { method: "POST", body: JSON.stringify({ action: "list" }) }),
@@ -191,8 +252,23 @@ export const api = {
       setProvider: (provider: string) => gatewayRequest<{ provider: string; providers: string[] }>("tts.setProvider", { provider }),
     },
     browser: {
+      request: <T = unknown>(action: string, params: Record<string, unknown> = {}) =>
+        gatewayRequest<T>("browser.request", { action, ...params }),
       isHeadless: () => gatewayRequest<{ headless: boolean }>("browser.request", { action: "isHeadless" }),
       setHeadless: (value: boolean) => gatewayRequest<{ headless: boolean }>("browser.request", { action: "setHeadless", value }),
+      tabs: () => gatewayRequest<GatewayBrowserTabsResult>("browser.request", { action: "tabs" }),
+      navigate: (url: string) => gatewayRequest<GatewayBrowserMessageResult>("browser.request", { action: "navigate", url }),
+      openTab: (url?: string) =>
+        gatewayRequest<GatewayBrowserTabResult>("browser.request", {
+          action: "openTab",
+          ...(url ? { url } : {}),
+        }),
+      focusTab: (index: number) =>
+        gatewayRequest<GatewayBrowserMessageResult>("browser.request", { action: "focusTab", index }),
+      closeTab: (index: number) =>
+        gatewayRequest<GatewayBrowserMessageResult>("browser.request", { action: "closeTab", index }),
+      text: () => gatewayRequest<GatewayBrowserTextResult>("browser.request", { action: "text" }),
+      snapshot: () => gatewayRequest<GatewayBrowserSnapshotResult>("browser.request", { action: "snapshot" }),
     },
     agentsFiles: {
       list: (agentId: string) => gatewayRequest<GatewayAgentFilesListResult>("agents.files.list", { agentId }),
@@ -400,10 +476,15 @@ export type SwarmWorkflowRunInput = {
   nodeIds?: string[];
   includeDisabled?: boolean;
   allowConcurrent?: boolean;
+  maxParallel?: number;
+  failFast?: boolean;
+  respectDependencies?: boolean;
 };
 
 export type SwarmWorkflowRunResult = {
   workflowId: string;
+  orchestrationId: string;
+  status: "running" | "completed" | "failed";
   launched: Array<{
     nodeId: string;
     runId: string;
@@ -415,7 +496,65 @@ export type SwarmWorkflowRunResult = {
     reason: string;
     activeRunId?: string;
   }>;
+  pendingNodes: string[];
+  failedNodes: string[];
+  blockedNodes: string[];
+  options: Required<SwarmWorkflowRunInput>;
   startedAt: string;
+  completedAt?: string;
+};
+
+export type SwarmOrchestrationNodeStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "skipped"
+  | "blocked";
+
+export type SwarmOrchestrationNodeState = {
+  nodeId: string;
+  status: SwarmOrchestrationNodeStatus;
+  dependsOn: string[];
+  runId?: string;
+  jobId?: string;
+  agentId?: string;
+  reason?: string;
+  startedAt?: string;
+  completedAt?: string;
+};
+
+export type SwarmOrchestrationSummary = {
+  orchestrationId: string;
+  status: "running" | "completed" | "failed";
+  launched: Array<{
+    nodeId: string;
+    runId: string;
+    jobId: string;
+    agentId: string;
+  }>;
+  skipped: Array<{
+    nodeId: string;
+    reason: string;
+    activeRunId?: string;
+  }>;
+  pendingNodes: string[];
+  failedNodes: string[];
+  blockedNodes: string[];
+  options: Required<SwarmWorkflowRunInput>;
+  startedAt: string;
+  completedAt?: string;
+};
+
+export type SwarmOrchestrationListResult = {
+  workflowId: string;
+  orchestrations: SwarmOrchestrationSummary[];
+};
+
+export type SwarmOrchestrationDetail = SwarmOrchestrationSummary & {
+  workflowId: string;
+  nodes: SwarmOrchestrationNodeState[];
 };
 
 export type NodeItem = {
@@ -467,10 +606,118 @@ export type ChannelSnapshotItem = {
   }>;
 };
 
+export type ChannelPairingStatus = "pending" | "approved" | "rejected" | "expired";
+
+export type ChannelPairingRequest = {
+  requestId: string;
+  channelId: string;
+  userId: string;
+  chatId: string;
+  code: string;
+  status: ChannelPairingStatus;
+  createdAt: number;
+  updatedAt: number;
+  lastPromptAt?: number;
+  promptCount: number;
+  resolvedAt?: number;
+  resolvedBy?: string;
+};
+
+export type ChannelPairingApproval = {
+  channelId: string;
+  userId: string;
+  approvedAt: number;
+  requestId?: string;
+  approvedBy?: string;
+};
+
+export type ChannelPairingListResult = {
+  channel: string | null;
+  pending: ChannelPairingRequest[];
+  approved: ChannelPairingApproval[];
+  recent: ChannelPairingRequest[];
+};
+
+export type ChannelPairingApproveResult = {
+  ok: boolean;
+  request?: ChannelPairingRequest;
+  approval?: ChannelPairingApproval;
+  error?: string;
+};
+
+export type ChannelPairingRejectResult = {
+  ok: boolean;
+  request?: ChannelPairingRequest;
+  error?: string;
+};
+
+export type ChannelPairingRevokeResult = {
+  ok: boolean;
+  removed?: ChannelPairingApproval;
+  error?: string;
+};
+
 export type ChannelItem = {
   config: ChannelConfigItem;
   status: ChannelStatusItem;
   snapshot?: ChannelSnapshotItem;
+};
+
+export type ChannelProbeCheck = {
+  name: string;
+  ok: boolean;
+  severity: "info" | "warn" | "error";
+  message: string;
+};
+
+export type ChannelProbeResult = {
+  channelId: string;
+  probedAt: number;
+  connected: boolean;
+  ok: boolean;
+  checks: ChannelProbeCheck[];
+};
+
+export type ChannelProbeSummaryResult = {
+  ts: number;
+  deep: boolean;
+  channelOrder: string[];
+  probes: Record<string, ChannelProbeResult>;
+  okCount: number;
+  failCount: number;
+};
+
+export type ChannelCapability = {
+  channelId: string;
+  name: string;
+  auth: string[];
+  supports: string[];
+  toolActions: string[];
+  notes: string[];
+};
+
+export type ChannelCapabilitiesResult = {
+  ts: number;
+  channelOrder: string[];
+  capabilities: Record<string, ChannelCapability>;
+};
+
+export type ChannelLogEntry = {
+  id: string;
+  ts: number;
+  channelId: string;
+  level: "info" | "warn" | "error";
+  event: string;
+  message: string;
+  meta?: Record<string, unknown>;
+};
+
+export type ChannelLogsResult = {
+  ts: number;
+  channel: string | null;
+  limit: number;
+  count: number;
+  logs: ChannelLogEntry[];
 };
 
 type GatewayRpcResponse<T> =
@@ -481,6 +728,41 @@ export type GatewayTtsStatus = {
   enabled: boolean;
   provider: string;
   providers: string[];
+};
+
+export type GatewayBrowserTab = {
+  index: number;
+  url: string;
+  title: string;
+  active: boolean;
+};
+
+export type GatewayBrowserMessageResult = {
+  message: string;
+};
+
+export type GatewayBrowserTabResult = {
+  tab: GatewayBrowserTab;
+};
+
+export type GatewayBrowserTabsResult = {
+  tabs: GatewayBrowserTab[];
+};
+
+export type GatewayBrowserTextResult = {
+  text: string;
+};
+
+export type GatewayBrowserSnapshotNode = {
+  role: string;
+  name?: string;
+  value?: string;
+  description?: string;
+  children?: GatewayBrowserSnapshotNode[];
+};
+
+export type GatewayBrowserSnapshotResult = {
+  snapshot: GatewayBrowserSnapshotNode | null;
 };
 
 export type GatewayAgentFileRow = {
@@ -617,9 +899,31 @@ export type ChatRunConfigPatch = {
   allowIrreversibleActions?: boolean;
 };
 
+export type HealthStatusResponse = {
+  status: "ok" | "degraded";
+  ready: boolean;
+  version: string;
+  uptime: number;
+  checks: Record<string, unknown>;
+};
+
+export type PermissionStatusResponse = {
+  fullDiskAccess: boolean;
+  details: Record<string, boolean>;
+  platform: string;
+  fix?: string;
+};
+
 export type DaemonBindMode = "loopback" | "all" | "custom";
 export type DaemonAuthMode = "open" | "token";
 export type DaemonSecurityPolicy = "strict" | "balanced" | "permissive";
+export type DaemonOperationMode = "normal" | "drain" | "paused";
+
+export type DaemonOperationalState = {
+  mode: DaemonOperationMode;
+  reason: string;
+  updatedAt: string;
+};
 
 export type DaemonSettingsRecord = {
   host: string;
@@ -628,6 +932,8 @@ export type DaemonSettingsRecord = {
   authMode: DaemonAuthMode;
   token: string;
   securityPolicy: DaemonSecurityPolicy;
+  operationMode: DaemonOperationMode;
+  operationReason: string;
   updatedAt: string;
 };
 
@@ -641,6 +947,8 @@ export type DaemonSettingsSnapshot = {
     authMode: DaemonAuthMode;
     tokenSet: boolean;
     securityPolicy: DaemonSecurityPolicy;
+    operationMode: DaemonOperationMode;
+    operationReason: string;
   };
   restartRequired: boolean;
 };
@@ -653,4 +961,6 @@ export type DaemonSettingsPatch = Partial<{
   token: string;
   rotateToken: boolean;
   securityPolicy: DaemonSecurityPolicy;
+  operationMode: DaemonOperationMode;
+  operationReason: string;
 }>;

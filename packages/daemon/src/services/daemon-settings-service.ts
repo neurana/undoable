@@ -6,6 +6,13 @@ import path from "node:path";
 export type DaemonBindMode = "loopback" | "all" | "custom";
 export type DaemonAuthMode = "open" | "token";
 export type DaemonSecurityPolicy = "strict" | "balanced" | "permissive";
+export type DaemonOperationMode = "normal" | "drain" | "paused";
+
+export type DaemonOperationalState = {
+  mode: DaemonOperationMode;
+  reason: string;
+  updatedAt: string;
+};
 
 export type DaemonSettingsRecord = {
   host: string;
@@ -14,6 +21,8 @@ export type DaemonSettingsRecord = {
   authMode: DaemonAuthMode;
   token: string;
   securityPolicy: DaemonSecurityPolicy;
+  operationMode: DaemonOperationMode;
+  operationReason: string;
   updatedAt: string;
 };
 
@@ -25,6 +34,8 @@ export type DaemonSettingsPatch = Partial<{
   token: string;
   rotateToken: boolean;
   securityPolicy: DaemonSecurityPolicy;
+  operationMode: DaemonOperationMode;
+  operationReason: string;
 }>;
 
 export type DaemonSettingsSnapshot = {
@@ -37,6 +48,8 @@ export type DaemonSettingsSnapshot = {
     authMode: DaemonAuthMode;
     tokenSet: boolean;
     securityPolicy: DaemonSecurityPolicy;
+    operationMode: DaemonOperationMode;
+    operationReason: string;
   };
   restartRequired: boolean;
 };
@@ -104,6 +117,8 @@ function createDefaultRecord(): DaemonSettingsRecord {
       authMode,
       explicit: process.env.UNDOABLE_SECURITY_POLICY,
     }),
+    operationMode: "normal",
+    operationReason: "",
     updatedAt: new Date().toISOString(),
   };
 }
@@ -137,6 +152,21 @@ function ensureSecurityPolicy(policy: string): DaemonSecurityPolicy {
     return policy;
   }
   throw new Error("securityPolicy must be strict, balanced, or permissive");
+}
+
+function ensureOperationMode(mode: string): DaemonOperationMode {
+  if (mode === "normal" || mode === "drain" || mode === "paused") return mode;
+  throw new Error("operationMode must be normal, drain, or paused");
+}
+
+function normalizeOperationReason(value: string | undefined): string {
+  if (!value) return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (trimmed.length > 280) {
+    throw new Error("operationReason must be at most 280 characters");
+  }
+  return trimmed;
 }
 
 function generateToken(): string {
@@ -173,6 +203,12 @@ function normalizeRecord(input: Partial<DaemonSettingsRecord>): DaemonSettingsRe
           explicit: base.securityPolicy,
         }),
   );
+  const operationMode = ensureOperationMode(
+    typeof input.operationMode === "string" ? input.operationMode : "normal",
+  );
+  const operationReason = normalizeOperationReason(
+    typeof input.operationReason === "string" ? input.operationReason : "",
+  );
   return {
     host: normalizedHost,
     port,
@@ -180,6 +216,8 @@ function normalizeRecord(input: Partial<DaemonSettingsRecord>): DaemonSettingsRe
     authMode,
     token: normalizedToken,
     securityPolicy,
+    operationMode,
+    operationReason,
     updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : new Date().toISOString(),
   };
 }
@@ -209,7 +247,9 @@ export class DaemonSettingsService {
     });
   }
 
-  private getEffective(): DaemonSettingsSnapshot["effective"] {
+  private getEffective(
+    desired?: DaemonSettingsRecord,
+  ): DaemonSettingsSnapshot["effective"] {
     const host = resolveRuntimeHost();
     const token = process.env.UNDOABLE_TOKEN?.trim() ?? "";
     const authMode: DaemonAuthMode = token.length > 0 ? "token" : "open";
@@ -224,6 +264,8 @@ export class DaemonSettingsService {
         authMode,
         explicit: process.env.UNDOABLE_SECURITY_POLICY,
       }),
+      operationMode: desired?.operationMode ?? "normal",
+      operationReason: desired?.operationReason ?? "",
     };
   }
 
@@ -242,7 +284,7 @@ export class DaemonSettingsService {
 
   async getSnapshot(): Promise<DaemonSettingsSnapshot> {
     const desired = (await this.loadStored()) ?? createDefaultRecord();
-    const effective = this.getEffective();
+    const effective = this.getEffective(desired);
     return {
       settingsFile: this.settingsFile,
       desired,
@@ -302,6 +344,12 @@ export class DaemonSettingsService {
     if (patch.securityPolicy !== undefined) {
       next.securityPolicy = ensureSecurityPolicy(String(patch.securityPolicy));
     }
+    if (patch.operationMode !== undefined) {
+      next.operationMode = ensureOperationMode(String(patch.operationMode));
+    }
+    if (patch.operationReason !== undefined) {
+      next.operationReason = normalizeOperationReason(String(patch.operationReason));
+    }
 
     const record = normalizeRecord({
       ...next,
@@ -314,5 +362,29 @@ export class DaemonSettingsService {
 
     await this.save(record);
     return this.getSnapshot();
+  }
+
+  async getOperationalState(): Promise<DaemonOperationalState> {
+    const snapshot = await this.getSnapshot();
+    return {
+      mode: snapshot.desired.operationMode,
+      reason: snapshot.desired.operationReason,
+      updatedAt: snapshot.desired.updatedAt,
+    };
+  }
+
+  async setOperationalState(
+    mode: DaemonOperationMode,
+    reason?: string,
+  ): Promise<DaemonOperationalState> {
+    const snapshot = await this.update({
+      operationMode: mode,
+      operationReason: reason ?? "",
+    });
+    return {
+      mode: snapshot.desired.operationMode,
+      reason: snapshot.desired.operationReason,
+      updatedAt: snapshot.desired.updatedAt,
+    };
   }
 }

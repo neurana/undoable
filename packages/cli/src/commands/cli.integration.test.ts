@@ -150,7 +150,7 @@ describe("nrn CLI integration", () => {
     );
   });
 
-  it("status uses daemon pid state port instead of hardcoded default", { timeout: 15000 }, () => {
+  it("status uses daemon pid state port and reports degraded when pid is alive", { timeout: 15000 }, () => {
     const homeDir = makeTempDir("undoable-cli-home-");
     const undoableDir = path.join(homeDir, ".undoable");
     fs.mkdirSync(undoableDir, { recursive: true });
@@ -169,6 +169,6 @@ describe("nrn CLI integration", () => {
       daemonPort?: number;
     };
     expect(json.daemonPort).toBe(port);
-    expect(json.daemon).toBe("stopped");
+    expect(json.daemon).toBe("degraded");
   });
 });

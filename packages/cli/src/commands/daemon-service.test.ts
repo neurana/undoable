@@ -19,6 +19,8 @@ describe("daemon service templates", () => {
     expect(plist).toContain(`<string>${DAEMON_SERVICE_LABEL}</string>`);
     expect(plist).toContain("<key>NRN_PORT</key>");
     expect(plist).toContain("<string>7433</string>");
+    expect(plist).toContain("<key>UNDOABLE_DAEMON_SETTINGS_FILE</key>");
+    expect(plist).toContain("/Users/test/.undoable/daemon-settings.json");
     expect(plist).toContain("daemon-service.log");
     expect(plist).toContain("Local Documents");
   });
@@ -33,6 +35,7 @@ describe("daemon service templates", () => {
 
     expect(unit).toContain(`[Install]\nWantedBy=default.target`);
     expect(unit).toContain(`Environment=NRN_PORT=7433`);
+    expect(unit).toContain(`Environment=UNDOABLE_DAEMON_SETTINGS_FILE=/home/test/.undoable/daemon-settings.json`);
     expect(unit).toContain(`Restart=always`);
     expect(unit).toContain("/home/test/Local\\ Documents/undoable/dist/daemon/index.mjs");
     expect(unit).toContain(`Description=Undoable daemon service`);

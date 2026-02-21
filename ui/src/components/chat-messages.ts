@@ -42,12 +42,124 @@ export class ChatMessages extends LitElement {
       from { opacity: 0; transform: translateX(-50%) translateY(8px); }
       to { opacity: 1; transform: translateX(-50%) translateY(0); }
     }
+    .warning-card {
+      background: color-mix(in srgb, var(--warning-subtle) 88%, white);
+      border: 1px solid color-mix(in srgb, var(--warning) 26%, transparent);
+      border-left: 3px solid var(--warning);
+      border-radius: 12px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .warning-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--warning);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .warning-title code {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: color-mix(in srgb, var(--warning) 78%, black);
+      background: color-mix(in srgb, var(--warning-subtle) 70%, white);
+      border: 1px solid color-mix(in srgb, var(--warning) 18%, transparent);
+      border-radius: 6px;
+      padding: 1px 6px;
+      line-height: 1.4;
+    }
+    .warning-text {
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .warning-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .warning-action {
+      border: 1px solid var(--border-strong);
+      background: var(--surface-1);
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 999px;
+      height: 28px;
+      padding: 0 12px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 140ms ease;
+    }
+    .warning-action:hover {
+      background: var(--wash);
+      color: var(--text-primary);
+    }
+    .warning-action.primary {
+      border-color: color-mix(in srgb, var(--warning) 36%, transparent);
+      background: color-mix(in srgb, var(--warning-subtle) 72%, white);
+      color: var(--warning);
+    }
+    .warning-action.primary:hover {
+      background: color-mix(in srgb, var(--warning-subtle) 58%, white);
+    }
+    .warning-action:disabled {
+      opacity: 0.62;
+      cursor: not-allowed;
+    }
+    .warning-mode {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      color: var(--text-tertiary);
+      font-family: var(--mono);
+    }
+    .warning-mode-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--border-strong) 78%, transparent);
+      background: var(--surface-1);
+      color: var(--text-secondary);
+      padding: 2px 7px;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.28px;
+      text-transform: uppercase;
+      line-height: 1.1;
+    }
+    .warning-mode-badge.strict {
+      color: var(--success);
+      border-color: color-mix(in srgb, var(--success) 32%, transparent);
+      background: color-mix(in srgb, var(--success) 8%, white);
+    }
+    .warning-mode-badge.open {
+      color: var(--danger);
+      border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+      background: color-mix(in srgb, var(--danger-subtle) 72%, white);
+    }
+    .warning-mode-badge.once {
+      color: var(--warning);
+      border-color: color-mix(in srgb, var(--warning) 36%, transparent);
+      background: color-mix(in srgb, var(--warning-subtle) 72%, white);
+    }
   `];
 
   @property({ type: Array }) entries: ChatEntry[] = [];
   @property({ type: Boolean }) loading = false;
   @property({ type: Number }) currentIter = 0;
   @property({ type: Number }) maxIter = 0;
+  @property({ type: Boolean }) allowIrreversibleActions = false;
+  @property({ type: Boolean }) allowIrreversibleOnceArmed = false;
+  @property({ type: Boolean }) undoGuardApplying = false;
   @state() private playingMsgIndex = -1;
   @state() private collapsedTools = new Set<number>();
   @state() private approvalCountdowns = new Map<string, number>();
@@ -56,18 +168,44 @@ export class ChatMessages extends LitElement {
   @state() private fileToast = "";
   @query(".messages") private messagesEl!: HTMLElement;
 
+  private showFileToast(message: string) {
+    this.fileToast = message;
+    setTimeout(() => {
+      if (this.fileToast === message) {
+        this.fileToast = "";
+      }
+    }, 2500);
+  }
+
+  private async downloadFile(filePath: string) {
+    const { blob, fileName } = await api.files.download(filePath);
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    anchor.style.display = "none";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+
   private async openFile(filePath: string, e: Event) {
     e.stopPropagation();
     try {
       await api.files.open(filePath);
     } catch {
       try {
-        await navigator.clipboard.writeText(filePath);
-        this.fileToast = "Path copied to clipboard";
+        await this.downloadFile(filePath);
+        this.showFileToast("File downloaded");
       } catch {
-        this.fileToast = "Could not open file";
+        try {
+          await navigator.clipboard.writeText(filePath);
+          this.showFileToast("Path copied to clipboard");
+        } catch {
+          this.showFileToast("Could not open or download file");
+        }
       }
-      setTimeout(() => { this.fileToast = ""; }, 2500);
     }
   }
 
@@ -228,6 +366,36 @@ export class ChatMessages extends LitElement {
     return `${m}:${s.toString().padStart(2, "0")}`;
   }
 
+  private emitUndoGuardAllowOnce() {
+    this.dispatchEvent(
+      new CustomEvent("undo-guard-allow-once", {
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  private emitUndoGuardKeepStrict() {
+    this.dispatchEvent(
+      new CustomEvent("undo-guard-keep-strict", {
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  private undoModeLabel(): string {
+    if (this.allowIrreversibleOnceArmed) return "open once";
+    return this.allowIrreversibleActions ? "open" : "strict";
+  }
+
+  private undoModeBadgeClass(): string {
+    if (this.allowIrreversibleOnceArmed) return "warning-mode-badge once";
+    return this.allowIrreversibleActions
+      ? "warning-mode-badge open"
+      : "warning-mode-badge strict";
+  }
+
   // ── Render entries ──
 
   private renderEntry(e: ChatEntry, index: number) {
@@ -363,6 +531,47 @@ export class ChatMessages extends LitElement {
       `;
     }
     if (e.kind === "warning") {
+      if (e.code === "undo_guarantee_blocked" || e.actionable) {
+        return html`
+          <div class="msg-rail">
+            <div class="indent">
+              <div class="warning-card">
+                <div class="warning-title">
+                  Undo Guarantee blocked
+                  ${e.tool ? html`<code>${e.tool}</code>` : nothing}
+                </div>
+                <div class="warning-text">${e.content}</div>
+                ${e.recovery ? html`<div class="warning-text">${e.recovery}</div>` : nothing}
+                <div class="warning-mode">
+                  Mode
+                  <span class="${this.undoModeBadgeClass()}">${this.undoModeLabel()}</span>
+                </div>
+                <div class="warning-actions">
+                  ${!this.allowIrreversibleActions
+                    ? html`
+                        <button
+                          class="warning-action primary"
+                          ?disabled=${this.undoGuardApplying}
+                          @click=${this.emitUndoGuardAllowOnce}
+                        >
+                          ${this.undoGuardApplying
+                            ? "Allowing..."
+                            : "Allow Once and Continue"}
+                        </button>
+                      `
+                    : nothing}
+                  <button
+                    class="warning-action"
+                    @click=${this.emitUndoGuardKeepStrict}
+                  >
+                    Keep Strict
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
       return html`<div class="msg-rail"><div class="indent"><div class="warning-inner">${e.content}</div></div></div>`;
     }
     return nothing;

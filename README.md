@@ -72,7 +72,7 @@ Important scope boundary:
 
 ## Requirements
 
-- Node.js `>=20.10.0`
+- Node.js `>=22.0.0`
 - pnpm `>=10`
 - PostgreSQL `16+` (native mode)
 - Docker + Docker Compose (docker mode)
@@ -160,6 +160,7 @@ Native daemon lifecycle:
 ```bash
 nrn daemon start
 nrn daemon status
+nrn daemon mode
 nrn daemon stop
 ```
 
@@ -167,6 +168,7 @@ Notes:
 
 - `nrn daemon start` now runs in supervised mode by default and auto-restarts after crashes
 - Use `nrn daemon start --no-supervise` only if you explicitly want direct unmanaged mode
+- `nrn daemon mode normal|drain|paused` lets you temporarily block new runs without stopping the daemon
 - Daemon logs are written to `~/.undoable/logs/daemon.log`
 - Health endpoint remains `http://127.0.0.1:7433/health` (or your configured port)
 
@@ -231,6 +233,8 @@ Useful daemon lifecycle commands:
 ```bash
 nrn daemon start
 nrn daemon status
+nrn daemon mode paused --reason "maintenance"
+nrn daemon mode normal
 nrn daemon stop
 ```
 
@@ -525,7 +529,7 @@ cd docker
 ### 6) `pnpm build` fails immediately with Node version error
 
 - Run `node -v`
-- Install/activate Node `20.10+`
+- Install/activate Node `22+`
 - Retry `pnpm build`
 
 ### 7) `nrn daemon start` reports process running but unhealthy

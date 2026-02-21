@@ -1,9 +1,19 @@
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { api, type RunItem, type SwarmNodePatchInput, type SwarmWorkflow, type SwarmWorkflowRunResult } from "../api/client.js";
+import {
+  api,
+  type RunItem,
+  type SwarmNodePatchInput,
+  type SwarmOrchestrationDetail,
+  type SwarmOrchestrationNodeStatus,
+  type SwarmOrchestrationSummary,
+  type SwarmWorkflow,
+  type SwarmWorkflowRunResult,
+} from "../api/client.js";
 import "./swarm/swarm-canvas.js";
 import "./swarm/swarm-inspector.js";
 import "./swarm/swarm-multi-terminal.js";
+import "./swarm/swarm-orchestration-timeline.js";
 import "./run-detail.js";
 
 const POSITIONS_KEY = "undoable_swarm_positions_v1";
@@ -11,7 +21,20 @@ const POSITIONS_KEY = "undoable_swarm_positions_v1";
 type NodePos = { x: number; y: number };
 type PositionMap = Record<string, NodePos>;
 type NodeRunSnapshot = { runId: string; status: string; updatedAt: string };
+type NodeOrchestrationSnapshot = { status: SwarmOrchestrationNodeStatus; reason?: string; runId?: string };
 type NodeSelectEventDetail = { nodeId: string; source?: "click" | "drag" };
+
+const ACTIVE_RUN_STATUSES = new Set([
+  "created",
+  "planning",
+  "planned",
+  "shadowing",
+  "shadowed",
+  "approval_required",
+  "applying",
+  "undoing",
+  "running",
+]);
 
 @customElement("swarm-panel")
 export class SwarmPanel extends LitElement {
@@ -353,6 +376,10 @@ export class SwarmPanel extends LitElement {
   @state() private inspectorOpen = true;
   @state() private activeRunsByNode: Record<string, string> = {};
   @state() private latestRunsByNode: Record<string, NodeRunSnapshot> = {};
+  @state() private orchestrationNodeStatesByNode: Record<string, NodeOrchestrationSnapshot> = {};
+  @state() private activeOrchestrationId = "";
+  @state() private orchestrationStatus: "idle" | "running" | "completed" | "failed" = "idle";
+  @state() private orchestrations: SwarmOrchestrationSummary[] = [];
   @state() private viewMode: "canvas" | "terminal" = "canvas";
   @state() private selectedRunId = "";
   @state() private isFullscreen = false;
@@ -418,38 +445,128 @@ export class SwarmPanel extends LitElement {
     }, first);
   }
 
+  private mapOrchestrationState(orchestration: SwarmOrchestrationDetail | null): Record<string, NodeOrchestrationSnapshot> {
+    if (!orchestration) return {};
+    const map: Record<string, NodeOrchestrationSnapshot> = {};
+    for (const node of orchestration.nodes) {
+      map[node.nodeId] = {
+        status: node.status,
+        reason: node.reason,
+        runId: node.runId,
+      };
+    }
+    return map;
+  }
+
+  private async resolveOrchestration(workflowId: string): Promise<SwarmOrchestrationDetail | null> {
+    try {
+      const out = await api.swarm.listOrchestrations(workflowId);
+      this.orchestrations = out.orchestrations;
+      if (out.orchestrations.length === 0) {
+        this.activeOrchestrationId = "";
+        return null;
+      }
+
+      const selected =
+        out.orchestrations.find((entry) => entry.orchestrationId === this.activeOrchestrationId) ??
+        out.orchestrations.find((entry) => entry.status === "running") ??
+        out.orchestrations[0]!;
+
+      this.activeOrchestrationId = selected.orchestrationId;
+      return await api.swarm.getOrchestration(workflowId, selected.orchestrationId);
+    } catch {
+      this.orchestrations = [];
+      return null;
+    }
+  }
+
+  private applyOrchestrationToRuns(
+    orchestration: SwarmOrchestrationDetail | null,
+    activeMap: Record<string, string>,
+    latestMap: Record<string, NodeRunSnapshot>,
+  ) {
+    if (!orchestration) {
+      this.orchestrationStatus = "idle";
+      this.orchestrationNodeStatesByNode = {};
+      return;
+    }
+
+    this.orchestrationStatus = orchestration.status;
+    this.orchestrationNodeStatesByNode = this.mapOrchestrationState(orchestration);
+
+    for (const node of orchestration.nodes) {
+      if (node.status === "running" && node.runId) {
+        activeMap[node.nodeId] = node.runId;
+      }
+
+      if (!node.runId) continue;
+      if (latestMap[node.nodeId]) continue;
+
+      const updatedAt = node.completedAt ?? node.startedAt;
+      if (!updatedAt) continue;
+      latestMap[node.nodeId] = {
+        runId: node.runId,
+        status: node.status,
+        updatedAt,
+      };
+    }
+  }
+
   private async pollActiveRuns() {
     if (!this.connected) return;
     const workflow = this.workflow;
     if (!workflow) {
       this.activeRunsByNode = {};
       this.latestRunsByNode = {};
+      this.activeOrchestrationId = "";
+      this.orchestrationStatus = "idle";
+      this.orchestrations = [];
+      this.orchestrationNodeStatesByNode = {};
       this.startPolling(8000);
       return;
     }
-    const hasActive = Object.keys(this.activeRunsByNode).length > 0;
+
+    const hadActive = Object.keys(this.activeRunsByNode).length > 0;
+    const [orchestration, runOutputs] = await Promise.all([
+      this.resolveOrchestration(workflow.id),
+      Promise.all(
+        workflow.nodes.map(async (node) => {
+          try {
+            const { runs } = await api.swarm.listNodeRuns(workflow.id, node.id);
+            return { nodeId: node.id, runs };
+          } catch {
+            return { nodeId: node.id, runs: [] as RunItem[] };
+          }
+        }),
+      ),
+    ]);
+
     const activeMap: Record<string, string> = {};
     const latestMap: Record<string, NodeRunSnapshot> = {};
-    for (const node of workflow.nodes) {
-      try {
-        const { runs } = await api.swarm.listNodeRuns(workflow.id, node.id);
-        const latest = this.latestRun(runs);
-        if (latest) {
-          latestMap[node.id] = {
-            runId: latest.id,
-            status: latest.status,
-            updatedAt: latest.updatedAt,
-          };
-        }
-        const activeRun = runs.find(r => ["created", "planning", "applying", "running"].includes(r.status));
-        if (activeRun) activeMap[node.id] = activeRun.id;
-      } catch { /* ignore */ }
+
+    for (const output of runOutputs) {
+      const latest = this.latestRun(output.runs);
+      if (latest) {
+        latestMap[output.nodeId] = {
+          runId: latest.id,
+          status: latest.status,
+          updatedAt: latest.updatedAt,
+        };
+      }
+      const activeRun = output.runs.find((run) => ACTIVE_RUN_STATUSES.has(run.status));
+      if (activeRun) activeMap[output.nodeId] = activeRun.id;
     }
+
+    this.applyOrchestrationToRuns(orchestration, activeMap, latestMap);
     this.activeRunsByNode = activeMap;
     this.latestRunsByNode = latestMap;
-    if (this.selectedNodeId && !this.selectedRunId) await this.refreshRuns();
+    if (this.selectedNodeId && !this.selectedRunId) {
+      const selected = runOutputs.find((entry) => entry.nodeId === this.selectedNodeId);
+      this.runs = selected ? selected.runs : [];
+    }
     const stillActive = Object.keys(activeMap).length > 0;
-    this.startPolling(stillActive || hasActive ? 3000 : 12000);
+    const orchestrationRunning = orchestration?.status === "running";
+    this.startPolling(stillActive || hadActive || orchestrationRunning ? 3000 : 12000);
   }
 
   private get workflow(): SwarmWorkflow | null {
@@ -486,11 +603,25 @@ export class SwarmPanel extends LitElement {
       if (!this.workflowId && this.workflows.length > 0) {
         this.workflowId = this.workflows[0]!.id;
       }
+      if (prevWorkflow && this.workflowId !== prevWorkflow) {
+        this.activeOrchestrationId = "";
+        this.orchestrationStatus = "idle";
+        this.orchestrations = [];
+        this.orchestrationNodeStatesByNode = {};
+        this.activeRunsByNode = {};
+        this.latestRunsByNode = {};
+      }
 
       const current = this.workflow;
       if (!current) {
         this.selectedNodeId = "";
         this.runs = [];
+        this.activeOrchestrationId = "";
+        this.orchestrationStatus = "idle";
+        this.orchestrations = [];
+        this.orchestrationNodeStatesByNode = {};
+        this.activeRunsByNode = {};
+        this.latestRunsByNode = {};
         return;
       }
 
@@ -600,7 +731,12 @@ export class SwarmPanel extends LitElement {
     if (!this.workflowId || !this.selectedNodeId) return;
     try {
       this.busy = true;
-      await api.swarm.runNode(this.workflowId, this.selectedNodeId);
+      const run = await api.swarm.runNode(this.workflowId, this.selectedNodeId);
+      this.activeRunsByNode = { ...this.activeRunsByNode, [this.selectedNodeId]: run.id };
+      this.orchestrationNodeStatesByNode = {
+        ...this.orchestrationNodeStatesByNode,
+        [this.selectedNodeId]: { status: "running", runId: run.id },
+      };
       await this.refreshRuns();
       this.busy = false;
       this.startPolling();
@@ -615,6 +751,23 @@ export class SwarmPanel extends LitElement {
     try {
       this.busy = true;
       const out: SwarmWorkflowRunResult = await api.swarm.runWorkflow(this.workflowId, { allowConcurrent: false });
+      this.activeOrchestrationId = out.orchestrationId;
+      this.orchestrationStatus = out.status;
+      this.orchestrations = [
+        {
+          orchestrationId: out.orchestrationId,
+          status: out.status,
+          launched: out.launched,
+          skipped: out.skipped,
+          pendingNodes: out.pendingNodes,
+          failedNodes: out.failedNodes,
+          blockedNodes: out.blockedNodes,
+          options: out.options,
+          startedAt: out.startedAt,
+          completedAt: out.completedAt,
+        },
+        ...this.orchestrations.filter((entry) => entry.orchestrationId !== out.orchestrationId),
+      ].slice(0, 10);
       if (out.launched.length === 0 && out.skipped.length > 0) {
         const reasons = out.skipped.slice(0, 3).map((entry) => `${entry.nodeId}: ${entry.reason}`).join(" | ");
         this.error = `No nodes launched: ${reasons}`;
@@ -622,13 +775,29 @@ export class SwarmPanel extends LitElement {
         this.error = "";
       }
 
-      if (out.launched.length > 0) {
-        const nextActive = { ...this.activeRunsByNode };
-        for (const launched of out.launched) {
-          nextActive[launched.nodeId] = launched.runId;
-        }
-        this.activeRunsByNode = nextActive;
+      const orchestrationNodes: Record<string, NodeOrchestrationSnapshot> = {};
+      for (const nodeId of out.pendingNodes) {
+        orchestrationNodes[nodeId] = { status: "pending" };
       }
+      for (const nodeId of out.failedNodes) {
+        orchestrationNodes[nodeId] = { status: "failed" };
+      }
+      for (const nodeId of out.blockedNodes) {
+        orchestrationNodes[nodeId] = { status: "blocked" };
+      }
+      for (const launched of out.launched) {
+        orchestrationNodes[launched.nodeId] = {
+          status: "running",
+          runId: launched.runId,
+        };
+      }
+      this.orchestrationNodeStatesByNode = orchestrationNodes;
+
+      const nextActive = { ...this.activeRunsByNode };
+      for (const launched of out.launched) {
+        nextActive[launched.nodeId] = launched.runId;
+      }
+      this.activeRunsByNode = nextActive;
 
       if (this.selectedNodeId) {
         await this.refreshRuns();
@@ -685,6 +854,12 @@ export class SwarmPanel extends LitElement {
       await api.swarm.deleteWorkflow(this.workflowId);
       this.workflowId = "";
       this.selectedNodeId = "";
+      this.activeOrchestrationId = "";
+      this.orchestrationStatus = "idle";
+      this.orchestrations = [];
+      this.orchestrationNodeStatesByNode = {};
+      this.activeRunsByNode = {};
+      this.latestRunsByNode = {};
       await this.loadWorkflows();
     } catch (e) {
       this.error = String(e);
@@ -773,6 +948,12 @@ export class SwarmPanel extends LitElement {
     if (!this.selectedRunId) await this.refreshRuns();
   }
 
+  private async selectOrchestration(orchestrationId: string) {
+    if (!this.workflowId || !orchestrationId) return;
+    this.activeOrchestrationId = orchestrationId;
+    await this.pollActiveRuns();
+  }
+
   render() {
     const workflow = this.workflow;
     const selectedNode = this.selectedNode;
@@ -789,7 +970,15 @@ export class SwarmPanel extends LitElement {
           class="nav-select"
           .value=${this.workflowId}
           ?disabled=${this.busy}
-          @change=${(e: Event) => { this.workflowId = (e.target as HTMLSelectElement).value; this.selectedNodeId = ""; void this.loadWorkflows(); }}
+          @change=${(e: Event) => {
+            this.workflowId = (e.target as HTMLSelectElement).value;
+            this.selectedNodeId = "";
+            this.activeOrchestrationId = "";
+            this.orchestrationStatus = "idle";
+            this.orchestrations = [];
+            this.orchestrationNodeStatesByNode = {};
+            void this.loadWorkflows();
+          }}
         >
           ${this.workflows.length === 0 ? html`<option value="">No workflows</option>` : ""}
           ${this.workflows.map((w) => html`<option value=${w.id}>${w.name}</option>`)}
@@ -799,6 +988,9 @@ export class SwarmPanel extends LitElement {
           <span class="pill ${workflow?.enabled ? "pill-live" : ""}">${workflow?.enabled ? "Live" : "Paused"}</span>
           <span class="pill">${nodeCount}n</span>
           <span class="pill">${edgeCount}e</span>
+          ${this.activeOrchestrationId
+            ? html`<span class="pill ${this.orchestrationStatus === "running" ? "pill-live" : ""}">${this.orchestrationStatus}</span>`
+            : nothing}
         </div>
 
         <div class="nav-spacer"></div>
@@ -816,7 +1008,7 @@ export class SwarmPanel extends LitElement {
             class="nav-btn nav-btn-primary"
             ?disabled=${this.busy || workflow.nodes.length === 0}
             @click=${() => this.runWorkflowParallel()}
-            title="Run all enabled nodes in parallel"
+            title="Run workflow orchestration"
           >
             <svg viewBox="0 0 24 24"><polygon points="4 3 20 12 4 21 4 3"/><path d="M10 4l10 8-10 8"/></svg>
             Run All
@@ -858,6 +1050,17 @@ export class SwarmPanel extends LitElement {
           <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
       </div>
+
+      ${workflow || this.orchestrations.length > 0
+        ? html`
+          <swarm-orchestration-timeline
+            .orchestrations=${this.orchestrations}
+            .activeOrchestrationId=${this.activeOrchestrationId}
+            .loading=${this.busy}
+            @orchestration-select=${(e: CustomEvent<string>) => { void this.selectOrchestration(e.detail); }}
+          ></swarm-orchestration-timeline>
+        `
+        : nothing}
 
       ${this.error ? html`<div class="err">${this.error}</div>` : nothing}
       ${workflow?.enabled ? html`
@@ -902,6 +1105,7 @@ export class SwarmPanel extends LitElement {
           this.savePositions();
         }}
               .latestRunsByNode=${this.latestRunsByNode}
+              .orchestrationNodeStatesByNode=${this.orchestrationNodeStatesByNode}
             ></swarm-canvas>
           `}
         </div>
@@ -914,6 +1118,7 @@ export class SwarmPanel extends LitElement {
             .runs=${this.runs}
             .busy=${this.busy}
             .activeRunId=${this.activeRunsByNode[this.selectedNodeId] ?? ""}
+            .orchestrationNodeState=${this.orchestrationNodeStatesByNode[this.selectedNodeId] ?? null}
             @node-save=${(e: CustomEvent<SwarmNodePatchInput>) => this.saveNode(e.detail)}
             @node-delete=${() => this.deleteNode()}
             @node-run=${() => this.runNode()}

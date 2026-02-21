@@ -214,3 +214,57 @@ describe("chat routes /chat/undo", () => {
     expect(mockState.redoAll).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("chat routes operation mode guard", () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeEach(async () => {
+    app = Fastify();
+    const config: ChatRouteConfig = {
+      apiKey: "test-key",
+      model: "test-model",
+      baseUrl: "https://example.invalid/v1",
+    };
+    chatRoutes(
+      app,
+      {} as ChatService,
+      config,
+      {} as RunManager,
+      {} as SchedulerService,
+      {} as BrowserService,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({
+        mode: "paused",
+        reason: "maintenance",
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("blocks /chat while daemon is paused", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/chat",
+      payload: { message: "hello" },
+    });
+    expect(response.statusCode).toBe(423);
+    const body = response.json();
+    expect(body.code).toBe("DAEMON_OPERATION_MODE_BLOCK");
+    expect(body.operation.mode).toBe("paused");
+  });
+});

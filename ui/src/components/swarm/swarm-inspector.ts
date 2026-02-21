@@ -1,6 +1,13 @@
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { RunItem, SwarmNodePatchInput, SwarmNodeType, SwarmWorkflow, SwarmWorkflowNode } from "../../api/client.js";
+import type {
+  RunItem,
+  SwarmNodePatchInput,
+  SwarmNodeType,
+  SwarmOrchestrationNodeStatus,
+  SwarmWorkflow,
+  SwarmWorkflowNode,
+} from "../../api/client.js";
 import "./swarm-activity-stream.js";
 
 type RegistrySkillSearchItem = {
@@ -15,6 +22,12 @@ type RegistrySkillSearchResponse = {
   ok: boolean;
   error?: string;
   results?: RegistrySkillSearchItem[];
+};
+
+type NodeOrchestrationState = {
+  status: SwarmOrchestrationNodeStatus;
+  reason?: string;
+  runId?: string;
 };
 
 @customElement("swarm-inspector")
@@ -105,6 +118,16 @@ export class SwarmInspector extends LitElement {
       border-color: rgba(192, 57, 43, 0.28);
       color: var(--danger);
       background: var(--danger-subtle);
+    }
+    .chip.status-queued {
+      border-color: rgba(23, 103, 158, 0.3);
+      color: #17679e;
+      background: rgba(23, 103, 158, 0.09);
+    }
+    .chip.status-blocked {
+      border-color: rgba(120, 75, 24, 0.34);
+      color: #784b18;
+      background: rgba(120, 75, 24, 0.1);
     }
     .chips {
       display: flex;
@@ -358,6 +381,7 @@ export class SwarmInspector extends LitElement {
   @property({ attribute: false }) runs: RunItem[] = [];
   @property({ type: Boolean }) busy = false;
   @property() activeRunId = "";
+  @property({ attribute: false }) orchestrationNodeState: NodeOrchestrationState | null = null;
   @state() private activeTab: "config" | "activity" = "config";
   @state() private edgeTarget = "";
   @state() private skillSearchQuery = "find skills";
@@ -400,6 +424,26 @@ export class SwarmInspector extends LitElement {
     if (["completed", "done", "success"].includes(status)) return "status-done";
     if (["failed", "cancelled", "error"].includes(status)) return "status-failed";
     return "";
+  }
+
+  private orchestrationStatusClass(status: SwarmOrchestrationNodeStatus): string {
+    if (status === "running") return "status-running";
+    if (status === "completed") return "status-done";
+    if (status === "failed" || status === "cancelled") return "status-failed";
+    if (status === "pending") return "status-queued";
+    if (status === "blocked" || status === "skipped") return "status-blocked";
+    return "";
+  }
+
+  private orchestrationStatusLabel(status: SwarmOrchestrationNodeStatus): string {
+    if (status === "pending") return "Queued";
+    if (status === "running") return "Running";
+    if (status === "completed") return "Completed";
+    if (status === "failed") return "Failed";
+    if (status === "cancelled") return "Cancelled";
+    if (status === "blocked") return "Blocked";
+    if (status === "skipped") return "Skipped";
+    return status;
   }
 
   private hydrateScheduleDraft() {
@@ -546,8 +590,14 @@ export class SwarmInspector extends LitElement {
           <div class="chips">
             <span class="chip ${this.node.enabled ? "live" : ""}">${this.node.enabled ? "Enabled" : "Disabled"}</span>
             <span class="chip">${this.scheduleChip()}</span>
+            ${this.orchestrationNodeState
+              ? html`<span class="chip ${this.orchestrationStatusClass(this.orchestrationNodeState.status)}">Flow ${this.orchestrationStatusLabel(this.orchestrationNodeState.status)}</span>`
+              : nothing}
             ${this.node.jobId ? html`<span class="chip">job ${this.node.jobId.slice(0, 8)}</span>` : html`<span class="chip">no job</span>`}
           </div>
+          ${this.orchestrationNodeState?.reason
+            ? html`<div class="hint">${this.orchestrationNodeState.reason}</div>`
+            : nothing}
         </div>
 
         <div class="section">

@@ -56,6 +56,9 @@ function normalizeErrorMessage(err: unknown): string {
 
 const DEFAULT_CANVAS_HOST_URL = "/__undoable__/canvas/__starter";
 const CANVAS_ROOT_PATH = "/__undoable__/canvas";
+const CHAT_STARTUP_REQUEST_TIMEOUT_MS = 10000;
+const CHAT_SESSIONS_LIMIT = 200;
+const CHAT_SESSIONS_CACHE_KEY = "undoable.chat.sessions.v1";
 
 @customElement("undoable-chat")
 export class UndoableChat extends LitElement {
@@ -99,67 +102,6 @@ export class UndoableChat extends LitElement {
         max-width: var(--content-w);
         margin: 0 auto;
         padding: 6px var(--gutter) 6px calc(var(--gutter) + var(--col-offset));
-      }
-      .undo-guard-banner {
-        max-width: var(--content-w);
-        margin: 0 auto 8px;
-        padding: 10px var(--gutter) 10px calc(var(--gutter) + var(--col-offset));
-        border: 1px solid color-mix(in srgb, var(--warning) 36%, transparent);
-        background: color-mix(in srgb, var(--warning-subtle) 86%, white);
-        border-radius: 12px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 14px;
-      }
-      .undo-guard-copy {
-        min-width: 0;
-      }
-      .undo-guard-title {
-        color: var(--warning);
-        font-size: 12px;
-        font-weight: 700;
-        line-height: 1.35;
-        margin-bottom: 2px;
-      }
-      .undo-guard-text {
-        color: var(--text-secondary);
-        font-size: 11px;
-        line-height: 1.4;
-      }
-      .undo-guard-actions {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        flex-shrink: 0;
-      }
-      .undo-guard-btn {
-        border: 1px solid var(--border-strong);
-        background: var(--surface-1);
-        color: var(--text-secondary);
-        border-radius: 999px;
-        height: 28px;
-        padding: 0 11px;
-        font-size: 11px;
-        font-weight: 600;
-        font-family: inherit;
-        cursor: pointer;
-      }
-      .undo-guard-btn:hover {
-        background: var(--wash);
-        color: var(--text-primary);
-      }
-      .undo-guard-btn.primary {
-        border-color: color-mix(in srgb, var(--warning) 45%, transparent);
-        background: color-mix(in srgb, var(--warning-subtle) 72%, white);
-        color: var(--warning);
-      }
-      .undo-guard-btn.primary:hover {
-        background: color-mix(in srgb, var(--warning-subtle) 60%, white);
-      }
-      .undo-guard-btn:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
       }
       .chat-header {
         justify-content: space-between;
@@ -801,18 +743,6 @@ export class UndoableChat extends LitElement {
           padding: 2px 6px;
           gap: 6px;
         }
-        .undo-guard-banner {
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 10px;
-          border-radius: 10px;
-          padding-right: var(--gutter);
-        }
-        .undo-guard-actions {
-          width: 100%;
-          justify-content: flex-start;
-          flex-wrap: wrap;
-        }
         .header-right {
           gap: 4px;
         }
@@ -1037,18 +967,21 @@ export class UndoableChat extends LitElement {
   @state() private headerStatusMenuOpen = false;
   private resizing = false;
   private resizePointerId = -1;
+  private sessionLoadVersion = 0;
 
   // ── Lifecycle ──
 
   connectedCallback() {
     super.connectedCallback();
     if (window.innerWidth <= 768) this.sidebarOpen = false;
-    this.loadSessions().then(() => this.restoreFromUrl());
-    this.refreshUndoState();
-    this.fetchRunConfig();
-    this.fetchAgents();
-    this.fetchTranscribeLimit();
-    this.checkOnboarding();
+    this.restoreSessionsCache();
+    this.restoreFromUrl();
+    void this.loadSessions();
+    void this.refreshUndoState();
+    void this.fetchRunConfig();
+    void this.fetchAgents();
+    void this.fetchTranscribeLimit();
+    void this.checkOnboarding();
     window.addEventListener("popstate", this.onPopState);
     window.addEventListener("keydown", this.onGlobalKey);
     this.addEventListener("click", this.closeHeaderPopovers);
@@ -1079,7 +1012,11 @@ export class UndoableChat extends LitElement {
 
   private async checkOnboarding() {
     try {
-      const res = await fetch("/api/chat/onboarding");
+      const res = await this.fetchWithTimeout(
+        "/api/chat/onboarding",
+        undefined,
+        CHAT_STARTUP_REQUEST_TIMEOUT_MS,
+      );
       if (res.ok) {
         const p = await res.json();
         if (!p.completed) this.showOnboarding = true;
@@ -1146,9 +1083,61 @@ export class UndoableChat extends LitElement {
     return message;
   }
 
+  private async fetchWithTimeout(
+    input: string,
+    init?: RequestInit,
+    timeoutMs = CHAT_STARTUP_REQUEST_TIMEOUT_MS,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(input, { ...(init ?? {}), signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private restoreSessionsCache() {
+    try {
+      const raw = localStorage.getItem(CHAT_SESSIONS_CACHE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return;
+      const cached = parsed.filter((item): item is SessionItem => {
+        if (typeof item !== "object" || item === null) return false;
+        const maybe = item as Partial<SessionItem>;
+        return (
+          typeof maybe.id === "string" &&
+          typeof maybe.title === "string" &&
+          typeof maybe.createdAt === "number" &&
+          typeof maybe.updatedAt === "number" &&
+          typeof maybe.messageCount === "number" &&
+          typeof maybe.preview === "string"
+        );
+      });
+      if (cached.length > 0) {
+        this.sessions = cached;
+      }
+    } catch {
+      // Ignore corrupted local cache.
+    }
+  }
+
+  private persistSessionsCache(sessions: SessionItem[]) {
+    try {
+      localStorage.setItem(CHAT_SESSIONS_CACHE_KEY, JSON.stringify(sessions));
+    } catch {
+      // Ignore storage failures (private mode/quota).
+    }
+  }
+
   private async fetchTranscribeLimit() {
     try {
-      const res = await fetch("/api/chat/stt/status");
+      const res = await this.fetchWithTimeout(
+        "/api/chat/stt/status",
+        undefined,
+        CHAT_STARTUP_REQUEST_TIMEOUT_MS,
+      );
       if (!res.ok) return;
       const data = (await res.json()) as { maxAudioBytes?: number };
       if (typeof data.maxAudioBytes === "number" && data.maxAudioBytes > 0) {
@@ -1296,7 +1285,11 @@ export class UndoableChat extends LitElement {
 
   private async fetchRunConfig() {
     try {
-      const res = await fetch("/api/chat/run-config");
+      const res = await this.fetchWithTimeout(
+        "/api/chat/run-config",
+        undefined,
+        CHAT_STARTUP_REQUEST_TIMEOUT_MS,
+      );
       if (res.ok) {
         const data = (await res.json()) as RunConfigPayload;
         this.applyRunConfig(data);
@@ -1308,7 +1301,11 @@ export class UndoableChat extends LitElement {
 
   private async fetchAgents() {
     try {
-      const res = await fetch("/api/chat/agents");
+      const res = await this.fetchWithTimeout(
+        "/api/chat/agents",
+        undefined,
+        CHAT_STARTUP_REQUEST_TIMEOUT_MS,
+      );
       if (res.ok) {
         const data = (await res.json()) as {
           agents: Array<{
@@ -1562,8 +1559,15 @@ export class UndoableChat extends LitElement {
 
   private async loadSessions() {
     try {
-      const res = await fetch("/api/chat/sessions");
-      if (res.ok) this.sessions = (await res.json()) as SessionItem[];
+      const res = await this.fetchWithTimeout(
+        `/api/chat/sessions?limit=${CHAT_SESSIONS_LIMIT}`,
+        undefined,
+        CHAT_STARTUP_REQUEST_TIMEOUT_MS,
+      );
+      if (!res.ok) return;
+      const sessions = (await res.json()) as SessionItem[];
+      this.sessions = sessions;
+      this.persistSessionsCache(sessions);
     } catch {}
   }
 
@@ -1583,6 +1587,7 @@ export class UndoableChat extends LitElement {
   }
 
   private async newChat() {
+    this.sessionLoadVersion++;
     this.activeSessionId = "";
     this.entries = [];
     this.hasUndoable = false;
@@ -1593,6 +1598,7 @@ export class UndoableChat extends LitElement {
 
   private async selectSession(id: string) {
     if (id === this.activeSessionId) return;
+    const requestVersion = ++this.sessionLoadVersion;
     this.activeSessionId = id;
     this.entries = [];
     this.hasUndoable = false;
@@ -1600,12 +1606,22 @@ export class UndoableChat extends LitElement {
     this.error = "";
     this.pushChatUrl(id);
     try {
-      const res = await fetch(`/api/chat/sessions/${id}`);
+      const res = await this.fetchWithTimeout(
+        `/api/chat/sessions/${id}`,
+        undefined,
+        CHAT_STARTUP_REQUEST_TIMEOUT_MS,
+      );
+      if (requestVersion !== this.sessionLoadVersion || id !== this.activeSessionId) {
+        return;
+      }
       if (!res.ok) return;
       const data = (await res.json()) as {
         messages: ApiMessage[];
         agentId?: string;
       };
+      if (requestVersion !== this.sessionLoadVersion || id !== this.activeSessionId) {
+        return;
+      }
       this.entries = this.apiMessagesToEntries(data.messages);
       // Restore agent context from the session
       if (data.agentId && this.agents.some((a) => a.id === data.agentId)) {
@@ -2027,9 +2043,17 @@ export class UndoableChat extends LitElement {
                   this.applySwarmFromToolName(this.undoGuardBlockHint.tool);
                 }
               }
+              const warningEntry: ChatEntry = {
+                kind: "warning",
+                content: evt.content ?? "",
+                code: evt.code,
+                recovery: evt.recovery,
+                tool: evt.tool,
+                actionable: evt.code === "undo_guarantee_blocked",
+              };
               this.entries = [
                 ...this.entries,
-                { kind: "warning", content: evt.content ?? "" },
+                warningEntry,
               ];
             } else if (evt.type === "usage" && evt.usage) {
               this.usage = { ...evt.usage };
@@ -2255,8 +2279,16 @@ export class UndoableChat extends LitElement {
     this.headerStatusMenuOpen = false;
   };
 
-  private clearUndoGuardBlockHint = () => {
+  private keepUndoStrict = async () => {
     this.undoGuardBlockHint = null;
+    if (!this.allowIrreversibleActions) {
+      this.allowIrreversibleOnceArmed = false;
+      return;
+    }
+    const previousOnceArmed = this.allowIrreversibleOnceArmed;
+    const ok = await this.setAllowIrreversibleActions(false);
+    if (ok) this.allowIrreversibleOnceArmed = false;
+    else this.allowIrreversibleOnceArmed = previousOnceArmed;
   };
 
   private allowIrreversibleAndContinue = async () => {
@@ -2764,8 +2796,13 @@ export class UndoableChat extends LitElement {
                     ?loading=${this.loading}
                     .currentIter=${this.currentIter}
                     .maxIter=${this.maxIter}
+                    .allowIrreversibleActions=${this.allowIrreversibleActions}
+                    .allowIrreversibleOnceArmed=${this.allowIrreversibleOnceArmed}
+                    .undoGuardApplying=${this.undoGuardApplying}
                     @handle-approval=${(e: CustomEvent) =>
                       this.handleApproval(e.detail)}
+                    @undo-guard-allow-once=${this.allowIrreversibleAndContinue}
+                    @undo-guard-keep-strict=${this.keepUndoStrict}
                     @chat-error=${(e: CustomEvent) => {
                       this.error = normalizeErrorMessage(e.detail);
                     }}
@@ -2773,41 +2810,6 @@ export class UndoableChat extends LitElement {
                 `}
             ${this.error
               ? html`<div class="error">${this.error}</div>`
-              : nothing}
-            ${this.undoGuardBlockHint
-              ? html`
-                  <div class="undo-guard-banner" role="status">
-                    <div class="undo-guard-copy">
-                      <div class="undo-guard-title">
-                        Strict Undo blocked
-                        ${this.undoGuardBlockHint.tool
-                          ? html`<code>${this.undoGuardBlockHint.tool}</code>`
-                          : html`this action`}
-                      </div>
-                      <div class="undo-guard-text">
-                        ${this.undoGuardBlockHint.recovery ||
-                        this.undoGuardBlockHint.message}
-                      </div>
-                    </div>
-                    <div class="undo-guard-actions">
-                      <button
-                        class="undo-guard-btn primary"
-                        ?disabled=${this.undoGuardApplying}
-                        @click=${this.allowIrreversibleAndContinue}
-                      >
-                        ${this.undoGuardApplying
-                          ? "Allowing..."
-                          : "Allow Once and Continue"}
-                      </button>
-                      <button
-                        class="undo-guard-btn"
-                        @click=${this.clearUndoGuardBlockHint}
-                      >
-                        Keep Strict
-                      </button>
-                    </div>
-                  </div>
-                `
               : nothing}
 
             <chat-input

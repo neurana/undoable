@@ -7,6 +7,12 @@ import {
   type ChannelOnboardingConfig,
   type DmPolicy,
 } from "../wizard/channel-adapters/index.js";
+import {
+  collectChannelSecurityFindings,
+  summarizeChannelSecurity,
+  type ChannelSecurityFinding,
+  type ChannelSecuritySnapshot,
+} from "./channel-security.js";
 
 type ChannelStatusDiagnostic = {
   code: string;
@@ -34,6 +40,12 @@ type ChannelStatusResult = {
   channelDefaultAccountId: Record<string, string>;
   channelSnapshots?: Record<string, ChannelStatusSnapshot>;
   channelDiagnostics?: Record<string, ChannelStatusDiagnostic[]>;
+};
+
+type ChannelSecurityAuditResult = {
+  snapshots: ChannelSecuritySnapshot[];
+  findings: ChannelSecurityFinding[];
+  summary: ReturnType<typeof summarizeChannelSecurity>;
 };
 
 type ChannelProbeCheck = {
@@ -171,6 +183,57 @@ function toStatusSnapshot(row: ChannelRow): ChannelStatusSnapshot {
     error: row.status.error,
     diagnostics: row.status.error ? [{ code: "runtime_error", severity: "error", message: row.status.error }] : [],
   };
+}
+
+function toSecuritySnapshot(
+  snapshot: ChannelStatusSnapshot,
+  row: Record<string, unknown> | undefined,
+): ChannelSecuritySnapshot {
+  return {
+    channelId: snapshot.channelId,
+    configured: snapshot.configured,
+    enabled: snapshot.enabled,
+    connected: snapshot.connected,
+    status: snapshot.status,
+    dmPolicy: snapshot.dmPolicy,
+    allowlistCount: snapshot.allowlistCount,
+    diagnostics: snapshot.diagnostics,
+    pairingPending: row && typeof row.pairingPending === "number" ? row.pairingPending : 0,
+    pairingApproved: row && typeof row.pairingApproved === "number" ? row.pairingApproved : 0,
+  };
+}
+
+function buildSecurityAuditFromStatus(result: ChannelStatusResult): ChannelSecurityAuditResult {
+  const snapshotsMap = result.channelSnapshots ?? {};
+  const order = result.channelOrder ?? Object.keys(snapshotsMap);
+  const snapshots: ChannelSecuritySnapshot[] = [];
+
+  for (const channelId of order) {
+    const snapshot = snapshotsMap[channelId];
+    if (!snapshot) continue;
+    const meta = result.channels[channelId];
+    const metaRecord = meta && typeof meta === "object" && !Array.isArray(meta)
+      ? (meta as Record<string, unknown>)
+      : undefined;
+    snapshots.push(toSecuritySnapshot(snapshot, metaRecord));
+  }
+
+  const findings = collectChannelSecurityFindings(snapshots);
+  const summary = summarizeChannelSecurity(snapshots, findings);
+  return { snapshots, findings, summary };
+}
+
+function printSecurityAudit(result: ChannelSecurityAuditResult): void {
+  console.log(
+    `Channels: total=${result.summary.totalChannels} ok=${result.summary.okChannels} risky=${result.summary.riskyChannels}`,
+  );
+  console.log(
+    `Findings: error=${result.summary.error} warn=${result.summary.warn} info=${result.summary.info}`,
+  );
+  for (const finding of result.findings) {
+    const recovery = finding.recovery ? ` | recovery: ${finding.recovery}` : "";
+    console.log(`- [${finding.severity}] ${finding.channelId} ${finding.code}: ${finding.message}${recovery}`);
+  }
 }
 
 async function gatewayCall<T>(
@@ -325,6 +388,40 @@ export function channelsCommand(): Command {
 
   registerStatus("status");
   registerStatus("list");
+
+  cmd
+    .command("audit")
+    .description("Audit channel security posture (DM policy, allowlists, pairing backlog, runtime diagnostics)")
+    .option("--channel <channel>", "Filter by channel: telegram|discord|slack|whatsapp")
+    .option("--url <url>", "Daemon base URL")
+    .option("--token <token>", "Daemon bearer token")
+    .option("--json", "Output raw JSON")
+    .option("--fail-on-warn", "Exit with code 1 for warnings too", false)
+    .action(async (opts: {
+      channel?: string;
+      url?: string;
+      token?: string;
+      json?: boolean;
+      failOnWarn?: boolean;
+    }) => {
+      const channel = opts.channel ? parseChannelId(opts.channel) : undefined;
+      const result = await gatewayCall<ChannelStatusResult>(
+        "channels.status",
+        channel ? { channel } : {},
+        { url: opts.url, token: opts.token },
+      );
+      const audit = buildSecurityAuditFromStatus(result);
+      if (opts.json) {
+        console.log(JSON.stringify(audit, null, 2));
+      } else {
+        printSecurityAudit(audit);
+      }
+      const hasErrors = audit.summary.error > 0;
+      const hasWarnings = audit.summary.warn > 0;
+      if (hasErrors || (opts.failOnWarn && hasWarnings)) {
+        process.exitCode = 1;
+      }
+    });
 
   cmd
     .command("probe")

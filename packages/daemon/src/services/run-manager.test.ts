@@ -270,5 +270,107 @@ describe("RunManager", () => {
         await fs.rm(tmpDir, { recursive: true, force: true });
       }
     });
+
+    it("drops terminal runs older than retention window during restore", async () => {
+      const tmpDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "undoable-run-retention-"),
+      );
+      const stateFile = path.join(tmpDir, "runs-state.json");
+      const oldTs = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+      const recentTs = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+
+      try {
+        await fs.writeFile(
+          stateFile,
+          JSON.stringify(
+            {
+              version: 1,
+              runs: [
+                {
+                  id: "old-run",
+                  userId: "u1",
+                  agentId: "default",
+                  status: "completed",
+                  instruction: "old",
+                  engineVersion: "0.1.0",
+                  createdAt: oldTs,
+                  updatedAt: oldTs,
+                },
+                {
+                  id: "recent-run",
+                  userId: "u1",
+                  agentId: "default",
+                  status: "completed",
+                  instruction: "recent",
+                  engineVersion: "0.1.0",
+                  createdAt: recentTs,
+                  updatedAt: recentTs,
+                },
+              ],
+              eventLogs: [
+                {
+                  runId: "old-run",
+                  events: [],
+                },
+                {
+                  runId: "recent-run",
+                  events: [],
+                },
+              ],
+              savedAt: recentTs,
+            },
+            null,
+            2,
+          ),
+        );
+
+        const bus = new EventBus();
+        const managerA = new RunManager(bus, {
+          persistence: "on",
+          stateFilePath: stateFile,
+          retentionDays: 1,
+          maxRuns: 100,
+        });
+        expect(managerA.getById("old-run")).toBeUndefined();
+        expect(managerA.getById("recent-run")).toBeTruthy();
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("compaction", () => {
+    it("enforces maxRuns while preserving active runs", () => {
+      const bus = new EventBus();
+      const compacted = new RunManager(bus, {
+        persistence: "off",
+        maxRuns: 3,
+        retentionDays: 365,
+      });
+
+      const active = compacted.create({
+        userId: "u1",
+        agentId: "default",
+        instruction: "active",
+      });
+      compacted.updateStatus(active.id, "planning", "u1");
+
+      for (let i = 0; i < 5; i += 1) {
+        const run = compacted.create({
+          userId: "u1",
+          agentId: "default",
+          instruction: `done-${i}`,
+        });
+        compacted.updateStatus(run.id, "completed", "u1");
+      }
+
+      expect(compacted.count()).toBe(3);
+      expect(compacted.getById(active.id)?.status).toBe("planning");
+      expect(
+        compacted
+          .list()
+          .filter((entry) => entry.status === "completed").length,
+      ).toBe(2);
+    });
   });
 });

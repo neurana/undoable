@@ -4,10 +4,14 @@ import type { RunManager } from "../services/run-manager.js";
 import type { AuditService } from "../services/audit-service.js";
 import type { GatewayIdentity } from "../auth/types.js";
 import { executeRun, type RunExecutorDeps } from "../services/run-executor.js";
+import type { DaemonOperationalState } from "../services/daemon-settings-service.js";
 
 export type RunRouteDeps = {
   eventBus: EventBus;
   executorDeps?: Omit<RunExecutorDeps, "runManager" | "eventBus">;
+  getOperationalState?: () =>
+    | DaemonOperationalState
+    | Promise<DaemonOperationalState>;
 };
 
 export function runRoutes(
@@ -17,6 +21,7 @@ export function runRoutes(
   extra?: RunRouteDeps,
 ) {
   const activeRuns = new Map<string, boolean>();
+  const getOperationalState = extra?.getOperationalState;
 
   const startExecution = (runId: string, instruction: string) => {
     if (!extra?.executorDeps || !extra.eventBus) return;
@@ -38,6 +43,20 @@ export function runRoutes(
 
     if (!instruction) {
       return reply.code(400).send({ error: "instruction is required" });
+    }
+
+    if (getOperationalState) {
+      const operation = await getOperationalState();
+      if (operation.mode !== "normal") {
+        const modeLabel = operation.mode === "drain" ? "drain" : "paused";
+        return reply.code(423).send({
+          error: `Daemon is in ${modeLabel} mode; new runs are blocked.`,
+          code: "DAEMON_OPERATION_MODE_BLOCK",
+          operation,
+          recovery:
+            "Set operation mode back to normal via /control/operation or `nrn daemon mode normal`.",
+        });
+      }
     }
 
     const run = runManager.create({
