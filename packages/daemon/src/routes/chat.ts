@@ -17,7 +17,10 @@ import {
   type RunModeConfig,
 } from "../actions/index.js";
 import { DriftDetector, buildStabilizer } from "../alignment/index.js";
-import { parseAttachments, type ChatAttachment } from "../services/chat-attachments.js";
+import {
+  parseAttachments,
+  type ChatAttachment,
+} from "../services/chat-attachments.js";
 import type { ProviderService } from "../services/provider-service.js";
 import { buildSystemPrompt } from "../services/system-prompt-builder.js";
 import {
@@ -51,7 +54,10 @@ import {
   extractThinkingFromStream,
   stripThinkingTags,
 } from "../services/thinking.js";
-import { parseDirectives, DIRECTIVE_HELP } from "../services/directive-parser.js";
+import {
+  parseDirectives,
+  DIRECTIVE_HELP,
+} from "../services/directive-parser.js";
 import type { TtsService } from "../services/tts-service.js";
 import type { SttService } from "../services/stt-service.js";
 import type {
@@ -166,7 +172,10 @@ function isRetryableError(status: number): boolean {
 }
 
 class LLMApiError extends Error {
-  constructor(public status: number, public body: string) {
+  constructor(
+    public status: number,
+    public body: string,
+  ) {
     super(`LLM API error: ${status} ${body}`);
     this.name = "LLMApiError";
   }
@@ -263,7 +272,9 @@ function checkUndoGuarantee(
   }
 
   if (toolName === "exec" || toolName === "bash" || toolName === "shell") {
-    const command = String(args.command ?? args.cmd ?? args.script ?? "").trim();
+    const command = String(
+      args.command ?? args.cmd ?? args.script ?? "",
+    ).trim();
     if (!command) {
       return {
         allowed: false,
@@ -347,13 +358,526 @@ export type ChatRouteConfig = {
 
 type StreamDelta = {
   choices?: Array<{
-    delta?: { content?: string; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> };
+    delta?: {
+      content?: string;
+      tool_calls?: Array<{
+        index: number;
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
     finish_reason?: string;
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
 };
 
-type UsageAccumulator = { promptTokens: number; completionTokens: number; totalTokens: number };
+type UsageAccumulator = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+type LlmUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+};
+
+type AnthropicToolDefinition = {
+  name: string;
+  description?: string;
+  input_schema: Record<string, unknown>;
+};
+
+type AnthropicTextContentBlock = { type: "text"; text: string };
+type AnthropicImageContentBlock = {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string };
+};
+type AnthropicToolUseBlock = {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+};
+type AnthropicToolResultBlock = {
+  type: "tool_result";
+  tool_use_id: string;
+  content: string;
+};
+type AnthropicContentBlock =
+  | AnthropicTextContentBlock
+  | AnthropicImageContentBlock
+  | AnthropicToolUseBlock
+  | AnthropicToolResultBlock;
+
+type AnthropicMessage = {
+  role: "user" | "assistant";
+  content: string | AnthropicContentBlock[];
+};
+
+type AnthropicResponse = {
+  content?: Array<
+    | { type: "text"; text?: string }
+    | { type: "tool_use"; id?: string; name?: string; input?: unknown }
+  >;
+  usage?: { input_tokens?: number; output_tokens?: number };
+};
+
+type AnthropicStreamEvent = {
+  type?: string;
+  index?: number;
+  delta?: {
+    type?: string;
+    text?: string;
+    partial_json?: string;
+  };
+  message?: {
+    usage?: { input_tokens?: number };
+  };
+  usage?: { output_tokens?: number };
+  content_block?: {
+    type?: string;
+    id?: string;
+    name?: string;
+  };
+  error?: {
+    message?: string;
+    type?: string;
+  };
+};
+
+const ANTHROPIC_VERSION_HEADER = "2023-06-01";
+const DEFAULT_ANTHROPIC_MAX_TOKENS = 4096;
+
+function normalizeProviderForCall(config: ChatRouteConfig): string {
+  const explicit = config.provider?.trim().toLowerCase();
+  if (explicit) {
+    if (explicit === "claude") return "anthropic";
+    if (explicit === "gemini") return "google";
+    return explicit;
+  }
+  const base = config.baseUrl.toLowerCase();
+  if (base.includes("anthropic.com")) return "anthropic";
+  if (base.includes("googleapis.com") || base.includes("generativelanguage"))
+    return "google";
+  if (base.includes("openrouter.ai")) return "openrouter";
+  if (base.includes("deepseek.com")) return "deepseek";
+  if (base.includes("11434")) return "ollama";
+  if (base.includes("1234")) return "lmstudio";
+  return "openai";
+}
+
+function parseDataUrl(url: string): { mediaType: string; data: string } | null {
+  const match = url.match(/^data:([^;,]+);base64,(.+)$/i);
+  if (!match) return null;
+  const mediaType = match[1]?.trim();
+  const data = match[2]?.trim();
+  if (!mediaType || !data) return null;
+  return { mediaType, data };
+}
+
+function parseJsonObject(input: string): Record<string, unknown> {
+  const trimmed = input.trim();
+  if (!trimmed) return {};
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return { value: parsed };
+  } catch {
+    return { raw: trimmed };
+  }
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function toAnthropicTools(toolDefs: unknown[]): AnthropicToolDefinition[] {
+  if (!Array.isArray(toolDefs)) return [];
+  const out: AnthropicToolDefinition[] = [];
+  for (const entry of toolDefs) {
+    if (!entry || typeof entry !== "object") continue;
+    const maybe = entry as {
+      type?: string;
+      function?: {
+        name?: string;
+        description?: string;
+        parameters?: unknown;
+      };
+    };
+    const fn = maybe.function;
+    if (maybe.type !== "function" || !fn?.name) continue;
+    out.push({
+      name: fn.name,
+      description:
+        typeof fn.description === "string" ? fn.description : undefined,
+      input_schema:
+        fn.parameters && typeof fn.parameters === "object"
+          ? (fn.parameters as Record<string, unknown>)
+          : { type: "object", properties: {} },
+    });
+  }
+  return out;
+}
+
+function toAnthropicUserContent(content: unknown): AnthropicContentBlock[] {
+  if (typeof content === "string") {
+    return [{ type: "text", text: content }];
+  }
+  if (!Array.isArray(content))
+    return [{ type: "text", text: stringifyUnknown(content) }];
+  const blocks: AnthropicContentBlock[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const maybe = part as {
+      type?: string;
+      text?: string;
+      image_url?: { url?: string };
+    };
+    if (maybe.type === "text" && typeof maybe.text === "string") {
+      blocks.push({ type: "text", text: maybe.text });
+      continue;
+    }
+    if (
+      maybe.type === "image_url" &&
+      typeof maybe.image_url?.url === "string"
+    ) {
+      const parsed = parseDataUrl(maybe.image_url.url);
+      if (parsed) {
+        blocks.push({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: parsed.mediaType,
+            data: parsed.data,
+          },
+        });
+      } else {
+        blocks.push({
+          type: "text",
+          text: `[image omitted: unsupported image URL format]`,
+        });
+      }
+    }
+  }
+  if (blocks.length === 0) {
+    return [{ type: "text", text: "" }];
+  }
+  return blocks;
+}
+
+function toAnthropicMessages(messages: unknown[]): {
+  system?: string;
+  messages: AnthropicMessage[];
+} {
+  const systemParts: string[] = [];
+  const result: AnthropicMessage[] = [];
+
+  const source = Array.isArray(messages) ? messages : [];
+  for (const raw of source) {
+    if (!raw || typeof raw !== "object") continue;
+    const msg = raw as {
+      role?: string;
+      content?: unknown;
+      tool_calls?: ToolCall[];
+      tool_call_id?: string;
+    };
+    const role = msg.role;
+    if (role === "system") {
+      const text = stringifyUnknown(msg.content).trim();
+      if (text) systemParts.push(text);
+      continue;
+    }
+    if (role === "user") {
+      result.push({
+        role: "user",
+        content: toAnthropicUserContent(msg.content),
+      });
+      continue;
+    }
+    if (role === "assistant") {
+      const contentBlocks: AnthropicContentBlock[] = [];
+      const text = stringifyUnknown(msg.content).trim();
+      if (text) contentBlocks.push({ type: "text", text });
+      if (Array.isArray(msg.tool_calls)) {
+        for (const toolCall of msg.tool_calls) {
+          const name = toolCall.function?.name?.trim();
+          if (!name) continue;
+          const id =
+            toolCall.id?.trim() ||
+            `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          const input = parseJsonObject(toolCall.function.arguments ?? "");
+          contentBlocks.push({ type: "tool_use", id, name, input });
+        }
+      }
+      if (contentBlocks.length > 0) {
+        result.push({ role: "assistant", content: contentBlocks });
+      }
+      continue;
+    }
+    if (role === "tool") {
+      const toolUseId =
+        typeof msg.tool_call_id === "string" ? msg.tool_call_id.trim() : "";
+      if (!toolUseId) continue;
+      result.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: toolUseId,
+            content: stringifyUnknown(msg.content),
+          },
+        ],
+      });
+    }
+  }
+
+  const system = systemParts.join("\n\n").trim();
+  return {
+    system: system || undefined,
+    messages: result,
+  };
+}
+
+function normalizeAnthropicResponse(data: AnthropicResponse): {
+  content: string | null;
+  tool_calls?: ToolCall[];
+  usage?: LlmUsage;
+} {
+  const textParts: string[] = [];
+  const toolCalls: ToolCall[] = [];
+  for (const part of data.content ?? []) {
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text" && typeof part.text === "string") {
+      textParts.push(part.text);
+      continue;
+    }
+    if (part.type === "tool_use" && part.name) {
+      const args =
+        part.input && typeof part.input === "object"
+          ? JSON.stringify(part.input)
+          : "{}";
+      toolCalls.push({
+        id: part.id ?? `tool_${toolCalls.length + 1}`,
+        type: "function",
+        function: {
+          name: part.name,
+          arguments: args,
+        },
+      });
+    }
+  }
+
+  const promptTokens = data.usage?.input_tokens;
+  const completionTokens = data.usage?.output_tokens;
+  const usage: LlmUsage | undefined =
+    typeof promptTokens === "number" || typeof completionTokens === "number"
+      ? {
+          prompt_tokens: promptTokens ?? 0,
+          completion_tokens: completionTokens ?? 0,
+          total_tokens: (promptTokens ?? 0) + (completionTokens ?? 0),
+        }
+      : undefined;
+
+  return {
+    content: textParts.length > 0 ? textParts.join("") : null,
+    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function makeAnthropicHeaders(apiKey: string): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "x-api-key": apiKey,
+    "anthropic-version": ANTHROPIC_VERSION_HEADER,
+  };
+}
+
+function toOpenAiChunkLine(payload: unknown): string {
+  return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
+function toDoneLine(): string {
+  return "data: [DONE]\n\n";
+}
+
+async function convertAnthropicStreamToOpenAiResponse(
+  sourceResponse: Response,
+): Promise<Response> {
+  const sourceReader = sourceResponse.body?.getReader();
+  if (!sourceReader) {
+    throw new Error("Anthropic stream did not include a body");
+  }
+
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const toolIndexByBlock = new Map<number, number>();
+      let nextToolIndex = 0;
+      let promptTokens = 0;
+      let completionTokens = 0;
+      try {
+        for await (const line of readSseStream(sourceReader)) {
+          if (line.data === "[DONE]") {
+            break;
+          }
+          let event: AnthropicStreamEvent;
+          try {
+            event = JSON.parse(line.data) as AnthropicStreamEvent;
+          } catch {
+            continue;
+          }
+          if (event.type === "error") {
+            throw new Error(
+              event.error?.message ||
+                event.error?.type ||
+                "Anthropic stream error",
+            );
+          }
+          if (
+            event.type === "message_start" &&
+            typeof event.message?.usage?.input_tokens === "number"
+          ) {
+            promptTokens = event.message.usage.input_tokens;
+            continue;
+          }
+          if (
+            event.type === "content_block_start" &&
+            event.content_block?.type === "tool_use"
+          ) {
+            const blockIndex = event.index ?? nextToolIndex;
+            const idx = nextToolIndex++;
+            toolIndexByBlock.set(blockIndex, idx);
+            controller.enqueue(
+              encoder.encode(
+                toOpenAiChunkLine({
+                  choices: [
+                    {
+                      delta: {
+                        tool_calls: [
+                          {
+                            index: idx,
+                            id: event.content_block.id ?? "",
+                            function: {
+                              name: event.content_block.name ?? "",
+                              arguments: "",
+                            }, 
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                }),
+              ),
+            );
+            continue;
+          }
+          if (
+            event.type === "content_block_delta" &&
+            event.delta?.type === "text_delta" &&
+            typeof event.delta.text === "string"
+          ) {
+            controller.enqueue(
+              encoder.encode(
+                toOpenAiChunkLine({
+                  choices: [
+                    {
+                      delta: {
+                        content: event.delta.text,
+                      },
+                    },
+                  ],
+                }),
+              ),
+            );
+            continue;
+          }
+          if (
+            event.type === "content_block_delta" &&
+            event.delta?.type === "input_json_delta" &&
+            typeof event.delta.partial_json === "string"
+          ) {
+            const blockIndex = event.index ?? 0;
+            let idx = toolIndexByBlock.get(blockIndex);
+            if (idx === undefined) {
+              idx = nextToolIndex++;
+              toolIndexByBlock.set(blockIndex, idx);
+            }
+            controller.enqueue(
+              encoder.encode(
+                toOpenAiChunkLine({
+                  choices: [
+                    {
+                      delta: {
+                        tool_calls: [
+                          {
+                            index: idx,
+                            function: {
+                              arguments: event.delta.partial_json,
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                }),
+              ),
+            );
+            continue;
+          }
+          if (
+            event.type === "message_delta" &&
+            typeof event.usage?.output_tokens === "number"
+          ) {
+            completionTokens = event.usage.output_tokens;
+            controller.enqueue(
+              encoder.encode(
+                toOpenAiChunkLine({
+                  usage: {
+                    prompt_tokens: promptTokens,
+                    completion_tokens: completionTokens,
+                    total_tokens: promptTokens + completionTokens,
+                  },
+                }),
+              ),
+            );
+          }
+        }
+        controller.enqueue(encoder.encode(toDoneLine()));
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel() {
+      void sourceReader.cancel().catch(() => {
+        // best effort
+      });
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
+}
 
 export async function callLLM(
   config: ChatRouteConfig,
@@ -362,7 +886,15 @@ export async function callLLM(
   stream: false,
   thinkLevel?: ThinkLevel,
   abortSignal?: AbortSignal,
-): Promise<{ content: string | null; tool_calls?: ToolCall[]; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } }>;
+): Promise<{
+  content: string | null;
+  tool_calls?: ToolCall[];
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+}>;
 export async function callLLM(
   config: ChatRouteConfig,
   messages: unknown[],
@@ -378,7 +910,48 @@ export async function callLLM(
   stream: boolean,
   thinkLevel?: ThinkLevel,
   abortSignal?: AbortSignal,
-): Promise<{ content: string | null; tool_calls?: ToolCall[]; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } } | Response> {
+): Promise<
+  | {
+      content: string | null;
+      tool_calls?: ToolCall[];
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+      };
+    }
+  | Response
+> {
+  const provider = normalizeProviderForCall(config);
+
+  if (provider === "anthropic") {
+    const anthropicInput = toAnthropicMessages(messages);
+    const anthropicTools = toAnthropicTools(toolDefs);
+    const anthropicBody: Record<string, unknown> = {
+      model: config.model,
+      messages: anthropicInput.messages,
+      stream,
+      max_tokens: DEFAULT_ANTHROPIC_MAX_TOKENS,
+      ...(anthropicInput.system ? { system: anthropicInput.system } : {}),
+      ...(anthropicTools.length > 0 ? { tools: anthropicTools } : {}),
+    };
+    const res = await fetch(`${config.baseUrl}/messages`, {
+      method: "POST",
+      headers: makeAnthropicHeaders(config.apiKey),
+      body: JSON.stringify(anthropicBody),
+      signal: abortSignal,
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new LLMApiError(res.status, errText);
+    }
+    if (!stream) {
+      const data = (await res.json()) as AnthropicResponse;
+      return normalizeAnthropicResponse(data);
+    }
+    return await convertAnthropicStreamToOpenAiResponse(res);
+  }
+
   const body: Record<string, unknown> = {
     model: config.model,
     stream,
@@ -387,7 +960,11 @@ export async function callLLM(
   };
 
   // Add reasoning_effort for models that support it (OpenAI o-series)
-  if (thinkLevel && thinkLevel !== "off" && supportsReasoningEffort(config.model)) {
+  if (
+    thinkLevel &&
+    thinkLevel !== "off" &&
+    supportsReasoningEffort(config.model)
+  ) {
     body.reasoning_effort = mapToReasoningEffort(thinkLevel);
   }
 
@@ -397,7 +974,10 @@ export async function callLLM(
 
   const res = await fetch(`${config.baseUrl}/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`,
+    },
     body: JSON.stringify(body),
     signal: abortSignal,
   });
@@ -406,7 +986,16 @@ export async function callLLM(
     throw new LLMApiError(res.status, errText);
   }
   if (!stream) {
-    const data = await res.json() as { choices: Array<{ message: { content: string | null; tool_calls?: ToolCall[] } }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } };
+    const data = (await res.json()) as {
+      choices: Array<{
+        message: { content: string | null; tool_calls?: ToolCall[] };
+      }>;
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+      };
+    };
     return { ...data.choices[0]!.message, usage: data.usage };
   }
   return res;
@@ -436,13 +1025,17 @@ export function chatRoutes(
 ) {
   let runModeConfig = config.runMode ?? resolveRunMode();
   let economyMode: EconomyModeConfig = resolveEconomyMode(config.economy);
-  const parsedDailyBudgetUsd = Number(process.env.UNDOABLE_DAILY_BUDGET_USD ?? "");
+  const parsedDailyBudgetUsd = Number(
+    process.env.UNDOABLE_DAILY_BUDGET_USD ?? "",
+  );
   let dailyBudgetUsd: number | null =
     Number.isFinite(parsedDailyBudgetUsd) && parsedDailyBudgetUsd > 0
       ? parsedDailyBudgetUsd
       : null;
-  let allowIrreversibleActions = process.env.UNDOABLE_ALLOW_IRREVERSIBLE_ACTIONS === "1";
-  const autoPauseOnBudgetLimit = process.env.UNDOABLE_DAILY_BUDGET_AUTO_PAUSE !== "0";
+  let allowIrreversibleActions =
+    process.env.UNDOABLE_ALLOW_IRREVERSIBLE_ACTIONS === "1";
+  const autoPauseOnBudgetLimit =
+    process.env.UNDOABLE_DAILY_BUDGET_AUTO_PAUSE !== "0";
   let spendPaused = false;
   const approvalMode = "off" as const;
   const registry = createToolRegistry({
@@ -455,26 +1048,37 @@ export function chatRoutes(
     approvalMode,
     skillsService: skillsService ?? undefined,
   });
-  let configuredMaxIterations = runModeConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+  let configuredMaxIterations =
+    runModeConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   let priorThinkingBeforeEconomy: ThinkLevel | null = null;
   if (economyMode.enabled) {
     priorThinkingBeforeEconomy = DEFAULT_THINKING_CONFIG.level;
   }
 
   if (agentRegistry) {
-    const boundCallLLM = (msgs: unknown[], defs: unknown[], stream: boolean) => {
-      const conf = providerService ? { ...config, ...providerService.getActiveConfig() } : config;
+    const boundCallLLM = (
+      msgs: unknown[],
+      defs: unknown[],
+      stream: boolean,
+    ) => {
+      const conf = providerService
+        ? { ...config, ...providerService.getActiveConfig() }
+        : config;
       return callLLM(conf, msgs, defs, stream as false);
     };
-    registry.registerTools(createSubagentTools({
-      agentRegistry,
-      callLLM: boundCallLLM,
-      toolExecute: registry.execute,
-      toolDefs: registry.definitions,
-      maxIterations: 5,
-    }));
+    registry.registerTools(
+      createSubagentTools({
+        agentRegistry,
+        callLLM: boundCallLLM,
+        toolExecute: registry.execute,
+        toolDefs: registry.definitions,
+        maxIterations: 5,
+      }),
+    );
   }
-  let thinkingConfig: ThinkingConfig = config.thinking ?? { ...DEFAULT_THINKING_CONFIG };
+  let thinkingConfig: ThinkingConfig = config.thinking ?? {
+    ...DEFAULT_THINKING_CONFIG,
+  };
   if (economyMode.enabled) {
     priorThinkingBeforeEconomy = thinkingConfig.level;
     thinkingConfig.level = "off";
@@ -483,7 +1087,12 @@ export function chatRoutes(
 
   const getActiveConfig = () => {
     if (providerService) return providerService.getActiveConfig();
-    return { apiKey: config.apiKey, baseUrl: config.baseUrl, model: config.model, provider: config.provider ?? "" };
+    return {
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      provider: config.provider ?? "",
+    };
   };
   const useTagReasoning = () => {
     if (providerService) return providerService.modelUsesTagReasoning();
@@ -498,7 +1107,8 @@ export function chatRoutes(
     effectiveMaxIterations(configuredMaxIterations, economyMode);
   const getToolResultLimit = () =>
     effectiveToolResultLimit(MAX_TOOL_RESULT_CHARS, economyMode);
-  const getDailySpendUsd = () => (usageService ? usageService.getTotalCost(ONE_DAY_MS) : 0);
+  const getDailySpendUsd = () =>
+    usageService ? usageService.getTotalCost(ONE_DAY_MS) : 0;
   const getSpendStatus = () => {
     const spentLast24hUsd = getDailySpendUsd();
     const exceeded =
@@ -522,19 +1132,24 @@ export function chatRoutes(
     if (enabled) {
       priorThinkingBeforeEconomy = thinkingConfig.level;
       thinkingConfig.level = "off";
-      if (thinkingConfig.visibility !== "off") thinkingConfig.visibility = "off";
+      if (thinkingConfig.visibility !== "off")
+        thinkingConfig.visibility = "off";
       return;
     }
     if (priorThinkingBeforeEconomy !== null && thinkingConfig.level === "off") {
       thinkingConfig.level = priorThinkingBeforeEconomy;
-      if (thinkingConfig.level !== "off" && thinkingConfig.visibility === "off") {
+      if (
+        thinkingConfig.level !== "off" &&
+        thinkingConfig.visibility === "off"
+      ) {
         thinkingConfig.visibility = "stream";
       }
     }
     priorThinkingBeforeEconomy = null;
   };
-  const shouldDisableStreaming = (model: string) => {
-    if (providerService) return providerService.shouldDisableStreaming(model);
+  const shouldDisableStreaming = (model: string, provider?: string) => {
+    if (providerService)
+      return providerService.shouldDisableStreaming(model, provider);
     return false;
   };
   const resolveOperationalState = async (): Promise<DaemonOperationalState> => {
@@ -584,21 +1199,27 @@ export function chatRoutes(
     });
   });
 
-  app.post<{ Body: { id: string; approved: boolean; allowAlways?: boolean } }>("/chat/approve", async (req, reply) => {
-    const { id, approved, allowAlways } = req.body;
-    if (!id) return reply.code(400).send({ error: "id is required" });
+  app.post<{ Body: { id: string; approved: boolean; allowAlways?: boolean } }>(
+    "/chat/approve",
+    async (req, reply) => {
+      const { id, approved, allowAlways } = req.body;
+      if (!id) return reply.code(400).send({ error: "id is required" });
 
-    if (approved && allowAlways) {
-      const pending = registry.approvalGate.getApproval(id);
-      if (pending) {
-        registry.approvalGate.addAutoApprovePattern(pending.toolName);
+      if (approved && allowAlways) {
+        const pending = registry.approvalGate.getApproval(id);
+        if (pending) {
+          registry.approvalGate.addAutoApprovePattern(pending.toolName);
+        }
       }
-    }
 
-    const resolved = registry.approvalGate.resolve(id, approved);
-    if (!resolved) return reply.code(404).send({ error: "Approval not found or already resolved" });
-    return { ok: true, id, approved };
-  });
+      const resolved = registry.approvalGate.resolve(id, approved);
+      if (!resolved)
+        return reply
+          .code(404)
+          .send({ error: "Approval not found or already resolved" });
+      return { ok: true, id, approved };
+    },
+  );
 
   app.get("/chat/approval-mode", async () => {
     return {
@@ -607,29 +1228,46 @@ export function chatRoutes(
     };
   });
 
-  app.post<{ Body: { mode: string } }>("/chat/approval-mode", async (req, reply) => {
-    const { mode } = req.body;
-    if (!["off", "mutate", "always"].includes(mode)) {
-      return reply.code(400).send({ error: "mode must be off, mutate, or always" });
-    }
-    if (runModeConfig.dangerouslySkipPermissions && mode !== "off") {
-      return reply.code(409).send({
-        error: "approval mode is locked to off while --dangerously-skip-permissions is active",
-      });
-    }
-    registry.approvalGate.setMode(mode as "off" | "mutate" | "always");
-    return {
-      ok: true,
-      mode: registry.approvalGate.getMode(),
-      dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
-    };
-  });
+  app.post<{ Body: { mode: string } }>(
+    "/chat/approval-mode",
+    async (req, reply) => {
+      const { mode } = req.body;
+      if (!["off", "mutate", "always"].includes(mode)) {
+        return reply
+          .code(400)
+          .send({ error: "mode must be off, mutate, or always" });
+      }
+      if (runModeConfig.dangerouslySkipPermissions && mode !== "off") {
+        return reply.code(409).send({
+          error:
+            "approval mode is locked to off while --dangerously-skip-permissions is active",
+        });
+      }
+      registry.approvalGate.setMode(mode as "off" | "mutate" | "always");
+      return {
+        ok: true,
+        mode: registry.approvalGate.getMode(),
+        dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
+      };
+    },
+  );
 
   app.get("/chat/agents", async () => {
     if (!agentRegistry) return { agents: [], defaultId: null };
-    const agents = agentRegistry.list().map((a) => ({ id: a.id, name: a.name ?? a.id, model: a.model, identity: a.identity }));
+    const agents = agentRegistry
+      .list()
+      .map((a) => ({
+        id: a.id,
+        name: a.name ?? a.id,
+        model: a.model,
+        identity: a.identity,
+      }));
     let defaultId: string | null = null;
-    try { defaultId = agentRegistry.getDefaultId(); } catch { /* none */ }
+    try {
+      defaultId = agentRegistry.getDefaultId();
+    } catch {
+      /* none */
+    }
     return { agents, defaultId };
   });
 
@@ -673,7 +1311,16 @@ export function chatRoutes(
     return await buildRunConfigResponse();
   });
 
-  app.post<{ Body: { mode?: string; maxIterations?: number; economyMode?: boolean; dailyBudgetUsd?: number | null; spendPaused?: boolean; allowIrreversibleActions?: boolean } }>("/chat/run-config", async (req, reply) => {
+  app.post<{
+    Body: {
+      mode?: string;
+      maxIterations?: number;
+      economyMode?: boolean;
+      dailyBudgetUsd?: number | null;
+      spendPaused?: boolean;
+      allowIrreversibleActions?: boolean;
+    };
+  }>("/chat/run-config", async (req, reply) => {
     const {
       mode,
       maxIterations: newMax,
@@ -689,11 +1336,17 @@ export function chatRoutes(
           ? Math.floor(newMax)
           : null;
     if (newMax !== undefined && nextMaxIterations === null) {
-      return reply.code(400).send({ error: "maxIterations must be a positive number" });
+      return reply
+        .code(400)
+        .send({ error: "maxIterations must be a positive number" });
     }
     if (mode !== undefined) {
       if (!["interactive", "autonomous", "supervised"].includes(mode)) {
-        return reply.code(400).send({ error: "mode must be interactive, autonomous, or supervised" });
+        return reply
+          .code(400)
+          .send({
+            error: "mode must be interactive, autonomous, or supervised",
+          });
       }
       const newConfig = resolveRunMode({
         mode: mode as "interactive" | "autonomous" | "supervised",
@@ -762,54 +1415,88 @@ export function chatRoutes(
     };
   });
 
-  app.post<{ Body: { level?: string; visibility?: string } }>("/chat/thinking", async (req, reply) => {
-    const { level, visibility } = req.body;
-    if (level !== undefined) {
-      const normalized = normalizeThinkLevel(level);
-      if (!normalized) return reply.code(400).send({ error: "level must be off, low, medium, or high" });
-      thinkingConfig.level = economyMode.enabled ? "off" : normalized;
-    }
-    if (visibility !== undefined) {
-      if (!["off", "on", "stream"].includes(visibility)) {
-        return reply.code(400).send({ error: "visibility must be off, on, or stream" });
+  app.post<{ Body: { level?: string; visibility?: string } }>(
+    "/chat/thinking",
+    async (req, reply) => {
+      const { level, visibility } = req.body;
+      if (level !== undefined) {
+        const normalized = normalizeThinkLevel(level);
+        if (!normalized)
+          return reply
+            .code(400)
+            .send({ error: "level must be off, low, medium, or high" });
+        thinkingConfig.level = economyMode.enabled ? "off" : normalized;
       }
-      thinkingConfig.visibility = visibility as ReasoningVisibility;
-    }
-    if (economyMode.enabled) {
-      thinkingConfig.level = "off";
-      if (thinkingConfig.visibility !== "off") thinkingConfig.visibility = "off";
-    }
-    return {
-      ok: true,
-      level: thinkingConfig.level,
-      visibility: thinkingConfig.visibility,
-      canThink: canThinkNow(),
-      economyMode: economyMode.enabled,
-    };
-  });
+      if (visibility !== undefined) {
+        if (!["off", "on", "stream"].includes(visibility)) {
+          return reply
+            .code(400)
+            .send({ error: "visibility must be off, on, or stream" });
+        }
+        thinkingConfig.visibility = visibility as ReasoningVisibility;
+      }
+      if (economyMode.enabled) {
+        thinkingConfig.level = "off";
+        if (thinkingConfig.visibility !== "off")
+          thinkingConfig.visibility = "off";
+      }
+      return {
+        ok: true,
+        level: thinkingConfig.level,
+        visibility: thinkingConfig.visibility,
+        canThink: canThinkNow(),
+        economyMode: economyMode.enabled,
+      };
+    },
+  );
 
   // ── Model & Provider endpoints ──
 
   app.get("/chat/model", async () => {
     if (providerService) {
       const active = providerService.getActive();
-      return { provider: active.provider, model: active.model, name: active.name, capabilities: active.capabilities };
+      return {
+        provider: active.provider,
+        model: active.model,
+        name: active.name,
+        capabilities: active.capabilities,
+      };
     }
-    return { provider: config.provider ?? "openai", model: config.model, name: config.model, capabilities: { thinking: supportsReasoningEffort(config.model), tagReasoning: false, vision: false, tools: true } };
+    return {
+      provider: config.provider ?? "openai",
+      model: config.model,
+      name: config.model,
+      capabilities: {
+        thinking: supportsReasoningEffort(config.model),
+        tagReasoning: false,
+        vision: false,
+        tools: true,
+      },
+    };
   });
 
-  app.post<{ Body: { provider: string; model: string } }>("/chat/model", async (req, reply) => {
-    if (!providerService) return reply.code(400).send({ error: "Provider service not available" });
-    const { provider, model } = req.body;
-    if (!provider || !model) return reply.code(400).send({ error: "provider and model required" });
-    const result = await providerService.setActiveModel(provider, model);
-    if (!result) return reply.code(400).send({ error: "Invalid provider/model or missing API key" });
-    // Reset thinking if new model doesn't support it
-    if (!result.capabilities.thinking && thinkingConfig.level !== "off") {
-      thinkingConfig.level = "off";
-    }
-    return { ok: true, ...result };
-  });
+  app.post<{ Body: { provider: string; model: string } }>(
+    "/chat/model",
+    async (req, reply) => {
+      if (!providerService)
+        return reply
+          .code(400)
+          .send({ error: "Provider service not available" });
+      const { provider, model } = req.body;
+      if (!provider || !model)
+        return reply.code(400).send({ error: "provider and model required" });
+      const result = await providerService.setActiveModel(provider, model);
+      if (!result)
+        return reply
+          .code(400)
+          .send({ error: "Invalid provider/model or missing API key" });
+      // Reset thinking if new model doesn't support it
+      if (!result.capabilities.thinking && thinkingConfig.level !== "off") {
+        thinkingConfig.level = "off";
+      }
+      return { ok: true, ...result };
+    },
+  );
 
   app.get("/chat/models", async () => {
     if (!providerService) return { models: [] };
@@ -821,27 +1508,41 @@ export function chatRoutes(
     return { providers: providerService.listProviders() };
   });
 
-  app.post<{ Body: { provider: string; apiKey: string; baseUrl?: string } }>("/chat/providers", async (req, reply) => {
-    if (!providerService) return reply.code(400).send({ error: "Provider service not available" });
-    const { provider, apiKey, baseUrl } = req.body;
-    if (!provider) return reply.code(400).send({ error: "provider required" });
-    await providerService.setProviderKey(provider, apiKey, baseUrl);
-    if (provider === "openai") {
-      syncOpenAIVoiceKeys();
-    }
-    return { ok: true };
-  });
+  app.post<{ Body: { provider: string; apiKey: string; baseUrl?: string } }>(
+    "/chat/providers",
+    async (req, reply) => {
+      if (!providerService)
+        return reply
+          .code(400)
+          .send({ error: "Provider service not available" });
+      const { provider, apiKey, baseUrl } = req.body;
+      if (!provider)
+        return reply.code(400).send({ error: "provider required" });
+      await providerService.setProviderKey(provider, apiKey, baseUrl);
+      if (provider === "openai") {
+        syncOpenAIVoiceKeys();
+      }
+      return { ok: true };
+    },
+  );
 
-  app.delete<{ Body: { provider: string } }>("/chat/providers", async (req, reply) => {
-    if (!providerService) return reply.code(400).send({ error: "Provider service not available" });
-    const { provider } = req.body;
-    if (!provider) return reply.code(400).send({ error: "provider required" });
-    await providerService.removeProviderKey(provider);
-    if (provider === "openai") {
-      syncOpenAIVoiceKeys();
-    }
-    return { ok: true };
-  });
+  app.delete<{ Body: { provider: string } }>(
+    "/chat/providers",
+    async (req, reply) => {
+      if (!providerService)
+        return reply
+          .code(400)
+          .send({ error: "Provider service not available" });
+      const { provider } = req.body;
+      if (!provider)
+        return reply.code(400).send({ error: "provider required" });
+      await providerService.removeProviderKey(provider);
+      if (provider === "openai") {
+        syncOpenAIVoiceKeys();
+      }
+      return { ok: true };
+    },
+  );
 
   app.get("/chat/local-servers", async () => {
     if (!providerService) return { servers: [] };
@@ -857,20 +1558,26 @@ export function chatRoutes(
     };
   });
 
-  app.post<{ Body: { action: string; id?: string; count?: number } }>("/chat/undo", async (req, reply) => {
-    const { action, id, count } = req.body;
-    const toSummary = (items: ReturnType<typeof registry.undoService.listUndoable>) => items.map((a) => ({
-      id: a.id,
-      tool: a.toolName,
-      args: a.args,
-      startedAt: a.startedAt,
-    }));
-    switch (action) {
-      case "list":
-        {
+  app.post<{ Body: { action: string; id?: string; count?: number } }>(
+    "/chat/undo",
+    async (req, reply) => {
+      const { action, id, count } = req.body;
+      const toSummary = (
+        items: ReturnType<typeof registry.undoService.listUndoable>,
+      ) =>
+        items.map((a) => ({
+          id: a.id,
+          tool: a.toolName,
+          args: a.args,
+          startedAt: a.startedAt,
+        }));
+      switch (action) {
+        case "list": {
           const all = registry.actionLog.list();
           const nonUndoableRecent = all
-            .filter((a) => !a.undoable && !NON_UNDOABLE_NOISE_TOOLS.has(a.toolName))
+            .filter(
+              (a) => !a.undoable && !NON_UNDOABLE_NOISE_TOOLS.has(a.toolName),
+            )
             .slice(-20)
             .map((a) => ({
               id: a.id,
@@ -879,34 +1586,35 @@ export function chatRoutes(
               startedAt: a.startedAt,
               error: a.error ?? null,
             }));
-        return {
-          recordedCount: all.length,
-          undoable: toSummary(registry.undoService.listUndoable()),
-          redoable: toSummary(registry.undoService.listRedoable()),
-          nonUndoableRecent,
-        };
+          return {
+            recordedCount: all.length,
+            undoable: toSummary(registry.undoService.listUndoable()),
+            redoable: toSummary(registry.undoService.listRedoable()),
+            nonUndoableRecent,
+          };
         }
-      case "one":
-      case "undo_one":
-        if (!id) return reply.code(400).send({ error: "id required" });
-        return { result: await registry.undoService.undoAction(id) };
-      case "last":
-      case "undo_last":
-        return { results: await registry.undoService.undoLastN(count ?? 1) };
-      case "all":
-      case "undo_all":
-        return { results: await registry.undoService.undoAll() };
-      case "redo_one":
-        if (!id) return reply.code(400).send({ error: "id required" });
-        return { result: await registry.undoService.redoAction(id) };
-      case "redo_last":
-        return { results: await registry.undoService.redoLastN(count ?? 1) };
-      case "redo_all":
-        return { results: await registry.undoService.redoAll() };
-      default:
-        return reply.code(400).send({ error: `Unknown action: ${action}` });
-    }
-  });
+        case "one":
+        case "undo_one":
+          if (!id) return reply.code(400).send({ error: "id required" });
+          return { result: await registry.undoService.undoAction(id) };
+        case "last":
+        case "undo_last":
+          return { results: await registry.undoService.undoLastN(count ?? 1) };
+        case "all":
+        case "undo_all":
+          return { results: await registry.undoService.undoAll() };
+        case "redo_one":
+          if (!id) return reply.code(400).send({ error: "id required" });
+          return { result: await registry.undoService.redoAction(id) };
+        case "redo_last":
+          return { results: await registry.undoService.redoLastN(count ?? 1) };
+        case "redo_all":
+          return { results: await registry.undoService.redoAll() };
+        default:
+          return reply.code(400).send({ error: `Unknown action: ${action}` });
+      }
+    },
+  );
 
   app.get("/chat/actions", async () => {
     const records = registry.actionLog.list();
@@ -920,14 +1628,28 @@ export function chatRoutes(
       configuredMaxIterations,
       economyMode: economyMode.enabled,
       actions: recent.map((r) => ({
-        id: r.id, tool: r.toolName, category: r.category,
-        approval: r.approval, undoable: r.undoable,
-        startedAt: r.startedAt, durationMs: r.durationMs, error: r.error ?? null,
+        id: r.id,
+        tool: r.toolName,
+        category: r.category,
+        approval: r.approval,
+        undoable: r.undoable,
+        startedAt: r.startedAt,
+        durationMs: r.durationMs,
+        error: r.error ?? null,
       })),
     };
   });
 
-  app.post<{ Body: { message: string; sessionId?: string; agentId?: string; model?: string; attachments?: ChatAttachment[]; swarmMode?: boolean } }>("/chat", async (req, reply) => {
+  app.post<{
+    Body: {
+      message: string;
+      sessionId?: string;
+      agentId?: string;
+      model?: string;
+      attachments?: ChatAttachment[];
+      swarmMode?: boolean;
+    };
+  }>("/chat", async (req, reply) => {
     const { message, agentId, model: requestModel, attachments } = req.body;
     const swarmMode = req.body.swarmMode === true;
     // Create new session if no sessionId provided (or empty string)
@@ -938,6 +1660,7 @@ export function chatRoutes(
     }
 
     let agentModelOverride: string | undefined;
+    let agentProviderOverride: string | undefined;
     let agentFallbacks: string[] = [];
     let agentName: string | undefined;
     let agentInstructions: string | undefined;
@@ -949,33 +1672,69 @@ export function chatRoutes(
       const resolved = providerService.resolveModelAlias(requestModel);
       if (resolved) {
         agentModelOverride = resolved.modelId;
+        agentProviderOverride = resolved.providerId;
       }
     }
 
     if (agentId && agentRegistry) {
       const agent = agentRegistry.get(agentId);
-      if (agent?.model) agentModelOverride = agent.model;
+      if (agent?.model) {
+        if (providerService) {
+          const resolved = providerService.resolveModelAlias(agent.model);
+          if (resolved) {
+            agentModelOverride = resolved.modelId;
+            agentProviderOverride = resolved.providerId;
+          } else {
+            agentModelOverride = agent.model;
+          }
+        } else {
+          agentModelOverride = agent.model;
+        }
+      }
       if (agent?.fallbacks?.length) agentFallbacks = agent.fallbacks;
       if (agent?.name) agentName = agent.name;
       if (agent?.workspace) agentWorkspace = agent.workspace;
-      if (agent?.tools) agentToolDefs = filterToolsByPolicy(registry.definitions, agent.tools);
+      if (agent?.tools)
+        agentToolDefs = filterToolsByPolicy(registry.definitions, agent.tools);
       if (instructionsStore) {
-        agentInstructions = (await instructionsStore.getCurrent(agentId)) ?? undefined;
+        agentInstructions =
+          (await instructionsStore.getCurrent(agentId)) ?? undefined;
       }
     }
 
     // Parse inline directives from the message
     const { directives, cleanMessage } = parseDirectives(message ?? "");
-    let directiveModelOverride: string | undefined;
+    let directiveModelOverride:
+      | { providerId: string; modelId: string }
+      | undefined;
+    let directiveModelError: string | undefined;
     for (const d of directives) {
       if (d.type === "think") {
         thinkingConfig.level = d.level;
       } else if (d.type === "model" && providerService) {
         const resolved = providerService.resolveModelAlias(d.value);
-        if (resolved) directiveModelOverride = resolved.modelId;
+        if (!resolved) {
+          directiveModelError = `Model "${d.value}" was not recognized.`;
+          continue;
+        }
+        const switched = await providerService.setActiveModel(
+          resolved.providerId,
+          resolved.modelId,
+        );
+        if (!switched) {
+          directiveModelError = `Could not switch to ${resolved.providerId}/${resolved.modelId}. Add API key for provider "${resolved.providerId}" first.`;
+          continue;
+        }
+        directiveModelOverride = {
+          providerId: switched.provider,
+          modelId: switched.model,
+        };
       }
     }
-    if (directiveModelOverride) agentModelOverride = directiveModelOverride;
+    if (directiveModelOverride) {
+      agentModelOverride = directiveModelOverride.modelId;
+      agentProviderOverride = directiveModelOverride.providerId;
+    }
     const directivesOnly = directives.length > 0 && !cleanMessage;
 
     const operationState = await resolveOperationalState();
@@ -1034,7 +1793,7 @@ export function chatRoutes(
       workspaceDir,
       runtime: {
         model: agentModelOverride ?? activeConf.model,
-        provider: activeConf.provider,
+        provider: agentProviderOverride ?? activeConf.provider,
         os: `${os.platform()} ${os.release()}`,
         arch: os.arch(),
         node: process.version,
@@ -1066,13 +1825,20 @@ export function chatRoutes(
       await chatService.addUserMessage(sessionId, messageToStore);
     }
 
-    const session = await chatService.getOrCreate(sessionId, { systemPrompt: dynamicSystemPrompt, agentId });
+    const session = await chatService.getOrCreate(sessionId, {
+      systemPrompt: dynamicSystemPrompt,
+      agentId,
+    });
     const turnIndex = session.messages.filter((m) => m.role === "user").length;
     const driftScore = driftDetector.analyze(sessionId, message, turnIndex);
 
     const runId = generateRunId();
     const abortController = new AbortController();
-    activeChatRuns.set(runId, { controller: abortController, sessionId, startedAtMs: Date.now() });
+    activeChatRuns.set(runId, {
+      controller: abortController,
+      sessionId,
+      startedAtMs: Date.now(),
+    });
 
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -1082,7 +1848,11 @@ export function chatRoutes(
 
     const sse = (data: unknown) => {
       if (abortController.signal.aborted) return;
-      try { reply.raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* connection closed */ }
+      try {
+        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      } catch {
+        /* connection closed */
+      }
     };
     activeSse = sse;
     sse({ type: "run_start", runId });
@@ -1091,23 +1861,43 @@ export function chatRoutes(
       heartbeatService.register(sessionId, {
         agentId,
         onHeartbeat: () => {
-          try { reply.raw.write(`: heartbeat\n\n`); } catch { /* connection closed */ }
+          try {
+            reply.raw.write(`: heartbeat\n\n`);
+          } catch {
+            /* connection closed */
+          }
         },
       });
     }
 
     sse({
-      type: "session_info", sessionId: isNewSession ? sessionId : undefined,
-      mode: runModeConfig.mode, maxIterations: getMaxIterationsForRun(), approvalMode: registry.approvalGate.getMode(),
+      type: "session_info",
+      sessionId: isNewSession ? sessionId : undefined,
+      mode: runModeConfig.mode,
+      maxIterations: getMaxIterationsForRun(),
+      approvalMode: registry.approvalGate.getMode(),
       configuredMaxIterations,
       dangerouslySkipPermissions: runModeConfig.dangerouslySkipPermissions,
       economyMode: economyMode.enabled,
       allowIrreversibleActions,
       undoGuaranteeEnabled: !allowIrreversibleActions,
-      thinking: thinkingConfig.level, reasoningVisibility: thinkingConfig.visibility,
-      model: activeConf.model, provider: activeConf.provider, canThink: canThinkNow(),
+      thinking: thinkingConfig.level,
+      reasoningVisibility: thinkingConfig.visibility,
+      model: activeConf.model,
+      provider: activeConf.provider,
+      canThink: canThinkNow(),
       spendGuard: getSpendStatus(),
     });
+
+    if (directiveModelError && !directivesOnly) {
+      sse({
+        type: "warning",
+        code: "model_switch_failed",
+        content: directiveModelError,
+        recovery:
+          "Use /model <provider/model> with a configured provider key, or set it in Settings.",
+      });
+    }
 
     if (autoSkillDiscovery) {
       sse({
@@ -1116,7 +1906,9 @@ export function chatRoutes(
         content: formatAutoSkillDiscoveryHint(autoSkillDiscovery),
         recovery:
           "Click Approve & Install on any suggestion, or ask to install a specific reference.",
-        suggestedSkills: autoSkillDiscovery.results.map((result) => result.reference),
+        suggestedSkills: autoSkillDiscovery.results.map(
+          (result) => result.reference,
+        ),
       });
     }
 
@@ -1149,10 +1941,30 @@ export function chatRoutes(
           sse({ type: "help", content: DIRECTIVE_HELP });
           handled = true;
         } else if (d.type === "think") {
-          sse({ type: "directive_applied", directive: "think", level: d.level });
+          sse({
+            type: "directive_applied",
+            directive: "think",
+            level: d.level,
+          });
           handled = true;
         } else if (d.type === "model" && directiveModelOverride) {
-          sse({ type: "directive_applied", directive: "model", model: directiveModelOverride });
+          sse({
+            type: "directive_applied",
+            directive: "model",
+            provider: directiveModelOverride.providerId,
+            model: directiveModelOverride.modelId,
+          });
+          handled = true;
+        } else if (d.type === "model") {
+          if (directiveModelError) {
+            sse({
+              type: "warning",
+              code: "model_switch_failed",
+              content: directiveModelError,
+              recovery:
+                "Use /model <provider/model> with a configured provider key, or set it in Settings.",
+            });
+          }
           handled = true;
         }
       }
@@ -1167,7 +1979,10 @@ export function chatRoutes(
         activeChatRuns.delete(runId);
         activeSse = null;
         if (heartbeatService) heartbeatService.unregister(sessionId);
-        try { reply.raw.write("data: [DONE]\n\n"); reply.raw.end(); } catch { }
+        try {
+          reply.raw.write("data: [DONE]\n\n");
+          reply.raw.end();
+        } catch {}
         return;
       }
     }
@@ -1177,15 +1992,26 @@ export function chatRoutes(
       if (reinforcement) {
         await chatService.injectSystemMessage(sessionId, reinforcement);
         driftDetector.recordReinforcement(sessionId);
-        sse({ type: "alignment", score: driftScore.total, domain: driftScore.domain, signals: driftScore.signals.map((s) => s.category) });
+        sse({
+          type: "alignment",
+          score: driftScore.total,
+          domain: driftScore.domain,
+          signals: driftScore.signals.map((s) => s.category),
+        });
       }
     }
 
     try {
       let loops = 0;
       const maxIterations = getMaxIterationsForRun();
-      const compactionConfig = economyMode.enabled ? economyMode.compaction : undefined;
-      const totalUsage: UsageAccumulator = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      const compactionConfig = economyMode.enabled
+        ? economyMode.compaction
+        : undefined;
+      const totalUsage: UsageAccumulator = {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      };
       while (loops < maxIterations) {
         if (abortController.signal.aborted) {
           sse({ type: "aborted", runId });
@@ -1195,7 +2021,10 @@ export function chatRoutes(
         sse({ type: "progress", iteration: loops, maxIterations });
         let messages = await chatService.buildApiMessages(sessionId);
         if (messages.length > 0 && messages[0]?.role === "system") {
-          messages[0] = { role: "system" as const, content: dynamicSystemPrompt };
+          messages[0] = {
+            role: "system" as const,
+            content: dynamicSystemPrompt,
+          };
         }
         if (needsCompaction(messages, compactionConfig)) {
           const compacted = compactMessagesWithMeta(messages, compactionConfig);
@@ -1207,36 +2036,118 @@ export function chatRoutes(
           });
         }
         const activeThinkLevel = canThinkNow() ? thinkingConfig.level : "off";
-        const baseConf: ChatRouteConfig = { ...config, ...getActiveConfig(), ...(agentModelOverride ? { model: agentModelOverride } : {}) };
+        const activeConfig = getActiveConfig();
+        let baseConf: ChatRouteConfig = { ...config, ...activeConfig };
+        if (agentProviderOverride && providerService) {
+          const overrideProviderConfig = providerService.getProviderConfig(
+            agentProviderOverride,
+          );
+          if (overrideProviderConfig) {
+            baseConf = {
+              ...baseConf,
+              provider: agentProviderOverride,
+              baseUrl: overrideProviderConfig.baseUrl,
+              apiKey: overrideProviderConfig.apiKey,
+            };
+          }
+        }
+        if (agentModelOverride) {
+          baseConf = {
+            ...baseConf,
+            model: agentModelOverride,
+          };
+        }
+
         const modelsToTry = [baseConf.model, ...agentFallbacks];
-
-        const useNonStreaming = shouldDisableStreaming(baseConf.model);
-
-        let fullContent = "";
-        const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
-        let hasToolCalls = false;
-        let iterUsage: UsageAccumulator = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-
-        if (useNonStreaming) {
-          let nonStreamRes: { content: string | null; tool_calls?: ToolCall[]; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } } | undefined;
-          for (const model of modelsToTry) {
-            try {
-              nonStreamRes = await callLLM({ ...baseConf, model }, messages, agentToolDefs, false, activeThinkLevel, abortController.signal) as typeof nonStreamRes;
-              break;
-            } catch (err) {
-              const isLast = model === modelsToTry[modelsToTry.length - 1];
-              const canRetry = err instanceof LLMApiError && err.retryable;
-              if (isLast || !canRetry) throw err;
-              sse({ type: "fallback", failedModel: model, error: String(err) });
+        const attemptConfs: ChatRouteConfig[] = [];
+        for (const candidateModel of modelsToTry) {
+          if (providerService) {
+            const resolved = providerService.resolveModelAlias(candidateModel);
+            if (resolved) {
+              const providerConf = providerService.getProviderConfig(
+                resolved.providerId,
+              );
+              if (providerConf) {
+                attemptConfs.push({
+                  ...baseConf,
+                  model: resolved.modelId,
+                  provider: resolved.providerId,
+                  baseUrl: providerConf.baseUrl,
+                  apiKey: providerConf.apiKey,
+                });
+                continue;
+              }
             }
           }
-          if (!nonStreamRes) { sse({ type: "error", content: "All models failed" }); break; }
+          attemptConfs.push({
+            ...baseConf,
+            model: candidateModel,
+          });
+        }
+
+        const useNonStreaming = shouldDisableStreaming(
+          baseConf.model,
+          baseConf.provider,
+        );
+
+        let fullContent = "";
+        const pendingToolCalls = new Map<
+          number,
+          { id: string; name: string; args: string }
+        >();
+        let hasToolCalls = false;
+        let iterUsage: UsageAccumulator = {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+        };
+
+        if (useNonStreaming) {
+          let nonStreamRes:
+            | {
+                content: string | null;
+                tool_calls?: ToolCall[];
+                usage?: {
+                  prompt_tokens?: number;
+                  completion_tokens?: number;
+                  total_tokens?: number;
+                };
+              }
+            | undefined;
+          for (const attemptConf of attemptConfs) {
+            try {
+              nonStreamRes = (await callLLM(
+                attemptConf,
+                messages,
+                agentToolDefs,
+                false,
+                activeThinkLevel,
+                abortController.signal,
+              )) as typeof nonStreamRes;
+              break;
+            } catch (err) {
+              const isLast =
+                attemptConf === attemptConfs[attemptConfs.length - 1];
+              const canRetry = err instanceof LLMApiError && err.retryable;
+              if (isLast || !canRetry) throw err;
+              sse({
+                type: "fallback",
+                failedModel: `${attemptConf.provider ?? "unknown"}/${attemptConf.model}`,
+                error: String(err),
+              });
+            }
+          }
+          if (!nonStreamRes) {
+            sse({ type: "error", content: "All models failed" });
+            break;
+          }
 
           fullContent = nonStreamRes.content ?? "";
           if (fullContent) sse({ type: "token", content: fullContent });
           if (nonStreamRes.usage) {
             iterUsage.promptTokens += nonStreamRes.usage.prompt_tokens ?? 0;
-            iterUsage.completionTokens += nonStreamRes.usage.completion_tokens ?? 0;
+            iterUsage.completionTokens +=
+              nonStreamRes.usage.completion_tokens ?? 0;
             iterUsage.totalTokens += nonStreamRes.usage.total_tokens ?? 0;
           }
 
@@ -1244,26 +2155,48 @@ export function chatRoutes(
             hasToolCalls = true;
             for (let i = 0; i < nonStreamRes.tool_calls.length; i++) {
               const tc = nonStreamRes.tool_calls[i]!;
-              pendingToolCalls.set(i, { id: tc.id, name: tc.function.name, args: tc.function.arguments });
+              pendingToolCalls.set(i, {
+                id: tc.id,
+                name: tc.function.name,
+                args: tc.function.arguments,
+              });
             }
           }
         } else {
           let res: Response | undefined;
-          for (const model of modelsToTry) {
+          for (const attemptConf of attemptConfs) {
             try {
-              res = await callLLM({ ...baseConf, model }, messages, agentToolDefs, true, activeThinkLevel, abortController.signal) as Response;
+              res = (await callLLM(
+                attemptConf,
+                messages,
+                agentToolDefs,
+                true,
+                activeThinkLevel,
+                abortController.signal,
+              )) as Response;
               break;
             } catch (err) {
-              const isLast = model === modelsToTry[modelsToTry.length - 1];
+              const isLast =
+                attemptConf === attemptConfs[attemptConfs.length - 1];
               const canRetry = err instanceof LLMApiError && err.retryable;
               if (isLast || !canRetry) throw err;
-              sse({ type: "fallback", failedModel: model, error: String(err) });
+              sse({
+                type: "fallback",
+                failedModel: `${attemptConf.provider ?? "unknown"}/${attemptConf.model}`,
+                error: String(err),
+              });
             }
           }
-          if (!res) { sse({ type: "error", content: "All models failed" }); break; }
+          if (!res) {
+            sse({ type: "error", content: "All models failed" });
+            break;
+          }
 
           const reader = res.body?.getReader();
-          if (!reader) { sse({ type: "error", content: "No response body" }); break; }
+          if (!reader) {
+            sse({ type: "error", content: "No response body" });
+            break;
+          }
 
           let lastThinkingEmitted = "";
 
@@ -1277,17 +2210,30 @@ export function chatRoutes(
               if (delta?.content) {
                 fullContent += delta.content;
 
-                if (useTagReasoning() && thinkingConfig.visibility === "stream") {
+                if (
+                  useTagReasoning() &&
+                  thinkingConfig.visibility === "stream"
+                ) {
                   const thinking = extractThinkingFromStream(fullContent);
                   if (thinking && thinking !== lastThinkingEmitted) {
-                    const newThinking = thinking.slice(lastThinkingEmitted.length);
-                    if (newThinking) sse({ type: "thinking", content: newThinking, streaming: true });
+                    const newThinking = thinking.slice(
+                      lastThinkingEmitted.length,
+                    );
+                    if (newThinking)
+                      sse({
+                        type: "thinking",
+                        content: newThinking,
+                        streaming: true,
+                      });
                     lastThinkingEmitted = thinking;
                   }
                   const visible = stripThinkingTags(fullContent);
-                  const prevVisible = stripThinkingTags(fullContent.slice(0, -delta.content.length));
+                  const prevVisible = stripThinkingTags(
+                    fullContent.slice(0, -delta.content.length),
+                  );
                   const visibleDelta = visible.slice(prevVisible.length);
-                  if (visibleDelta) sse({ type: "token", content: visibleDelta });
+                  if (visibleDelta)
+                    sse({ type: "token", content: visibleDelta });
                 } else {
                   sse({ type: "token", content: delta.content });
                 }
@@ -1303,16 +2249,20 @@ export function chatRoutes(
                   }
                   if (tc.id) entry.id = tc.id;
                   if (tc.function?.name) entry.name += tc.function.name;
-                  if (tc.function?.arguments) entry.args += tc.function.arguments;
+                  if (tc.function?.arguments)
+                    entry.args += tc.function.arguments;
                 }
               }
 
               if (parsed.usage) {
                 iterUsage.promptTokens += parsed.usage.prompt_tokens ?? 0;
-                iterUsage.completionTokens += parsed.usage.completion_tokens ?? 0;
+                iterUsage.completionTokens +=
+                  parsed.usage.completion_tokens ?? 0;
                 iterUsage.totalTokens += parsed.usage.total_tokens ?? 0;
               }
-            } catch { continue; }
+            } catch {
+              continue;
+            }
           }
         }
 
@@ -1320,9 +2270,20 @@ export function chatRoutes(
         if (useTagReasoning()) {
           const blocks = splitThinkingTags(fullContent);
           if (blocks) {
-            const thinkingText = blocks.filter((b) => b.type === "thinking").map((b) => b.content).join("\n");
-            visibleContent = blocks.filter((b) => b.type === "text").map((b) => b.content).join("\n").trim();
-            if (thinkingText && thinkingConfig.visibility !== "off" && thinkingConfig.visibility !== "stream") {
+            const thinkingText = blocks
+              .filter((b) => b.type === "thinking")
+              .map((b) => b.content)
+              .join("\n");
+            visibleContent = blocks
+              .filter((b) => b.type === "text")
+              .map((b) => b.content)
+              .join("\n")
+              .trim();
+            if (
+              thinkingText &&
+              thinkingConfig.visibility !== "off" &&
+              thinkingConfig.visibility !== "stream"
+            ) {
               sse({ type: "thinking", content: thinkingText });
             }
           }
@@ -1335,11 +2296,10 @@ export function chatRoutes(
           sse({ type: "usage", usage: { ...totalUsage } });
 
           if (usageService) {
-            const ac = getActiveConfig();
             usageService.record({
               sessionId,
-              model: agentModelOverride ?? ac.model,
-              provider: ac.provider,
+              model: agentModelOverride ?? baseConf.model,
+              provider: baseConf.provider ?? getActiveConfig().provider,
               promptTokens: iterUsage.promptTokens,
               completionTokens: iterUsage.completionTokens,
               totalTokens: iterUsage.totalTokens,
@@ -1382,29 +2342,50 @@ export function chatRoutes(
 
         if (!hasToolCalls) {
           await chatService.addAssistantMessage(sessionId, visibleContent);
-          sse({ type: "done", content: visibleContent, iterations: loops, maxIterations, usage: { ...totalUsage } });
+          sse({
+            type: "done",
+            content: visibleContent,
+            iterations: loops,
+            maxIterations,
+            usage: { ...totalUsage },
+          });
           break;
         }
 
-        const toolCalls: ToolCall[] = Array.from(pendingToolCalls.values()).map((tc) => ({
-          id: tc.id,
-          type: "function" as const,
-          function: { name: tc.name, arguments: tc.args },
-        }));
+        const toolCalls: ToolCall[] = Array.from(pendingToolCalls.values()).map(
+          (tc) => ({
+            id: tc.id,
+            type: "function" as const,
+            function: { name: tc.name, arguments: tc.args },
+          }),
+        );
 
         await chatService.addAssistantToolCalls(sessionId, toolCalls);
 
         const isOnlyProcessPoll = toolCalls.every((tc) => {
           if (tc.function.name !== "process") return false;
-          try { const a = JSON.parse(tc.function.arguments); return a.action === "poll"; } catch { return false; }
+          try {
+            const a = JSON.parse(tc.function.arguments);
+            return a.action === "poll";
+          } catch {
+            return false;
+          }
         });
         if (isOnlyProcessPoll) loops--;
 
         for (const tc of toolCalls) {
           if (abortController.signal.aborted) break;
           let args: Record<string, unknown> = {};
-          try { args = JSON.parse(tc.function.arguments); } catch { }
-          sse({ type: "tool_call", name: tc.function.name, args, iteration: loops, maxIterations });
+          try {
+            args = JSON.parse(tc.function.arguments);
+          } catch {}
+          sse({
+            type: "tool_call",
+            name: tc.function.name,
+            args,
+            iteration: loops,
+            maxIterations,
+          });
 
           const guarantee = checkUndoGuarantee(tc.function.name, args);
           if (!allowIrreversibleActions && !guarantee.allowed) {
@@ -1445,7 +2426,11 @@ export function chatRoutes(
               recovery: blockedResult.recovery,
               tool: tc.function.name,
             });
-            sse({ type: "tool_result", name: tc.function.name, result: blockedResult });
+            sse({
+              type: "tool_result",
+              name: tc.function.name,
+              result: blockedResult,
+            });
             continue;
           }
 
@@ -1460,8 +2445,16 @@ export function chatRoutes(
           } catch (err) {
             if (abortController.signal.aborted) break;
             const errStr = String(err);
-            await chatService.addToolResult(sessionId, tc.id, JSON.stringify({ error: errStr }));
-            sse({ type: "tool_result", name: tc.function.name, result: { error: errStr } });
+            await chatService.addToolResult(
+              sessionId,
+              tc.id,
+              JSON.stringify({ error: errStr }),
+            );
+            sse({
+              type: "tool_result",
+              name: tc.function.name,
+              result: { error: errStr },
+            });
           }
         }
       }
@@ -1491,151 +2484,211 @@ export function chatRoutes(
 
     activeSse = null;
     if (heartbeatService) heartbeatService.unregister(sessionId);
-    try { reply.raw.write("data: [DONE]\n\n"); reply.raw.end(); } catch { /* connection already closed */ }
+    try {
+      reply.raw.write("data: [DONE]\n\n");
+      reply.raw.end();
+    } catch {
+      /* connection already closed */
+    }
   });
 
-  app.post<{ Body: { runId?: string; sessionId?: string } }>("/chat/abort", async (req) => {
-    const { runId, sessionId: targetSession } = req.body;
+  app.post<{ Body: { runId?: string; sessionId?: string } }>(
+    "/chat/abort",
+    async (req) => {
+      const { runId, sessionId: targetSession } = req.body;
 
-    if (runId) {
-      const run = activeChatRuns.get(runId);
-      if (!run) return { ok: true, aborted: false };
-      run.controller.abort();
-      activeChatRuns.delete(runId);
-      return { ok: true, aborted: true, runId };
-    }
+      if (runId) {
+        const run = activeChatRuns.get(runId);
+        if (!run) return { ok: true, aborted: false };
+        run.controller.abort();
+        activeChatRuns.delete(runId);
+        return { ok: true, aborted: true, runId };
+      }
 
-    if (targetSession) {
+      if (targetSession) {
+        const aborted: string[] = [];
+        for (const [id, run] of activeChatRuns) {
+          if (run.sessionId === targetSession) {
+            run.controller.abort();
+            activeChatRuns.delete(id);
+            aborted.push(id);
+          }
+        }
+        return { ok: true, aborted: aborted.length > 0, runIds: aborted };
+      }
+
+      // Abort all active runs
       const aborted: string[] = [];
       for (const [id, run] of activeChatRuns) {
-        if (run.sessionId === targetSession) {
-          run.controller.abort();
-          activeChatRuns.delete(id);
-          aborted.push(id);
+        run.controller.abort();
+        aborted.push(id);
+      }
+      activeChatRuns.clear();
+      return { ok: true, aborted: aborted.length > 0, runIds: aborted };
+    },
+  );
+
+  app.get<{ Querystring: { sessionId?: string } }>(
+    "/chat/history",
+    async (req) => {
+      const sessionId = req.query.sessionId ?? "default";
+      return chatService.getHistory(sessionId);
+    },
+  );
+
+  const INTERNAL_SESSION_PREFIXES = [
+    "run-",
+    "cron-",
+    "channel-",
+    "send-",
+    "agent-",
+    "test-",
+  ];
+
+  app.get<{ Querystring: { limit?: string } }>(
+    "/chat/sessions",
+    async (req) => {
+      const requestedLimit = Number(req.query.limit);
+      const normalizedLimit = Number.isFinite(requestedLimit)
+        ? Math.min(1000, Math.max(20, Math.floor(requestedLimit)))
+        : 200;
+      const scanLimit = Math.min(5000, normalizedLimit * 4);
+      const all = await chatService.listSessions({ limit: scanLimit });
+      const visible: typeof all = [];
+      for (const session of all) {
+        if (INTERNAL_SESSION_PREFIXES.some((p) => session.id.startsWith(p))) {
+          continue;
+        }
+        visible.push(session);
+        if (visible.length >= normalizedLimit) {
+          break;
         }
       }
-      return { ok: true, aborted: aborted.length > 0, runIds: aborted };
-    }
+      return visible;
+    },
+  );
 
-    // Abort all active runs
-    const aborted: string[] = [];
-    for (const [id, run] of activeChatRuns) {
-      run.controller.abort();
-      aborted.push(id);
-    }
-    activeChatRuns.clear();
-    return { ok: true, aborted: aborted.length > 0, runIds: aborted };
-  });
+  app.post<{ Body: { title?: string; agentId?: string } }>(
+    "/chat/sessions",
+    async (req) => {
+      const agentId = req.body.agentId;
+      let agentName: string | undefined;
+      let agentInstructions: string | undefined;
+      let agentWorkspace: string | undefined;
+      let agentModel: string | undefined;
+      let agentToolDefs = registry.definitions;
 
-  app.get<{ Querystring: { sessionId?: string } }>("/chat/history", async (req) => {
-    const sessionId = req.query.sessionId ?? "default";
-    return chatService.getHistory(sessionId);
-  });
-
-  const INTERNAL_SESSION_PREFIXES = ["run-", "cron-", "channel-", "send-", "agent-", "test-"];
-
-  app.get<{ Querystring: { limit?: string } }>("/chat/sessions", async (req) => {
-    const requestedLimit = Number(req.query.limit);
-    const normalizedLimit = Number.isFinite(requestedLimit)
-      ? Math.min(1000, Math.max(20, Math.floor(requestedLimit)))
-      : 200;
-    const scanLimit = Math.min(5000, normalizedLimit * 4);
-    const all = await chatService.listSessions({ limit: scanLimit });
-    const visible: typeof all = [];
-    for (const session of all) {
-      if (INTERNAL_SESSION_PREFIXES.some((p) => session.id.startsWith(p))) {
-        continue;
+      if (agentId && agentRegistry) {
+        const agent = agentRegistry.get(agentId);
+        if (agent?.name) agentName = agent.name;
+        if (agent?.workspace) agentWorkspace = agent.workspace;
+        if (agent?.model) agentModel = agent.model;
+        if (agent?.tools)
+          agentToolDefs = filterToolsByPolicy(
+            registry.definitions,
+            agent.tools,
+          );
+        if (instructionsStore) {
+          agentInstructions =
+            (await instructionsStore.getCurrent(agentId)) ?? undefined;
+        }
       }
-      visible.push(session);
-      if (visible.length >= normalizedLimit) {
-        break;
+
+      const activeConf = getActiveConfig();
+      const workspaceDir = agentWorkspace || os.homedir();
+      const contextFiles = loadContextFiles(workspaceDir);
+      const sessionSystemPrompt = buildSystemPrompt({
+        agentName,
+        agentInstructions,
+        skillsPrompt: skillsService?.getPrompt(),
+        toolDefinitions: agentToolDefs,
+        contextFiles,
+        economyMode: economyMode.enabled,
+        undoGuaranteeEnabled: !allowIrreversibleActions,
+        workspaceDir,
+        runtime: {
+          model: agentModel ?? activeConf.model,
+          provider: activeConf.provider,
+          os: `${os.platform()} ${os.release()}`,
+          arch: os.arch(),
+          node: process.version,
+        },
+      });
+
+      const session = await chatService.createSession({
+        title: req.body.title,
+        agentId,
+        systemPrompt: sessionSystemPrompt,
+      });
+      return {
+        id: session.id,
+        title: session.title,
+        agentId: session.agentId,
+        createdAt: session.createdAt,
+      };
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/chat/sessions/:id",
+    async (req, reply) => {
+      const session = await chatService.loadSession(req.params.id);
+      if (!session) return reply.code(404).send({ error: "Session not found" });
+      const history = session.messages.filter((m) => m.role !== "system");
+      return {
+        id: session.id,
+        title: session.title,
+        agentId: session.agentId,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        messages: history,
+      };
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/chat/sessions/:id",
+    async (req, reply) => {
+      const deleted = await chatService.deleteSession(req.params.id);
+      if (!deleted) return reply.code(404).send({ error: "Session not found" });
+      return { deleted: true };
+    },
+  );
+
+  app.patch<{ Params: { id: string }; Body: { title: string } }>(
+    "/chat/sessions/:id",
+    async (req, reply) => {
+      const renamed = await chatService.renameSession(
+        req.params.id,
+        req.body.title,
+      );
+      if (!renamed) return reply.code(404).send({ error: "Session not found" });
+      return { ok: true };
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/chat/sessions/:id/reset",
+    async (req, reply) => {
+      const reset = await chatService.resetSession(req.params.id);
+      if (!reset) return reply.code(404).send({ error: "Session not found" });
+      return { ok: true };
+    },
+  );
+
+  app.post<{ Body: { ids: string[] } }>(
+    "/chat/sessions/batch-delete",
+    async (req, reply) => {
+      const ids = req.body?.ids;
+      if (!Array.isArray(ids) || ids.length === 0)
+        return reply.code(400).send({ error: "ids array required" });
+      let deleted = 0;
+      for (const id of ids) {
+        if (await chatService.deleteSession(id)) deleted++;
       }
-    }
-    return visible;
-  });
-
-  app.post<{ Body: { title?: string; agentId?: string } }>("/chat/sessions", async (req) => {
-    const agentId = req.body.agentId;
-    let agentName: string | undefined;
-    let agentInstructions: string | undefined;
-    let agentWorkspace: string | undefined;
-    let agentModel: string | undefined;
-    let agentToolDefs = registry.definitions;
-
-    if (agentId && agentRegistry) {
-      const agent = agentRegistry.get(agentId);
-      if (agent?.name) agentName = agent.name;
-      if (agent?.workspace) agentWorkspace = agent.workspace;
-      if (agent?.model) agentModel = agent.model;
-      if (agent?.tools) agentToolDefs = filterToolsByPolicy(registry.definitions, agent.tools);
-      if (instructionsStore) {
-        agentInstructions = (await instructionsStore.getCurrent(agentId)) ?? undefined;
-      }
-    }
-
-    const activeConf = getActiveConfig();
-    const workspaceDir = agentWorkspace || os.homedir();
-    const contextFiles = loadContextFiles(workspaceDir);
-    const sessionSystemPrompt = buildSystemPrompt({
-      agentName,
-      agentInstructions,
-      skillsPrompt: skillsService?.getPrompt(),
-      toolDefinitions: agentToolDefs,
-      contextFiles,
-      economyMode: economyMode.enabled,
-      undoGuaranteeEnabled: !allowIrreversibleActions,
-      workspaceDir,
-      runtime: {
-        model: agentModel ?? activeConf.model,
-        provider: activeConf.provider,
-        os: `${os.platform()} ${os.release()}`,
-        arch: os.arch(),
-        node: process.version,
-      },
-    });
-
-    const session = await chatService.createSession({
-      title: req.body.title,
-      agentId,
-      systemPrompt: sessionSystemPrompt,
-    });
-    return { id: session.id, title: session.title, agentId: session.agentId, createdAt: session.createdAt };
-  });
-
-  app.get<{ Params: { id: string } }>("/chat/sessions/:id", async (req, reply) => {
-    const session = await chatService.loadSession(req.params.id);
-    if (!session) return reply.code(404).send({ error: "Session not found" });
-    const history = session.messages.filter((m) => m.role !== "system");
-    return { id: session.id, title: session.title, agentId: session.agentId, createdAt: session.createdAt, updatedAt: session.updatedAt, messages: history };
-  });
-
-  app.delete<{ Params: { id: string } }>("/chat/sessions/:id", async (req, reply) => {
-    const deleted = await chatService.deleteSession(req.params.id);
-    if (!deleted) return reply.code(404).send({ error: "Session not found" });
-    return { deleted: true };
-  });
-
-  app.patch<{ Params: { id: string }; Body: { title: string } }>("/chat/sessions/:id", async (req, reply) => {
-    const renamed = await chatService.renameSession(req.params.id, req.body.title);
-    if (!renamed) return reply.code(404).send({ error: "Session not found" });
-    return { ok: true };
-  });
-
-  app.post<{ Params: { id: string } }>("/chat/sessions/:id/reset", async (req, reply) => {
-    const reset = await chatService.resetSession(req.params.id);
-    if (!reset) return reply.code(404).send({ error: "Session not found" });
-    return { ok: true };
-  });
-
-  app.post<{ Body: { ids: string[] } }>("/chat/sessions/batch-delete", async (req, reply) => {
-    const ids = req.body?.ids;
-    if (!Array.isArray(ids) || ids.length === 0) return reply.code(400).send({ error: "ids array required" });
-    let deleted = 0;
-    for (const id of ids) {
-      if (await chatService.deleteSession(id)) deleted++;
-    }
-    return { deleted };
-  });
+      return { deleted };
+    },
+  );
 
   const onboardingSvc = new OnboardingService();
 
@@ -1643,7 +2696,15 @@ export function chatRoutes(
     return onboardingSvc.load();
   });
 
-  app.post<{ Body: { userName?: string; botName?: string; timezone?: string; personality?: string; instructions?: string } }>("/chat/onboarding", async (req) => {
+  app.post<{
+    Body: {
+      userName?: string;
+      botName?: string;
+      timezone?: string;
+      personality?: string;
+      instructions?: string;
+    };
+  }>("/chat/onboarding", async (req) => {
     return onboardingSvc.save(req.body);
   });
 }

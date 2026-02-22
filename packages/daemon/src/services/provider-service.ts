@@ -56,9 +56,17 @@ type ProviderStateEntry = Omit<ProviderConfig, "apiKey"> & {
 };
 
 const PROVIDERS_FILE = path.join(os.homedir(), ".undoable", "providers.json");
+const GOOGLE_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
 
 const DEFAULT_CAPABILITIES: ModelCapabilities = {
   thinking: false, tagReasoning: false, vision: false, tools: true,
+};
+
+const PROVIDER_ALIASES: Record<string, string> = {
+  claude: "anthropic",
+  gemini: "google",
+  googlegenerativeai: "google",
+  openaiapi: "openai",
 };
 
 const MODEL_ALIASES: Record<string, string> = {
@@ -122,7 +130,7 @@ const DEFAULT_PROVIDERS: ProviderConfig[] = [
   { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "", models: [] },
   { id: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com/v1", apiKey: "", models: [] },
   { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKey: "", models: [] },
-  { id: "google", name: "Google AI", baseUrl: "https://generativelanguage.googleapis.com/v1beta", apiKey: "", models: [] },
+  { id: "google", name: "Google AI", baseUrl: GOOGLE_OPENAI_BASE_URL, apiKey: "", models: [] },
   { id: "ollama", name: "Ollama (Local)", baseUrl: "http://127.0.0.1:11434/v1", apiKey: "ollama", models: [] },
   { id: "lmstudio", name: "LM Studio (Local)", baseUrl: "http://127.0.0.1:1234/v1", apiKey: "lm-studio", models: [] },
   { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "", models: [] },
@@ -145,6 +153,7 @@ export class ProviderService {
     }
 
     this.ensureDefaultProviders();
+    this.normalizeProviderConfigs();
     await this.refreshLocalModels();
     this.localDiscovery.startAutoRefresh();
 
@@ -156,7 +165,7 @@ export class ProviderService {
       const provider = this.providers.find((p) => p.id === detectedProvider);
       if (provider && initialApiKey && !provider.apiKey) {
         provider.apiKey = initialApiKey;
-        provider.baseUrl = initialBaseUrl;
+        provider.baseUrl = this.normalizeProviderBaseUrl(detectedProvider, initialBaseUrl);
       }
     }
 
@@ -174,10 +183,107 @@ export class ProviderService {
 
   private ensureDefaultProviders(): void {
     for (const def of DEFAULT_PROVIDERS) {
-      if (!this.providers.find((p) => p.id === def.id)) {
+      const existing = this.providers.find((p) => p.id === def.id);
+      if (!existing) {
         this.providers.push({ ...def, models: [] });
+      } else if (!existing.baseUrl.trim()) {
+        existing.baseUrl = def.baseUrl;
       }
     }
+  }
+
+  private normalizeProviderConfigs(): void {
+    for (const provider of this.providers) {
+      provider.baseUrl = this.normalizeProviderBaseUrl(provider.id, provider.baseUrl);
+    }
+  }
+
+  private normalizeProviderId(providerId: string): string {
+    const normalized = providerId.trim().toLowerCase();
+    return PROVIDER_ALIASES[normalized] ?? normalized;
+  }
+
+  private normalizeProviderBaseUrl(providerId: string, baseUrl?: string): string {
+    const normalizedProviderId = this.normalizeProviderId(providerId);
+    const normalizedUrl = (baseUrl ?? "").trim().replace(/\/+$/, "");
+    const fallback = DEFAULT_PROVIDERS.find((provider) => provider.id === normalizedProviderId)?.baseUrl ?? "";
+
+    if (!normalizedUrl) {
+      return fallback;
+    }
+
+    if (normalizedProviderId === "openai") {
+      const lowerUrl = normalizedUrl.toLowerCase();
+      if (lowerUrl.includes("api.openai.com") && !lowerUrl.endsWith("/v1")) {
+        return `${normalizedUrl}/v1`;
+      }
+      return normalizedUrl;
+    }
+
+    if (normalizedProviderId === "anthropic") {
+      const lowerUrl = normalizedUrl.toLowerCase();
+      if (lowerUrl.includes("api.anthropic.com") && !lowerUrl.endsWith("/v1")) {
+        return `${normalizedUrl}/v1`;
+      }
+      return normalizedUrl;
+    }
+
+    if (normalizedProviderId === "google") {
+      const lowerUrl = normalizedUrl.toLowerCase();
+      if (!lowerUrl.includes("googleapis.com")) {
+        return normalizedUrl;
+      }
+      if (lowerUrl.endsWith("/openai")) {
+        return normalizedUrl;
+      }
+      if (lowerUrl.includes("/v1beta/openai")) {
+        return normalizedUrl;
+      }
+      if (lowerUrl.endsWith("/v1beta")) {
+        return `${normalizedUrl}/openai`;
+      }
+      if (lowerUrl.endsWith("/v1")) {
+        return `${normalizedUrl}/openai`;
+      }
+      return `${normalizedUrl}/openai`;
+    }
+
+    if (normalizedProviderId === "openrouter") {
+      const lowerUrl = normalizedUrl.toLowerCase();
+      if (lowerUrl.includes("openrouter.ai") && !lowerUrl.endsWith("/api/v1")) {
+        if (lowerUrl.endsWith("/api")) return `${normalizedUrl}/v1`;
+        return `${normalizedUrl}/api/v1`;
+      }
+      return normalizedUrl;
+    }
+
+    if (normalizedProviderId === "ollama") {
+      const lowerUrl = normalizedUrl.toLowerCase();
+      if (
+        (lowerUrl.includes("127.0.0.1:11434") || lowerUrl.includes("localhost:11434")) &&
+        !lowerUrl.endsWith("/v1")
+      ) {
+        return `${normalizedUrl}/v1`;
+      }
+      return normalizedUrl;
+    }
+
+    if (normalizedProviderId === "lmstudio") {
+      const lowerUrl = normalizedUrl.toLowerCase();
+      if (
+        (lowerUrl.includes("127.0.0.1:1234") || lowerUrl.includes("localhost:1234")) &&
+        !lowerUrl.endsWith("/v1")
+      ) {
+        return `${normalizedUrl}/v1`;
+      }
+      return normalizedUrl;
+    }
+
+    if (normalizedProviderId === "deepseek") {
+      return normalizedUrl;
+    }
+
+    return normalizedUrl;
   }
 
   private detectProvider(baseUrl: string, model: string): string {
@@ -218,7 +324,8 @@ export class ProviderService {
   }
 
   getProviderConfig(providerId: string): { apiKey: string; baseUrl: string } | null {
-    const provider = this.providers.find((p) => p.id === providerId);
+    const normalizedProviderId = this.normalizeProviderId(providerId);
+    const provider = this.providers.find((p) => p.id === normalizedProviderId);
     if (!provider) return null;
     return { apiKey: provider.apiKey, baseUrl: provider.baseUrl };
   }
@@ -242,9 +349,10 @@ export class ProviderService {
   }
 
   listModelsForProvider(providerId: string): ModelInfo[] {
-    const known = KNOWN_MODELS.filter((m) => m.provider === providerId);
+    const normalizedProviderId = this.normalizeProviderId(providerId);
+    const known = KNOWN_MODELS.filter((m) => m.provider === normalizedProviderId);
     const discovered = this.discoveredModels
-      .filter((m) => m.provider === providerId)
+      .filter((m) => m.provider === normalizedProviderId)
       .filter((m) => !known.some((k) => k.id === m.id));
     return [...known, ...discovered];
   }
@@ -279,14 +387,86 @@ export class ProviderService {
     return this.localDiscovery.isLocalModel(modelId);
   }
 
-  shouldDisableStreaming(modelId: string): boolean {
+  shouldDisableStreaming(modelId: string, providerId?: string): boolean {
+    const normalizedProviderId = providerId
+      ? this.normalizeProviderId(providerId)
+      : undefined;
+    if (normalizedProviderId === "anthropic") return true;
+    if (normalizedProviderId === "ollama" || normalizedProviderId === "lmstudio") {
+      return true;
+    }
     const provider = this.localDiscovery.resolveProvider(modelId);
-    return provider === "ollama";
+    if (provider === "ollama" || provider === "lmstudio") return true;
+    const modelInfo = this.getModelInfo(modelId);
+    if (modelInfo?.provider === "anthropic") return true;
+    return false;
   }
 
   resolveModelAlias(input: string): { providerId: string; modelId: string } | null {
-    const normalized = input.trim().toLowerCase();
-    if (!normalized) return null;
+    const raw = input.trim();
+    if (!raw) return null;
+    const normalized = raw.toLowerCase();
+
+    const slashIdx = raw.indexOf("/");
+    if (slashIdx > 0 && slashIdx < raw.length - 1) {
+      const providerPart = raw.slice(0, slashIdx).trim();
+      const modelPart = raw.slice(slashIdx + 1).trim();
+      if (providerPart && modelPart) {
+        const normalizedModelPart = modelPart.toLowerCase();
+        const providerId = this.normalizeProviderId(providerPart);
+        const aliasTarget = MODEL_ALIASES[normalizedModelPart];
+        if (aliasTarget) {
+          const aliasInfo = KNOWN_MODELS.find(
+            (model) =>
+              model.provider === providerId &&
+              model.id.toLowerCase() === aliasTarget.toLowerCase(),
+          );
+          if (aliasInfo) return { providerId, modelId: aliasInfo.id };
+        }
+
+        const providerExact =
+          KNOWN_MODELS.find(
+            (model) =>
+              model.provider === providerId &&
+              model.id.toLowerCase() === normalizedModelPart,
+          ) ??
+          this.discoveredModels.find(
+            (model) =>
+              model.provider === providerId &&
+              model.id.toLowerCase() === normalizedModelPart,
+          );
+        if (providerExact) return { providerId, modelId: providerExact.id };
+
+        const providerPrefix =
+          KNOWN_MODELS.find(
+            (model) =>
+              model.provider === providerId &&
+              model.id.toLowerCase().startsWith(normalizedModelPart),
+          ) ??
+          this.discoveredModels.find(
+            (model) =>
+              model.provider === providerId &&
+              model.id.toLowerCase().startsWith(normalizedModelPart),
+          );
+        if (providerPrefix) return { providerId, modelId: providerPrefix.id };
+
+        const providerByName =
+          KNOWN_MODELS.find(
+            (model) =>
+              model.provider === providerId &&
+              model.name.toLowerCase() === normalizedModelPart,
+          ) ??
+          this.discoveredModels.find(
+            (model) =>
+              model.provider === providerId &&
+              model.name.toLowerCase() === normalizedModelPart,
+          );
+        if (providerByName) return { providerId, modelId: providerByName.id };
+
+        // Explicit provider/model input may refer to custom model IDs.
+        return { providerId, modelId: modelPart };
+      }
+    }
 
     // 1. Check alias map
     const aliasTarget = MODEL_ALIASES[normalized];
@@ -315,39 +495,46 @@ export class ProviderService {
   }
 
   async setActiveModel(providerId: string, modelId: string): Promise<ActiveModel | null> {
-    const provider = this.providers.find((p) => p.id === providerId);
+    const normalizedProviderId = this.normalizeProviderId(providerId);
+    const provider = this.providers.find((p) => p.id === normalizedProviderId);
     if (!provider) return null;
-    const isLocal = this.localDiscovery.isLocalProvider(providerId);
+    const isLocal = this.localDiscovery.isLocalProvider(normalizedProviderId);
     if (!provider.apiKey && !isLocal) return null;
-    this.activeProvider = providerId;
+    this.activeProvider = normalizedProviderId;
     this.activeModel = modelId;
     await this.saveState();
     return this.getActive();
   }
 
   async setProviderKey(providerId: string, apiKey: string, baseUrl?: string): Promise<boolean> {
+    const normalizedProviderId = this.normalizeProviderId(providerId);
     const normalizedKey = apiKey.trim();
-    const normalizedBaseUrl = baseUrl?.trim();
-    let provider = this.providers.find((p) => p.id === providerId);
+    const normalizedBaseUrl = this.normalizeProviderBaseUrl(normalizedProviderId, baseUrl);
+    let provider = this.providers.find((p) => p.id === normalizedProviderId);
     if (!provider) {
       provider = {
-        id: providerId,
-        name: providerId,
-        baseUrl: normalizedBaseUrl ?? "",
+        id: normalizedProviderId,
+        name: normalizedProviderId,
+        baseUrl: normalizedBaseUrl,
         apiKey: normalizedKey,
         models: [],
       };
       this.providers.push(provider);
     } else {
       provider.apiKey = normalizedKey;
-      if (normalizedBaseUrl) provider.baseUrl = normalizedBaseUrl;
+      if (baseUrl !== undefined) {
+        provider.baseUrl = normalizedBaseUrl;
+      } else if (!provider.baseUrl.trim()) {
+        provider.baseUrl = this.normalizeProviderBaseUrl(normalizedProviderId);
+      }
     }
     await this.saveState();
     return true;
   }
 
   async removeProviderKey(providerId: string): Promise<boolean> {
-    const provider = this.providers.find((p) => p.id === providerId);
+    const normalizedProviderId = this.normalizeProviderId(providerId);
+    const provider = this.providers.find((p) => p.id === normalizedProviderId);
     if (!provider) return false;
     provider.apiKey = "";
     await this.saveState();
@@ -375,7 +562,7 @@ export class ProviderService {
     return {
       id: entry.id,
       name: entry.name,
-      baseUrl: entry.baseUrl,
+      baseUrl: this.normalizeProviderBaseUrl(entry.id, entry.baseUrl),
       apiKey,
       models: entry.models ?? [],
     };

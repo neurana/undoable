@@ -222,6 +222,7 @@ function printHelp() {
   console.log("Commands:");
   console.log("  /help                 Show this help");
   console.log("  /status               Show daemon chat runtime status");
+  console.log("  /model <provider/model> Switch active model/provider (ex: /model google/gemini-2.5-pro)");
   console.log("  /sessions             List chat sessions");
   console.log("  /session <id>         Switch to session id");
   console.log("  /new                  Create and switch to a new session");
@@ -632,6 +633,13 @@ export function chatCommand(): Command {
             return false;
           case "status":
             await printStatus();
+            return false;
+          case "model":
+            if (!arg) {
+              console.log("usage: /model <provider/model>");
+              return false;
+            }
+            await sendMessage(`/model ${arg}`);
             return false;
           case "sessions":
             await listSessions();

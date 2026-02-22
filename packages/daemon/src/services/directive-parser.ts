@@ -69,7 +69,7 @@ export function parseDirectives(message: string): ParseResult {
 
 export const DIRECTIVE_HELP = [
   "/think [off|low|medium|high] — Set thinking/reasoning level",
-  "/model <name|alias> — Switch model for this message (e.g. /model claude, /model fast)",
+  "/model <name|alias|provider/model> — Switch active model/provider (e.g. /model google/gemini-2.5-pro, /model claude)",
   "/verbose [on|off] — Toggle detailed tool output",
   "/reset — Clear conversation history",
   "/status — Show current model, provider, thinking level",

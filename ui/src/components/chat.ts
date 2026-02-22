@@ -1105,6 +1105,7 @@ export class UndoableChat extends LitElement {
 
   private onOnboardingDone = () => {
     this.showOnboarding = false;
+    void this.fetchRunConfig();
   };
 
   private onGlobalKey = (e: KeyboardEvent) => {
@@ -2269,6 +2270,14 @@ export class UndoableChat extends LitElement {
                 ...this.entries,
                 warningEntry,
               ];
+            } else if (
+              evt.type === "directive_applied" &&
+              evt.directive === "model"
+            ) {
+              if (typeof evt.model === "string") this.currentModel = evt.model;
+              if (typeof evt.provider === "string") {
+                this.currentProvider = evt.provider;
+              }
             } else if (evt.type === "usage" && evt.usage) {
               this.usage = { ...evt.usage };
             } else if (evt.type === "done") {

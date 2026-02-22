@@ -100,6 +100,101 @@ describe("ProviderService secret persistence", () => {
 
     await service.destroy();
   });
+
+  it("normalizes Google base URL to OpenAI-compatible endpoint", async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "undoable-providers-google-"));
+    process.env.HOME = homeDir;
+    process.env.UNDOABLE_SECRETS_KEY = ENCRYPTION_KEY;
+
+    const undoableDir = path.join(homeDir, ".undoable");
+    await fs.mkdir(undoableDir, { recursive: true });
+
+    const legacyState = {
+      providers: [
+        {
+          id: "google",
+          name: "Google AI",
+          baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+          apiKey: "google-secret",
+          models: [],
+        },
+      ],
+      activeProvider: "google",
+      activeModel: "gemini-2.5-pro",
+    };
+    await fs.writeFile(
+      path.join(undoableDir, "providers.json"),
+      JSON.stringify(legacyState, null, 2),
+      "utf-8",
+    );
+
+    const { ProviderService } = await loadProviderServiceModule();
+    const service = new ProviderService();
+    await service.init("", "gemini-2.5-pro", "https://generativelanguage.googleapis.com/v1beta");
+
+    const googleConfig = service.getProviderConfig("google");
+    expect(googleConfig?.baseUrl).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/openai",
+    );
+
+    const persisted = await fs.readFile(path.join(undoableDir, "providers.json"), "utf-8");
+    expect(persisted).toContain("https://generativelanguage.googleapis.com/v1beta/openai");
+
+    await service.destroy();
+  });
+
+  it("resolves provider/model syntax and provider aliases", async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "undoable-providers-aliases-"));
+    process.env.HOME = homeDir;
+    process.env.UNDOABLE_SECRETS_KEY = ENCRYPTION_KEY;
+
+    const { ProviderService } = await loadProviderServiceModule();
+    const service = new ProviderService();
+    await service.init("", "gpt-4.1-mini", "https://api.openai.com/v1");
+
+    const google = service.resolveModelAlias("google/gemini-2.5-pro");
+    expect(google).toEqual({ providerId: "google", modelId: "gemini-2.5-pro" });
+
+    const claudeAlias = service.resolveModelAlias("claude/claude-sonnet-4-5-20250514");
+    expect(claudeAlias).toEqual({
+      providerId: "anthropic",
+      modelId: "claude-sonnet-4-5-20250514",
+    });
+
+    const customGoogle = service.resolveModelAlias("google/gemini-experimental");
+    expect(customGoogle).toEqual({
+      providerId: "google",
+      modelId: "gemini-experimental",
+    });
+
+    await service.destroy();
+  });
+
+  it("normalizes local and OpenRouter provider base URLs", async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "undoable-providers-urlnorm-"));
+    process.env.HOME = homeDir;
+    process.env.UNDOABLE_SECRETS_KEY = ENCRYPTION_KEY;
+
+    const { ProviderService } = await loadProviderServiceModule();
+    const service = new ProviderService();
+    await service.init("", "gpt-4.1-mini", "https://api.openai.com");
+
+    await service.setProviderKey("ollama", "ollama", "http://127.0.0.1:11434");
+    await service.setProviderKey("lmstudio", "lm-studio", "http://127.0.0.1:1234");
+    await service.setProviderKey("openrouter", "or-secret", "https://openrouter.ai");
+
+    expect(service.getProviderConfig("ollama")?.baseUrl).toBe(
+      "http://127.0.0.1:11434/v1",
+    );
+    expect(service.getProviderConfig("lmstudio")?.baseUrl).toBe(
+      "http://127.0.0.1:1234/v1",
+    );
+    expect(service.getProviderConfig("openrouter")?.baseUrl).toBe(
+      "https://openrouter.ai/api/v1",
+    );
+
+    await service.destroy();
+  });
 });
 
 async function loadProviderServiceModule() {

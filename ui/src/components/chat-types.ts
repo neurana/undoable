@@ -42,6 +42,8 @@ export type SpendGuardPayload = {
 
 export type SseEvent = {
   type: string;
+  directive?: string;
+  level?: string;
   content?: string;
   recovery?: string;
   status?: number;
