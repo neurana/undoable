@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import type { FastifyRequest } from "fastify";
 import { EventBus } from "@undoable/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunManager } from "../services/run-manager.js";
@@ -11,7 +12,7 @@ describe("run routes operation mode guard", () => {
 
   beforeEach(async () => {
     app = Fastify();
-    app.addHook("onRequest", async (req) => {
+    app.addHook("onRequest", async (req: FastifyRequest) => {
       (req as unknown as { identity: { id: string; method: "local" } }).identity =
         {
           id: "test-user",

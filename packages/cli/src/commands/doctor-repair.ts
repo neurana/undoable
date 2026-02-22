@@ -55,9 +55,6 @@ export function repairDaemonSettingsSecurityProfile(
   const currentAuthMode = typeof repaired.authMode === "string"
     ? repaired.authMode.trim().toLowerCase()
     : "open";
-  const currentToken = typeof repaired.token === "string"
-    ? repaired.token.trim()
-    : "";
 
   if (bindMode !== "loopback" && currentAuthMode !== "token") {
     repaired.authMode = "token";
@@ -85,4 +82,3 @@ export function repairDaemonSettingsSecurityProfile(
     generatedToken,
   };
 }
-

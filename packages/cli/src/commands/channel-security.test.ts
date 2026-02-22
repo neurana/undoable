@@ -8,8 +8,9 @@ import {
 function snapshot(
   overrides: Partial<ChannelSecuritySnapshot> & Pick<ChannelSecuritySnapshot, "channelId">,
 ): ChannelSecuritySnapshot {
+  const { channelId, ...rest } = overrides;
   return {
-    channelId: overrides.channelId,
+    channelId,
     configured: true,
     enabled: true,
     connected: true,
@@ -19,7 +20,7 @@ function snapshot(
     pairingPending: 0,
     pairingApproved: 0,
     diagnostics: [],
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -77,4 +78,3 @@ describe("channel-security", () => {
     expect(summary.warn).toBeGreaterThan(0);
   });
 });
-

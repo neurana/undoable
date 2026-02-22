@@ -12,6 +12,10 @@
   <em>Everything the AI does is recorded and can be undone.</em>
 </p>
 
+<p align="center">
+  ☁️ <strong>Want to skip the setup? Use <a href="https://undoable.xyz">Undoable Cloud</a> and get started instantly.</strong>
+</p>
+
 ## Table of Contents
 
 - [What Undoable Is](#what-undoable-is)
@@ -584,6 +588,10 @@ Recommended posture:
 - Keep approvals on for mutation-heavy workflows
 - Use sandboxing/isolation where possible
 - Review third-party skills before enabling
+
+## Follow
+
+Find me on X/Twitter: [@BrunoHenri52285](https://x.com/BrunoHenri52285)
 
 ## License
 
