@@ -86,6 +86,7 @@ type GatewayRouteDeps = {
     | "getStatus"
     | "updateConfig"
     | "stopChannel"
+    | "logoutChannel"
     | "probeChannel"
     | "listCapabilities"
     | "listLogs"
@@ -229,6 +230,49 @@ function toErrorMessage(err: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const REDACTED_SECRET = "[redacted]";
+const SENSITIVE_KEY_PATTERN = /(token|secret|password|api[_-]?key|app[_-]?token|bot[_-]?token)/i;
+
+function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEY_PATTERN.test(key);
+}
+
+function redactConfigValue(key: string, value: unknown): unknown {
+  if (!isSensitiveKey(key)) return redactSensitive(value);
+  if (typeof value === "string" && value.length === 0) return "";
+  return REDACTED_SECRET;
+}
+
+function redactSensitive(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => redactSensitive(entry));
+  if (!isRecord(value)) return value;
+
+  const result: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (isSensitiveKey(key)) {
+      result[key] = typeof entry === "string" && entry.length === 0
+        ? ""
+        : REDACTED_SECRET;
+      continue;
+    }
+    result[key] = redactSensitive(entry);
+  }
+  return result;
+}
+
+function sanitizeNodePairing(
+  pairing: { requests: unknown[]; paired: unknown[] },
+): { requests: unknown[]; paired: unknown[] } {
+  return {
+    requests: pairing.requests,
+    paired: pairing.paired.map((entry) => {
+      if (!isRecord(entry)) return entry;
+      const { token: _token, ...rest } = entry;
+      return rest;
+    }),
+  };
 }
 
 function fail(error: GatewayError): GatewayResponse {
@@ -450,7 +494,11 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
         }
 
         case "models.list": {
-          const active = deps.providerService.getActiveConfig();
+          const activeConfig = deps.providerService.getActiveConfig();
+          const active = {
+            provider: activeConfig.provider,
+            model: activeConfig.model,
+          };
           const models = deps.providerService.listAllModels();
           return {
             ok: true,
@@ -658,13 +706,13 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
         case "config.get": {
           const key = typeof params.key === "string" ? params.key.trim() : "";
           if (!key) {
-            return { ok: true, result: { config: gatewayConfig } };
+            return { ok: true, result: { config: redactSensitive(gatewayConfig) } };
           }
           return {
             ok: true,
             result: {
               key,
-              value: getConfigValue(gatewayConfig, key),
+              value: redactConfigValue(key, getConfigValue(gatewayConfig, key)),
             },
           };
         }
@@ -684,7 +732,7 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
             ok: true,
             result: {
               key,
-              value: getConfigValue(gatewayConfig, key),
+              value: redactConfigValue(key, getConfigValue(gatewayConfig, key)),
             },
           };
         }
@@ -701,7 +749,7 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
             return fail({ code: "INVALID_REQUEST", message: validation.errors.join("; ") });
           }
           gatewayConfig = nextConfig;
-          return { ok: true, result: { config: gatewayConfig } };
+          return { ok: true, result: { config: redactSensitive(gatewayConfig) } };
         }
 
         case "config.schema": {
@@ -1400,19 +1448,13 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
           }
 
           try {
-            await deps.channelManager.stopChannel(channelId);
-          } catch {
-            // Continue logout flow even if channel was not started.
+            await deps.channelManager.logoutChannel(channelId);
+          } catch (err) {
+            return fail({
+              code: "UNAVAILABLE",
+              message: err instanceof Error ? err.message : String(err),
+            });
           }
-
-          const existingExtra = (existing.config.extra ?? {}) as Record<string, unknown>;
-          const remainingExtra = { ...existingExtra };
-          delete remainingExtra.appToken;
-          await deps.channelManager.updateConfig(channelId, {
-            enabled: false,
-            token: undefined,
-            extra: remainingExtra,
-          });
 
           return {
             ok: true,
@@ -1643,7 +1685,7 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
 
         case "node.pair.list": {
           const result = deps.nodeGatewayService.listPairing();
-          return { ok: true, result };
+          return { ok: true, result: sanitizeNodePairing(result) };
         }
 
         case "node.pair.approve":
@@ -1698,7 +1740,7 @@ export function gatewayRoutes(app: FastifyInstance, deps: GatewayRouteDeps) {
         }
 
         case "device.pair.list": {
-          const result = deps.nodeGatewayService.listPairing();
+          const result = sanitizeNodePairing(deps.nodeGatewayService.listPairing());
           return {
             ok: true,
             result: {

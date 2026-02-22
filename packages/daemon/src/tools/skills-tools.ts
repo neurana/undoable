@@ -120,7 +120,7 @@ export function createSkillsTools(skillsService: SkillsService): AgentTool[] {
         function: {
           name: "skills_install",
           description:
-            "Install a skills.sh skill reference (owner/repo or owner/repo@skill) for one or more agents. Defaults to agent=codex.",
+            "Install a skills.sh skill reference (owner/repo or owner/repo@skill) for one or more agents. Defaults to agent=codex. Requires explicit user approval before execution.",
           parameters: {
             type: "object",
             properties: {
@@ -209,7 +209,8 @@ export function createSkillsTools(skillsService: SkillsService): AgentTool[] {
         type: "function",
         function: {
           name: "skills_update",
-          description: "Update installed skills via skills.sh CLI.",
+          description:
+            "Update installed skills via skills.sh CLI. Requires explicit user approval before execution.",
           parameters: {
             type: "object",
             properties: {},
@@ -226,7 +227,7 @@ export function createSkillsTools(skillsService: SkillsService): AgentTool[] {
         function: {
           name: "skills_remove",
           description:
-            "Remove installed skills by reference or remove all. Defaults to global removals.",
+            "Remove installed skills by reference or remove all. Defaults to global removals. Requires explicit user approval before execution.",
           parameters: {
             type: "object",
             properties: {

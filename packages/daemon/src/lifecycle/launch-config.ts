@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS_FILE = path.join(
   ".undoable",
   "daemon-settings.json",
 );
+const ALLOW_INSECURE_BIND_OPEN_ENV = "UNDOABLE_ALLOW_INSECURE_BIND_OPEN";
 
 type SecurityPolicy = "strict" | "balanced" | "permissive";
 type StoredLaunchSettings = {
@@ -94,6 +95,24 @@ function inferSecurityPolicy(host: string | undefined, token: string): SecurityP
   return "balanced";
 }
 
+function isLoopbackHost(host: string | undefined): boolean {
+  const normalizedHost = (host ?? "").trim().toLowerCase();
+  return normalizedHost === "" ||
+    normalizedHost === "127.0.0.1" ||
+    normalizedHost === "::1" ||
+    normalizedHost === "localhost";
+}
+
+function assertSecureBindAuth(host: string | undefined, token: string, env: NodeJS.ProcessEnv): void {
+  if (token.length > 0) return;
+  if (isLoopbackHost(host)) return;
+  if (env[ALLOW_INSECURE_BIND_OPEN_ENV] === "1") return;
+  throw new Error(
+    `Refusing to start daemon with open auth on host "${host ?? "default"}". ` +
+    `Set UNDOABLE_TOKEN, bind to loopback, or set ${ALLOW_INSECURE_BIND_OPEN_ENV}=1 for temporary local testing.`,
+  );
+}
+
 export function resolveDaemonLaunchConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): DaemonLaunchConfig {
@@ -118,6 +137,7 @@ export function resolveDaemonLaunchConfig(
   const token =
     envToken ??
     (storedAuthMode === "token" ? (storedToken ?? "") : "");
+  assertSecureBindAuth(host, token, env);
 
   const securityPolicy =
     parseSecurityPolicy(env.UNDOABLE_SECURITY_POLICY) ??

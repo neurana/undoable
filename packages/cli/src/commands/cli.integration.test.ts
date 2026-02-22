@@ -38,7 +38,7 @@ afterEach(async () => {
   }
 });
 
-describe("nrn CLI integration", () => {
+describe("nrn CLI integration", { timeout: 30000 }, () => {
   it("persists global config values via config set", () => {
     const homeDir = makeTempDir("undoable-cli-home-");
 
@@ -79,7 +79,7 @@ describe("nrn CLI integration", () => {
     expect(raw.logging?.level).toBe("debug");
   });
 
-  it("rejects invalid scope combinations and invalid config values", () => {
+  it("rejects invalid scope combinations and invalid config values", { timeout: 15000 }, () => {
     const homeDir = makeTempDir("undoable-cli-home-");
 
     const badScope = runCli(

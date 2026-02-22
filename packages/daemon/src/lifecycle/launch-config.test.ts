@@ -12,6 +12,7 @@ const ORIGINAL_ENV = {
   UNDOABLE_TOKEN: process.env.UNDOABLE_TOKEN,
   UNDOABLE_SECURITY_POLICY: process.env.UNDOABLE_SECURITY_POLICY,
   UNDOABLE_DAEMON_SETTINGS_FILE: process.env.UNDOABLE_DAEMON_SETTINGS_FILE,
+  UNDOABLE_ALLOW_INSECURE_BIND_OPEN: process.env.UNDOABLE_ALLOW_INSECURE_BIND_OPEN,
 };
 
 afterEach(() => {
@@ -23,6 +24,8 @@ afterEach(() => {
   process.env.UNDOABLE_SECURITY_POLICY = ORIGINAL_ENV.UNDOABLE_SECURITY_POLICY;
   process.env.UNDOABLE_DAEMON_SETTINGS_FILE =
     ORIGINAL_ENV.UNDOABLE_DAEMON_SETTINGS_FILE;
+  process.env.UNDOABLE_ALLOW_INSECURE_BIND_OPEN =
+    ORIGINAL_ENV.UNDOABLE_ALLOW_INSECURE_BIND_OPEN;
 });
 
 async function withTempSettingsFile(
@@ -122,5 +125,15 @@ describe("resolveDaemonLaunchConfig", () => {
     expect(resolved.host).toBeUndefined();
     expect(resolved.token).toBe("");
     expect(resolved.securityPolicy).toBe("balanced");
+  });
+
+  it("rejects non-loopback host when token is missing", () => {
+    const env: NodeJS.ProcessEnv = {
+      NRN_HOST: "0.0.0.0",
+    };
+
+    expect(() => resolveDaemonLaunchConfig(env)).toThrow(
+      /Refusing to start daemon with open auth/,
+    );
   });
 });

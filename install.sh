@@ -181,11 +181,11 @@ check_node() {
     if command -v node &> /dev/null; then
         NODE_VERSION=$(node -v | cut -d'v' -f2)
         NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d'.' -f1)
-        if [[ "$NODE_MAJOR" -ge 22 ]]; then
+        if [[ "$NODE_MAJOR" -ge 20 ]]; then
             ui_success "Node.js v$(node -v | cut -d'v' -f2) found"
             return 0
         else
-            ui_info "Node.js $(node -v) found, upgrading to v22+"
+            ui_info "Node.js $(node -v) found, upgrading to v20+"
             return 1
         fi
     else
@@ -194,17 +194,17 @@ check_node() {
     fi
 }
 
-ensure_node_22_or_die() {
+ensure_node_20_or_die() {
     if ! command -v node &> /dev/null; then
         ui_error "Node.js is not available in PATH"
-        echo "  Install Node.js 22+ and re-run installer."
+        echo "  Install Node.js 20+ and re-run installer."
         exit 1
     fi
     local major
     major=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-    if [[ -z "$major" ]] || [[ "$major" -lt 22 ]]; then
-        ui_error "Node.js 22+ is required (found $(node -v))"
-        echo "  Ensure Node 22+ is first in PATH, then re-run installer."
+    if [[ -z "$major" ]] || [[ "$major" -lt 20 ]]; then
+        ui_error "Node.js 20+ is required (found $(node -v))"
+        echo "  Ensure Node 20+ is first in PATH, then re-run installer."
         exit 1
     fi
 }
@@ -213,15 +213,15 @@ ensure_node_22_or_die() {
 install_node() {
     if [[ "$OS" == "macos" ]]; then
         ui_info "Installing Node.js via Homebrew"
-        brew install node@22
-        brew link node@22 --overwrite --force 2>/dev/null || true
+        brew install node@20
+        brew link node@20 --overwrite --force 2>/dev/null || true
         local brew_node_prefix
-        brew_node_prefix="$(brew --prefix node@22 2>/dev/null || true)"
+        brew_node_prefix="$(brew --prefix node@20 2>/dev/null || true)"
         if [[ -n "$brew_node_prefix" ]] && [[ -d "$brew_node_prefix/bin" ]]; then
             export PATH="$brew_node_prefix/bin:$PATH"
             hash -r 2>/dev/null || true
         fi
-        ensure_node_22_or_die
+        ensure_node_20_or_die
         ui_success "Node.js installed"
     elif [[ "$OS" == "linux" ]]; then
         ui_info "Installing Node.js via NodeSource"
@@ -230,7 +230,7 @@ install_node() {
         if command -v apt-get &> /dev/null; then
             local tmp
             tmp="$(mktempfile)"
-            download_file "https://deb.nodesource.com/setup_22.x" "$tmp"
+            download_file "https://deb.nodesource.com/setup_20.x" "$tmp"
             if is_root; then
                 bash "$tmp"
                 apt-get install -y -qq nodejs
@@ -241,7 +241,7 @@ install_node() {
         elif command -v dnf &> /dev/null; then
             local tmp
             tmp="$(mktempfile)"
-            download_file "https://rpm.nodesource.com/setup_22.x" "$tmp"
+            download_file "https://rpm.nodesource.com/setup_20.x" "$tmp"
             if is_root; then
                 bash "$tmp"
                 dnf install -y -q nodejs
@@ -252,7 +252,7 @@ install_node() {
         elif command -v yum &> /dev/null; then
             local tmp
             tmp="$(mktempfile)"
-            download_file "https://rpm.nodesource.com/setup_22.x" "$tmp"
+            download_file "https://rpm.nodesource.com/setup_20.x" "$tmp"
             if is_root; then
                 bash "$tmp"
                 yum install -y -q nodejs
@@ -262,12 +262,12 @@ install_node() {
             fi
         else
             ui_error "Could not detect package manager"
-            echo "Please install Node.js 22+ manually: https://nodejs.org"
+            echo "Please install Node.js 20+ manually: https://nodejs.org"
             exit 1
         fi
 
         hash -r 2>/dev/null || true
-        ensure_node_22_or_die
+        ensure_node_20_or_die
         ui_success "Node.js installed"
     fi
 }
@@ -573,7 +573,7 @@ install_undoable_from_git() {
         install_git
     fi
 
-    ensure_node_22_or_die
+    ensure_node_20_or_die
 
     if ! check_pnpm; then
         install_pnpm
@@ -599,7 +599,7 @@ install_undoable_from_git() {
     pnpm -C "$repo_dir" install
     ui_success "Dependencies installed"
 
-    ensure_node_22_or_die
+    ensure_node_20_or_die
 
     ui_info "Building Undoable"
     pnpm -C "$repo_dir" build

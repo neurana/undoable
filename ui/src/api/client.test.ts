@@ -168,16 +168,22 @@ describe("api.gateway", () => {
 });
 
 describe("streamEvents", () => {
-  it("creates EventSource and returns cleanup function", () => {
-    const closeFn = vi.fn();
-    vi.stubGlobal("EventSource", class {
-      onmessage: ((e: unknown) => void) | null = null;
-      close = closeFn;
+  it("opens SSE via fetch and aborts on cleanup", () => {
+    let signal: AbortSignal | undefined;
+    mockFetch.mockImplementation((_url, init) => {
+      signal = init?.signal as AbortSignal | undefined;
+      return new Promise(() => {});
     });
-
     const unsub = streamEvents("r1", () => {});
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/runs/r1/events",
+      expect.objectContaining({
+        method: "GET",
+      }),
+    );
+    expect(signal?.aborted).toBe(false);
     expect(typeof unsub).toBe("function");
     unsub();
-    expect(closeFn).toHaveBeenCalled();
+    expect(signal?.aborted).toBe(true);
   });
 });

@@ -10,10 +10,12 @@ export type SystemPromptParams = {
   agentName?: string;
   agentInstructions?: string;
   skillsPrompt?: string;
+  autoSkillDiscoveryPrompt?: string;
   toolDefinitions?: ToolDefinition[];
   contextFiles?: ContextFile[];
   economyMode?: boolean;
   undoGuaranteeEnabled?: boolean;
+  swarmMode?: boolean;
   workspaceDir?: string;
   runtime?: {
     model?: string;
@@ -175,6 +177,24 @@ function buildToolCallStyleSection(economyMode = false): string[] {
   ];
 }
 
+function buildInteractionStyleSection(economyMode = false): string[] {
+  return [
+    "## Interaction Style",
+    "Match the user's language by default.",
+    "Avoid repetitive canned openers; do not repeat the same greeting pattern each session.",
+    "If the user gives a concrete request, execute/answer directly instead of starting with generic help questions.",
+    "If the user only greets you, keep it short (1-2 sentences) and offer one concrete next step.",
+    ...(economyMode
+      ? [
+          "In economy mode, keep responses especially compact and action-first.",
+        ]
+      : [
+          "Keep responses concise by default; expand only when the user asks for depth.",
+        ]),
+    "",
+  ];
+}
+
 function buildCanvasSection(toolDefs?: ToolDefinition[]): string[] {
   if (!toolDefs?.some((t) => t.function.name === "canvas")) return [];
   return [
@@ -240,6 +260,22 @@ function buildSkillsSection(skillsPrompt?: string): string[] {
   ];
 }
 
+function buildAutoSkillDiscoverySection(
+  autoSkillDiscoveryPrompt?: string,
+): string[] {
+  const trimmed = autoSkillDiscoveryPrompt?.trim();
+  if (!trimmed) return [];
+  return [
+    "## Auto Skill Discovery",
+    "System pre-searched skills.sh for this request.",
+    "Use these matches to suggest relevant capability extensions quickly.",
+    "Never install skills silently: ask for user confirmation first.",
+    "When installing, call `skills_install`; the platform will request explicit approval before execution.",
+    trimmed,
+    "",
+  ];
+}
+
 function buildInstructionsSection(instructions?: string): string[] {
   const trimmed = instructions?.trim();
   if (!trimmed) return [];
@@ -284,6 +320,17 @@ function buildSwarmSection(): string[] {
     "- For recurring tasks, set cron on the entry node only",
     "- Test nodes individually with `swarm_run_node` before enabling workflow",
     "- Use SWARM proactively when users ask for automations, agents, recurring jobs, or 24/7 workflows.",
+    "",
+  ];
+}
+
+function buildSwarmModeSection(swarmMode = false): string[] {
+  if (!swarmMode) return [];
+  return [
+    "## SWARM Mode (Active)",
+    "The user explicitly enabled SWARM mode for this run.",
+    "Treat this request with swarm-first execution: decompose work into coordinated subtasks, run independent work in parallel when possible, and synthesize into one coherent result.",
+    "Prefer SWARM/workflow tooling for orchestration opportunities, while still completing one-off tasks directly when orchestration adds no value.",
     "",
   ];
 }
@@ -401,18 +448,22 @@ function buildContextFilesSection(files?: ContextFile[]): string[] {
 export function buildSystemPrompt(params: SystemPromptParams): string {
   const economyMode = params.economyMode === true;
   const undoGuaranteeEnabled = params.undoGuaranteeEnabled !== false;
+  const swarmMode = params.swarmMode === true;
   const lines = [
     ...buildIdentitySection(params.agentName, undoGuaranteeEnabled),
     ...buildCapabilityGroundingSection(economyMode),
     ...buildSafetySection(),
     ...buildToolingSection(params.toolDefinitions, economyMode),
     ...buildToolCallStyleSection(economyMode),
+    ...buildInteractionStyleSection(economyMode),
     ...buildUndoGuaranteeSection(undoGuaranteeEnabled, economyMode),
     ...buildCanvasSection(params.toolDefinitions),
     ...(economyMode ? [] : buildSwarmSection()),
+    ...buildSwarmModeSection(swarmMode),
     ...(economyMode ? [] : buildAutomationDefaultsSection(params.toolDefinitions)),
     ...buildWorkspaceSection(params.workspaceDir),
     ...buildSkillsSection(params.skillsPrompt),
+    ...buildAutoSkillDiscoverySection(params.autoSkillDiscoveryPrompt),
     ...buildInstructionsSection(params.agentInstructions),
     ...buildBehaviorSection(economyMode),
     ...buildPlatformSection(),

@@ -118,8 +118,8 @@ export const api = {
       id: string,
       patch: {
         enabled?: boolean;
-        token?: string;
-        extra?: Record<string, unknown>;
+        token?: string | null;
+        extra?: Record<string, unknown> | null;
         allowDMs?: boolean;
         allowGroups?: boolean;
         userAllowlist?: string[];
@@ -284,13 +284,60 @@ export const api = {
 };
 
 export function streamEvents(runId: string, onEvent: (event: unknown) => void): () => void {
-  const token = localStorage.getItem("undoable_token");
-  const url = `${BASE}/runs/${runId}/events${token ? `?token=${token}` : ""}`;
-  const source = new EventSource(url);
-  source.onmessage = (e) => {
-    try { onEvent(JSON.parse(e.data)); } catch {}
+  const controller = new AbortController();
+  const headers: Record<string, string> = {
+    Accept: "text/event-stream",
+    ...authHeaders(),
   };
-  return () => source.close();
+
+  void (async () => {
+    const response = await fetch(`${BASE}/runs/${runId}/events`, {
+      method: "GET",
+      headers,
+      signal: controller.signal,
+    });
+
+    if (!response.ok || !response.body) {
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n");
+
+      let splitIndex = buffer.indexOf("\n\n");
+      while (splitIndex >= 0) {
+        const chunk = buffer.slice(0, splitIndex);
+        buffer = buffer.slice(splitIndex + 2);
+
+        const dataLines = chunk
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trim());
+
+        if (dataLines.length > 0) {
+          const payload = dataLines.join("\n");
+          try {
+            onEvent(JSON.parse(payload));
+          } catch {
+            // Ignore malformed payloads and continue consuming stream.
+          }
+        }
+
+        splitIndex = buffer.indexOf("\n\n");
+      }
+    }
+  })().catch(() => {
+    // Keep stream helper resilient; consumers can reconnect from UI actions.
+  });
+
+  return () => controller.abort();
 }
 
 export type RunItem = {
@@ -571,7 +618,8 @@ export type NodeItem = {
 export type ChannelConfigItem = {
   channelId: string;
   enabled: boolean;
-  token?: string;
+  hasToken?: boolean;
+  hasAppToken?: boolean;
   extra?: Record<string, unknown>;
   allowDMs?: boolean;
   allowGroups?: boolean;

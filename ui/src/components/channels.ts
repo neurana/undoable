@@ -25,6 +25,8 @@ type WizardState = {
   step: WizardStep;
   token: string;
   appToken: string;  // Slack only
+  tokenConfigured: boolean;
+  appTokenConfigured: boolean;
   dmPolicy: DmPolicy;
   allowlist: string[];
   error: string | null;
@@ -117,7 +119,7 @@ const PLATFORMS: Record<ChannelId, PlatformInfo> = {
 };
 
 const DM_POLICIES: Array<{ value: DmPolicy; label: string; description: string }> = [
-  { value: "pairing", label: "Default (Recommended)", description: "Accept direct messages unless allowlist/disabled is configured" },
+  { value: "pairing", label: "Default (Recommended)", description: "Require one-time pairing approval for new direct-message users" },
   { value: "allowlist", label: "Allowlist Only", description: "Only allowed users can message" },
   { value: "open", label: "Open", description: "Anyone can message (use with caution)" },
   { value: "disabled", label: "Disabled", description: "Ignore all direct messages" },
@@ -764,6 +766,8 @@ export class ChannelList extends LitElement {
       step: "token",
       token: "",
       appToken: "",
+      tokenConfigured: false,
+      appTokenConfigured: false,
       dmPolicy: "pairing",
       allowlist: [],
       error: null,
@@ -803,8 +807,8 @@ export class ChannelList extends LitElement {
         this.wizardState[id] = {
           ...this.wizardState[id],
           channel: id,
-          token: ch.config.token ?? "",
-          appToken: (ch.config.extra as Record<string, string>)?.appToken ?? "",
+          tokenConfigured: ch.config.hasToken === true,
+          appTokenConfigured: ch.config.hasAppToken === true,
           dmPolicy: deriveDmPolicy(ch),
           allowlist: deriveAllowlist(ch),
         };
@@ -980,21 +984,33 @@ export class ChannelList extends LitElement {
     this.updateWizard(channelId, { loading: true, error: null });
 
     try {
+      const token = state.token.trim();
+      const appToken = state.appToken.trim();
       const extra: Record<string, unknown> = {
         dmPolicy: state.dmPolicy,
         allowlist: state.allowlist,
       };
-      if (channelId === "slack" && state.appToken) {
-        extra.appToken = state.appToken;
+      if (channelId === "slack" && appToken) {
+        extra.appToken = appToken;
       }
 
-      await api.channels.update(channelId, {
-        token: state.token || undefined,
+      const patch: {
+        token?: string;
+        extra: Record<string, unknown>;
+        allowDMs: boolean;
+        allowGroups: boolean;
+        userAllowlist: string[];
+      } = {
         extra,
         allowDMs: state.dmPolicy !== "disabled",
         allowGroups: true,
         userAllowlist: state.dmPolicy === "allowlist" ? state.allowlist : [],
-      });
+      };
+      if (token) {
+        patch.token = token;
+      }
+
+      await api.channels.update(channelId, patch);
       await api.channels.start(channelId);
       await this.refreshChannelStatuses();
       await this.refreshPairing(channelId, { silent: true });
@@ -1174,6 +1190,10 @@ export class ChannelList extends LitElement {
         </ol>
       </div>
 
+      ${(state.tokenConfigured || state.appTokenConfigured) ? html`
+        <div class="field-hint">Credentials are already configured. Leave fields empty to keep stored values.</div>
+      ` : nothing}
+
       <div class="field-group">
         <label class="field-label">${platform.tokenLabel}</label>
         <input
@@ -1273,8 +1293,12 @@ export class ChannelList extends LitElement {
       <div class="help-box">
         <div class="help-title">Configuration Summary</div>
         <ul class="help-list" style="list-style: none; padding-left: 0;">
-          ${!platform.noToken ? html`<li><strong>Token:</strong> ${state.token ? "••••••••" + state.token.slice(-6) : "Not set"}</li>` : nothing}
-          ${id === "slack" ? html`<li><strong>App Token:</strong> ${state.appToken ? "••••••••" + state.appToken.slice(-6) : "Not set"}</li>` : nothing}
+          ${!platform.noToken
+            ? html`<li><strong>Token:</strong> ${state.token ? "••••••••" + state.token.slice(-6) : (state.tokenConfigured ? "Configured" : "Not set")}</li>`
+            : nothing}
+          ${id === "slack"
+            ? html`<li><strong>App Token:</strong> ${state.appToken ? "••••••••" + state.appToken.slice(-6) : (state.appTokenConfigured ? "Configured" : "Not set")}</li>`
+            : nothing}
           <li><strong>DM Policy:</strong> ${DM_POLICIES.find(p => p.value === state.dmPolicy)?.label}</li>
           ${state.dmPolicy === "allowlist" ? html`<li><strong>Allowlist:</strong> ${state.allowlist.length} user(s)</li>` : nothing}
         </ul>
@@ -1439,7 +1463,9 @@ export class ChannelList extends LitElement {
       `;
     }
 
-    const canProceed = platform.noToken || state.token.trim();
+    const hasBotToken = Boolean(state.token.trim() || state.tokenConfigured);
+    const hasSlackAppToken = id !== "slack" || Boolean(state.appToken.trim() || state.appTokenConfigured);
+    const canProceed = platform.noToken || (hasBotToken && hasSlackAppToken);
     const isLastStep = state.step === "confirm";
     const isFirstStep = state.step === "token" || state.step === "qr";
 

@@ -54,13 +54,112 @@ import {
 import { parseDirectives, DIRECTIVE_HELP } from "../services/directive-parser.js";
 import type { TtsService } from "../services/tts-service.js";
 import type { SttService } from "../services/stt-service.js";
-import type { SkillsService } from "../services/skills-service.js";
+import type {
+  SkillsService,
+  SkillsSearchResult,
+} from "../services/skills-service.js";
 import type { DaemonOperationalState } from "../services/daemon-settings-service.js";
 
 const MAX_TOOL_RESULT_CHARS = 30_000;
 const DEFAULT_MAX_ITERATIONS = 10;
 const ONE_DAY_MS = 86_400_000;
 const NON_UNDOABLE_NOISE_TOOLS = new Set(["undo", "actions"]);
+const SKILL_DISCOVERY_TIMEOUT_MS = 8_000;
+const SKILL_DISCOVERY_MIN_MESSAGE_LENGTH = 24;
+const SKILL_DISCOVERY_TRIGGER_RE =
+  /\b(skill|skills|integration|integrate|plugin|connector|automation|automate|workflow|channel|capability|support|deploy|deployment|agent|discord|slack|telegram|whatsapp|shopify|salesforce|hubspot|jira|notion|gmail|google|stripe)\b/i;
+const SKILL_DISCOVERY_INTENT_RE =
+  /\b(help|need|want|can you|could you|how do i|is there|do you support|set up|setup|configure)\b/i;
+
+type AutoSkillDiscovery = {
+  query: string;
+  results: SkillsSearchResult[];
+};
+
+function shouldAutoDiscoverSkills(message: string): boolean {
+  const normalized = message.trim();
+  if (normalized.length < SKILL_DISCOVERY_MIN_MESSAGE_LENGTH) return false;
+  if (!SKILL_DISCOVERY_TRIGGER_RE.test(normalized)) return false;
+  return SKILL_DISCOVERY_INTENT_RE.test(normalized);
+}
+
+function buildSkillSearchQuery(message: string): string {
+  const stopWords = new Set([
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "need",
+    "want",
+    "help",
+    "please",
+    "could",
+    "would",
+    "should",
+    "have",
+    "about",
+  ]);
+  const cleaned = message
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokens = cleaned
+    .split(" ")
+    .filter((token) => token.length > 2 && !stopWords.has(token))
+    .slice(0, 8);
+  if (tokens.length >= 2) return tokens.join(" ");
+  return cleaned.slice(0, 120);
+}
+
+function formatAutoSkillDiscoveryPrompt(discovery: AutoSkillDiscovery): string {
+  const lines = [`Query: ${discovery.query}`];
+  for (const result of discovery.results.slice(0, 3)) {
+    lines.push(`- ${result.reference} (${result.url})`);
+  }
+  return lines.join("\n");
+}
+
+function formatAutoSkillDiscoveryHint(discovery: AutoSkillDiscovery): string {
+  const refs = discovery.results
+    .slice(0, 3)
+    .map((result) => result.reference)
+    .join(", ");
+  return refs
+    ? `Auto skill suggestions: ${refs}. Use "Approve & Install" to explicitly approve and install one in a single step.`
+    : "Auto skill discovery ran, but no strong matches were found.";
+}
+
+async function maybeAutoDiscoverSkills(
+  skillsService: SkillsService | undefined,
+  message: string,
+): Promise<AutoSkillDiscovery | null> {
+  if (!skillsService) return null;
+  if (!shouldAutoDiscoverSkills(message)) return null;
+
+  const query = buildSkillSearchQuery(message);
+  if (!query) return null;
+
+  try {
+    const search = await Promise.race([
+      skillsService.searchRegistry(query),
+      new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), SKILL_DISCOVERY_TIMEOUT_MS),
+      ),
+    ]);
+    if (!search || !search.results?.length) return null;
+    return {
+      query,
+      results: search.results.slice(0, 3),
+    };
+  } catch {
+    return null;
+  }
+}
 
 function isRetryableError(status: number): boolean {
   return status === 429 || status >= 500;
@@ -828,8 +927,9 @@ export function chatRoutes(
     };
   });
 
-  app.post<{ Body: { message: string; sessionId?: string; agentId?: string; model?: string; attachments?: ChatAttachment[] } }>("/chat", async (req, reply) => {
+  app.post<{ Body: { message: string; sessionId?: string; agentId?: string; model?: string; attachments?: ChatAttachment[]; swarmMode?: boolean } }>("/chat", async (req, reply) => {
     const { message, agentId, model: requestModel, attachments } = req.body;
+    const swarmMode = req.body.swarmMode === true;
     // Create new session if no sessionId provided (or empty string)
     const sessionId = req.body.sessionId || generateSessionId();
     const isNewSession = !req.body.sessionId;
@@ -909,6 +1009,13 @@ export function chatRoutes(
       });
     }
 
+    const autoSkillDiscovery = directivesOnly
+      ? null
+      : await maybeAutoDiscoverSkills(
+          skillsService,
+          cleanMessage || message || "",
+        );
+
     const activeConf = getActiveConfig();
     const workspaceDir = agentWorkspace || os.homedir();
     const contextFiles = loadContextFiles(workspaceDir);
@@ -916,10 +1023,14 @@ export function chatRoutes(
       agentName,
       agentInstructions,
       skillsPrompt: skillsService?.getPrompt(),
+      autoSkillDiscoveryPrompt: autoSkillDiscovery
+        ? formatAutoSkillDiscoveryPrompt(autoSkillDiscovery)
+        : undefined,
       toolDefinitions: agentToolDefs,
       contextFiles,
       economyMode: economyMode.enabled,
       undoGuaranteeEnabled: !allowIrreversibleActions,
+      swarmMode,
       workspaceDir,
       runtime: {
         model: agentModelOverride ?? activeConf.model,
@@ -997,6 +1108,17 @@ export function chatRoutes(
       model: activeConf.model, provider: activeConf.provider, canThink: canThinkNow(),
       spendGuard: getSpendStatus(),
     });
+
+    if (autoSkillDiscovery) {
+      sse({
+        type: "warning",
+        code: "skills_suggested",
+        content: formatAutoSkillDiscoveryHint(autoSkillDiscovery),
+        recovery:
+          "Click Approve & Install on any suggestion, or ask to install a specific reference.",
+        suggestedSkills: autoSkillDiscovery.results.map((result) => result.reference),
+      });
+    }
 
     // Handle directive-only messages (no LLM call needed)
     if (directives.length > 0 && !cleanMessage) {

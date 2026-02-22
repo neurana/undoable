@@ -12,6 +12,7 @@ export type ChatEntry =
     recovery?: string;
     tool?: string;
     actionable?: boolean;
+    suggestedSkills?: string[];
   };
 
 export type SessionItem = {
@@ -69,5 +70,6 @@ export type SseEvent = {
   undoGuaranteeEnabled?: boolean;
   runId?: string;
   spendGuard?: SpendGuardPayload;
+  suggestedSkills?: string[];
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
 };

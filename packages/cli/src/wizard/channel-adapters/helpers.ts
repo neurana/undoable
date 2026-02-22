@@ -34,7 +34,7 @@ export async function promptDmPolicy(prompter: WizardPrompter, initial: DmPolicy
   return prompter.select<DmPolicy>({
     message: "DM policy",
     options: [
-      { value: "pairing", label: "Default (recommended)", hint: "Allow DMs; unknown users are not blocked by policy" },
+      { value: "pairing", label: "Default (recommended)", hint: "Require one-time pairing approval for new DM users" },
       { value: "allowlist", label: "Allowlist only", hint: "Only listed users can message" },
       { value: "open", label: "Open", hint: "Allow anyone to DM" },
       { value: "disabled", label: "Disabled", hint: "Ignore direct messages" },

@@ -201,6 +201,15 @@ describe("gateway routes", () => {
       return row.config;
     },
     stopChannel: async (_channelId: string) => { },
+    logoutChannel: async (channelId: string) => {
+      const row = channelState[channelId as keyof typeof channelState];
+      if (!row) throw new Error("unknown channel");
+      row.config = {
+        ...row.config,
+        enabled: false,
+        token: undefined,
+      };
+    },
     probeChannel: async (channelId: ChannelId) => ({
       channelId,
       probedAt: Date.now(),
@@ -717,6 +726,7 @@ describe("gateway routes", () => {
     const modelsBody = models.json();
     expect(modelsBody.ok).toBe(true);
     expect(modelsBody.result.active.provider).toBe("openai");
+    expect(modelsBody.result.active.apiKey).toBeUndefined();
     expect(modelsBody.result.models[0].id).toBe("gpt-4.1-mini");
 
     const update = await app.inject({
@@ -928,6 +938,24 @@ describe("gateway routes", () => {
     const getBody = getResp.json();
     expect(getBody.ok).toBe(true);
     expect(getBody.result.value).toBe(7444);
+
+    const secretSetResp = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "config.set", params: { key: "daemon.jwtSecret", value: "super-secret" } },
+    });
+    const secretSetBody = secretSetResp.json();
+    expect(secretSetBody.ok).toBe(true);
+    expect(secretSetBody.result.value).toBe("[redacted]");
+
+    const secretGetResp = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "config.get", params: { key: "daemon.jwtSecret" } },
+    });
+    const secretGetBody = secretGetResp.json();
+    expect(secretGetBody.ok).toBe(true);
+    expect(secretGetBody.result.value).toBe("[redacted]");
 
     const patchResp = await app.inject({
       method: "POST",
@@ -1315,6 +1343,16 @@ describe("gateway routes", () => {
     const approvedBody = approved.json();
     expect(approvedBody.ok).toBe(true);
     expect(approvedBody.result.node.nodeId).toBe("device-1");
+
+    const pairingList = await app.inject({
+      method: "POST",
+      url: "/gateway",
+      payload: { method: "node.pair.list", params: {} },
+    });
+    const pairingListBody = pairingList.json();
+    expect(pairingListBody.ok).toBe(true);
+    expect(pairingListBody.result.paired.length).toBeGreaterThan(0);
+    expect(pairingListBody.result.paired[0].token).toBeUndefined();
 
     const list = await app.inject({
       method: "POST",

@@ -14,6 +14,7 @@ import { parseDirectives } from "../services/directive-parser.js";
 
 const CONFIG_PATH = path.join(os.homedir(), ".undoable", "channels.json");
 const PAIRING_STATE_PATH = path.join(os.homedir(), ".undoable", "channel-pairing.json");
+const WHATSAPP_AUTH_DIR = path.join(os.homedir(), ".undoable", "channels", "whatsapp", "auth");
 const DEFAULT_LOG_LIMIT = 200;
 const MAX_LOG_ENTRIES = 2000;
 const PAIRING_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -49,6 +50,8 @@ const CHANNEL_SYSTEM_PROMPT = [
   "",
   "Execution policy:",
   "- Act immediately when asked; ask clarifying questions only when blocked (missing credentials/IDs or ambiguous intent).",
+  "- Match the user's language and avoid repeating canned greeting patterns.",
+  "- If the user sends a direct task, solve it directly instead of opening with generic help prompts.",
   "- For mutating tasks, prefer undoable flows (write_file/edit_file). Use undo list when the user asks for audit/reliability checks.",
   "- Verify user-visible outputs before claiming success (for example, read files after writing).",
 ].join("\n");
@@ -380,7 +383,13 @@ export class ChannelManager {
       requests,
       approvals,
     };
-    await fsp.writeFile(PAIRING_STATE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+    await fsp.writeFile(PAIRING_STATE_PATH, JSON.stringify(payload, null, 2), {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+    await fsp.chmod(PAIRING_STATE_PATH, 0o600).catch(() => {
+      // best effort
+    });
   }
 
   private queuePairingStateSave(): void {
@@ -566,7 +575,13 @@ export class ChannelManager {
   private async saveConfigs(): Promise<void> {
     await fsp.mkdir(path.dirname(CONFIG_PATH), { recursive: true });
     const arr = Array.from(this.configs.values());
-    await fsp.writeFile(CONFIG_PATH, JSON.stringify(arr, null, 2), "utf-8");
+    await fsp.writeFile(CONFIG_PATH, JSON.stringify(arr, null, 2), {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+    await fsp.chmod(CONFIG_PATH, 0o600).catch(() => {
+      // best effort
+    });
   }
 
   getConfig(channelId: ChannelId): ChannelConfig | undefined {
@@ -651,6 +666,54 @@ export class ChannelManager {
       level: "info",
       event: "stop",
       message: `${channelId} stopped`,
+    });
+  }
+
+  async logoutChannel(channelId: ChannelId): Promise<void> {
+    const channel = this.channels.get(channelId);
+    if (!channel) throw new Error(`Unknown channel: ${channelId}`);
+
+    try {
+      await channel.stop();
+    } catch {
+      // Continue cleanup even if channel was already stopped.
+    }
+
+    if (channelId === "whatsapp") {
+      try {
+        await fsp.rm(WHATSAPP_AUTH_DIR, { recursive: true, force: true });
+      } catch (err) {
+        this.pushChannelLog({
+          channelId,
+          level: "warn",
+          event: "logout_whatsapp_auth_cleanup_failed",
+          message: "Failed to clear WhatsApp auth state directory.",
+          meta: { error: err instanceof Error ? err.message : String(err) },
+        });
+        throw err;
+      }
+    }
+
+    const existing = this.configs.get(channelId) ?? { channelId, enabled: false };
+    const existingExtra = (existing.extra ?? {}) as Record<string, unknown>;
+    const remainingExtra = { ...existingExtra };
+    delete remainingExtra.appToken;
+
+    const nextConfig = this.normalizeConfig({
+      ...existing,
+      enabled: false,
+      token: undefined,
+      extra: remainingExtra,
+    });
+    this.configs.set(channelId, nextConfig);
+    await this.saveConfigs();
+
+    this.pushChannelLog({
+      channelId,
+      level: "info",
+      event: "logout",
+      message: `${channelId} logged out and credentials cleared`,
+      meta: { clearedWhatsAppAuth: channelId === "whatsapp" },
     });
   }
 

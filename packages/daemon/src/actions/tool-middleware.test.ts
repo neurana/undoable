@@ -40,6 +40,27 @@ describe("wrapToolWithMiddleware", () => {
     expect(record.undoable).toBe(false);
   });
 
+  it("requires approval for skills_install even when approval mode is off", async () => {
+    const tool = makeFakeTool("skills_install", { ok: true, installed: true });
+    const wrapped = wrapToolWithMiddleware(tool, { actionLog, approvalGate });
+
+    const resultPromise = wrapped.execute({
+      reference: "vercel-labs/skills@find-skills",
+      agents: ["codex"],
+    });
+
+    const pending = approvalGate.listPending();
+    expect(pending.length).toBe(1);
+    expect(pending[0]!.toolName).toBe("skills_install");
+    approvalGate.resolve(pending[0]!.id, true);
+
+    const result = await resultPromise;
+    expect(result).toEqual({ ok: true, installed: true });
+
+    const record = actionLog.list()[0]!;
+    expect(record.approval).toBe("approved");
+  });
+
   it("records write_file as undoable and captures before-state", async () => {
     const filePath = path.join(tmpDir, "target.txt");
     await fs.writeFile(filePath, "original");

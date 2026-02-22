@@ -42,6 +42,7 @@ describe("settings routes", () => {
     expect(body).toHaveProperty("desired");
     expect(body).toHaveProperty("effective");
     expect(body).toHaveProperty("restartRequired");
+    expect(body.desired.token).toBe("");
   });
 
   it("applies daemon settings patch", async () => {
@@ -64,6 +65,9 @@ describe("settings routes", () => {
     expect(body.desired.port).toBe(9001);
     expect(body.desired.authMode).toBe("token");
     expect(body.desired.securityPolicy).toBe("strict");
+    expect(body.desired.token).toBe("");
+    expect(body.effective.tokenSet).toBe(false);
+    expect(body.restartRequired).toBe(true);
   });
 
   it("rejects invalid daemon settings patch", async () => {

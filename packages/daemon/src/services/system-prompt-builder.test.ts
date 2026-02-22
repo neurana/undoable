@@ -62,6 +62,29 @@ describe("buildSystemPrompt automation defaults", () => {
     expect(prompt).toContain("skills_install");
   });
 
+  it("injects auto skill discovery guidance when runtime hints are provided", () => {
+    const prompt = buildSystemPrompt({
+      toolDefinitions: [tool("skills_search"), tool("skills_install")],
+      autoSkillDiscoveryPrompt:
+        "Query: deploy github actions\n- vercel-labs/skills@find-skills (https://skills.sh/vercel-labs/skills/find-skills)",
+    });
+
+    expect(prompt).toContain("## Auto Skill Discovery");
+    expect(prompt).toContain("Never install skills silently");
+    expect(prompt).toContain("skills_install");
+    expect(prompt).toContain("Query: deploy github actions");
+  });
+
+  it("adds a dedicated swarm-mode section when swarm mode is enabled", () => {
+    const prompt = buildSystemPrompt({
+      swarmMode: true,
+      toolDefinitions: [tool("swarm_create_workflow")],
+    });
+
+    expect(prompt).toContain("## SWARM Mode (Active)");
+    expect(prompt).toContain("swarm-first execution");
+  });
+
   it("uses compact sections in economy mode", () => {
     const prompt = buildSystemPrompt({
       economyMode: true,
@@ -77,8 +100,17 @@ describe("buildSystemPrompt automation defaults", () => {
     expect(prompt).not.toContain("## Automation Defaults");
     expect(prompt).toContain("## Behavior Rules");
     expect(prompt).toContain("## Capability Grounding");
+    expect(prompt).toContain("## Interaction Style");
     expect(prompt).toContain("## Undo Guarantee Protocol");
     expect(prompt).not.toContain("When the user asks for reliability/audit");
+  });
+
+  it("adds interaction guidance to avoid repetitive canned greetings", () => {
+    const prompt = buildSystemPrompt({});
+
+    expect(prompt).toContain("## Interaction Style");
+    expect(prompt).toContain("Avoid repetitive canned openers");
+    expect(prompt).toContain("If the user gives a concrete request, execute/answer directly");
   });
 
   it("includes strict undo protocol and recovery guidance by default", () => {

@@ -139,6 +139,15 @@ export function getToolCategory(toolName: string): ActionCategory {
 }
 
 export function requiresApproval(toolName: string, mode: ApprovalMode): boolean {
+  // Skills installation/removal/update always require explicit approval.
+  // This keeps default approval mode "off" while still protecting third-party code changes.
+  if (
+    toolName === "skills_install" ||
+    toolName === "skills_update" ||
+    toolName === "skills_remove"
+  ) {
+    return true;
+  }
   if (mode === "off") return false;
   if (mode === "always") return true;
   const category = getToolCategory(toolName);

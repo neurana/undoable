@@ -141,6 +141,12 @@ export class ApprovalGate {
         return `Edit file: ${args.path}`;
       case "exec":
         return `Execute: ${args.command}`;
+      case "skills_install":
+        return `Install skill: ${args.reference ?? "unknown reference"}`;
+      case "skills_update":
+        return "Update installed skills";
+      case "skills_remove":
+        return `Remove skill(s): ${Array.isArray(args.references) ? args.references.join(", ") : args.references ?? "selected skills"}`;
       case "create_run":
         return `Create run: ${args.instruction}`;
       case "create_job":

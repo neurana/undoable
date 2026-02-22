@@ -728,7 +728,7 @@ export function channelsCommand(): Command {
         method: "PUT",
         body: {
           enabled: false,
-          token: undefined,
+          token: null,
           extra: {},
           userAllowlist: [],
           userBlocklist: [],

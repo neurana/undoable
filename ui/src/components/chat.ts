@@ -14,6 +14,7 @@ import "./chat-messages.js";
 import "./chat-settings.js";
 import "./canvas-panel.js";
 import "./swarm-panel.js";
+import "./swarm-ants-overlay.js";
 import { api, type UndoActionSummary } from "../api/client.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,6 +60,7 @@ const CANVAS_ROOT_PATH = "/__undoable__/canvas";
 const CHAT_STARTUP_REQUEST_TIMEOUT_MS = 10000;
 const CHAT_SESSIONS_LIMIT = 200;
 const CHAT_SESSIONS_CACHE_KEY = "undoable.chat.sessions.v1";
+const SWARM_MODE_CACHE_KEY = "undoable.chat.swarm-mode.v1";
 
 @customElement("undoable-chat")
 export class UndoableChat extends LitElement {
@@ -487,11 +489,13 @@ export class UndoableChat extends LitElement {
         font-family: var(--mono);
       }
       .btn-swarm-nav {
+        position: relative;
+        isolation: isolate;
         height: 30px;
         padding: 0 10px;
         border-radius: var(--radius-pill);
         border: 1px solid var(--border-strong);
-        background: var(--surface-1);
+        background: color-mix(in srgb, var(--surface-1) 94%, #ffffff);
         color: var(--text-secondary);
         display: inline-flex;
         align-items: center;
@@ -501,6 +505,11 @@ export class UndoableChat extends LitElement {
         cursor: pointer;
         transition: all 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
         flex-shrink: 0;
+        overflow: hidden;
+      }
+      .btn-swarm-nav > * {
+        position: relative;
+        z-index: 1;
       }
       .btn-swarm-nav:hover {
         background: var(--wash);
@@ -508,14 +517,12 @@ export class UndoableChat extends LitElement {
         border-color: var(--mint-strong);
       }
       .btn-swarm-nav.active {
-        background: linear-gradient(
-          135deg,
-          color-mix(in srgb, var(--mint) 34%, transparent),
-          var(--accent-subtle)
-        );
+        background: color-mix(in srgb, var(--accent-subtle) 78%, #ffffff);
         color: var(--dark);
-        border-color: var(--mint-strong);
-        box-shadow: inset 0 0 0 1px rgba(46, 69, 57, 0.14);
+        border-color: color-mix(in srgb, var(--mint-strong) 74%, #8de7a8);
+        box-shadow:
+          0 0 0 1px rgba(114, 185, 136, 0.24),
+          0 0 11px rgba(114, 185, 136, 0.22);
       }
       .btn-swarm-nav svg {
         width: 14px;
@@ -558,6 +565,50 @@ export class UndoableChat extends LitElement {
         stroke-width: 1.7;
         fill: none;
       }
+      .btn-swarm-mode {
+        position: relative;
+        isolation: isolate;
+        height: 30px;
+        padding: 0 11px;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--border-strong);
+        background: color-mix(in srgb, var(--surface-1) 94%, #ffffff);
+        color: var(--text-secondary);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.16px;
+        cursor: pointer;
+        transition: all 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        flex-shrink: 0;
+        overflow: hidden;
+      }
+      .btn-swarm-mode > * {
+        position: relative;
+        z-index: 1;
+      }
+      .btn-swarm-mode:hover {
+        background: var(--wash);
+        color: var(--text-primary);
+        border-color: var(--mint-strong);
+      }
+      .btn-swarm-mode.active {
+        background: color-mix(in srgb, var(--accent-subtle) 78%, #ffffff);
+        color: var(--dark);
+        border-color: color-mix(in srgb, var(--mint-strong) 74%, #8de7a8);
+        box-shadow:
+          0 0 0 1px rgba(114, 185, 136, 0.24),
+          0 0 11px rgba(114, 185, 136, 0.22);
+      }
+      .btn-swarm-mode svg {
+        width: 14px;
+        height: 14px;
+        stroke: currentColor;
+        stroke-width: 1.7;
+        fill: none;
+      }
       @media (max-width: 1080px) {
         .status-label {
           display: none;
@@ -578,6 +629,21 @@ export class UndoableChat extends LitElement {
       .chat-main {
         flex: 1;
         min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .chat-main-stage {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .main-content-layer {
+        position: relative;
+        z-index: 1;
+        flex: 1;
         min-height: 0;
         display: flex;
         flex-direction: column;
@@ -725,6 +791,16 @@ export class UndoableChat extends LitElement {
           display: none;
         }
         .btn-canvas {
+          width: 32px;
+          height: 32px;
+          justify-content: center;
+          padding: 0;
+          border-radius: 8px;
+        }
+        .btn-swarm-mode span {
+          display: none;
+        }
+        .btn-swarm-mode {
           width: 32px;
           height: 32px;
           justify-content: center;
@@ -956,6 +1032,7 @@ export class UndoableChat extends LitElement {
   @state() private canvasUrl = "";
   @state() private canvasFrames: string[] = [];
   @state() private swarmOpen = false;
+  @state() private swarmMode = false;
   @state() private panelWidth = 0;
   @state() private showMaxIterDialog = false;
   @state() private showUndoConfirm = false;
@@ -964,6 +1041,7 @@ export class UndoableChat extends LitElement {
   @state() private undoGuardBlockHint: UndoGuardBlockHint | null = null;
   @state() private undoGuardApplying = false;
   @state() private allowIrreversibleOnceArmed = false;
+  @state() private installingSkillRef = "";
   @state() private headerStatusMenuOpen = false;
   private resizing = false;
   private resizePointerId = -1;
@@ -975,6 +1053,7 @@ export class UndoableChat extends LitElement {
     super.connectedCallback();
     if (window.innerWidth <= 768) this.sidebarOpen = false;
     this.restoreSessionsCache();
+    this.restoreSwarmModePreference();
     this.restoreFromUrl();
     void this.loadSessions();
     void this.refreshUndoState();
@@ -1126,6 +1205,22 @@ export class UndoableChat extends LitElement {
   private persistSessionsCache(sessions: SessionItem[]) {
     try {
       localStorage.setItem(CHAT_SESSIONS_CACHE_KEY, JSON.stringify(sessions));
+    } catch {
+      // Ignore storage failures (private mode/quota).
+    }
+  }
+
+  private restoreSwarmModePreference() {
+    try {
+      this.swarmMode = localStorage.getItem(SWARM_MODE_CACHE_KEY) === "1";
+    } catch {
+      this.swarmMode = false;
+    }
+  }
+
+  private persistSwarmModePreference() {
+    try {
+      localStorage.setItem(SWARM_MODE_CACHE_KEY, this.swarmMode ? "1" : "0");
     } catch {
       // Ignore storage failures (private mode/quota).
     }
@@ -1521,6 +1616,11 @@ export class UndoableChat extends LitElement {
     if (this.swarmOpen) this.ensureSwarmPanelWidth();
   };
 
+  private toggleSwarmMode = () => {
+    this.swarmMode = !this.swarmMode;
+    this.persistSwarmModePreference();
+  };
+
   private onResizePointerDown = (e: PointerEvent) => {
     e.preventDefault();
     this.resizing = true;
@@ -1741,6 +1841,108 @@ export class UndoableChat extends LitElement {
     }
   }
 
+  private async handleInstallSkillSuggestion(detail: { reference: string }) {
+    const reference = detail.reference?.trim();
+    if (!reference || this.installingSkillRef) return;
+
+    this.installingSkillRef = reference;
+    this.error = "";
+
+    this.entries = [
+      ...this.entries,
+      {
+        kind: "assistant",
+        content: `Approving and installing skill \`${reference}\`...`,
+      },
+    ];
+
+    try {
+      const preflightRes = await fetch("/api/skills/preflight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reference,
+          global: true,
+          agents: ["codex"],
+        }),
+      });
+      const preflightBody = (await preflightRes
+        .json()
+        .catch(() => ({}))) as { ok?: boolean; error?: string; errors?: string[] };
+      if (!preflightRes.ok || preflightBody.ok === false) {
+        const preflightErrors = Array.isArray(preflightBody.errors)
+          ? preflightBody.errors
+              .filter((value): value is string => typeof value === "string")
+              .join("; ")
+          : "";
+        const message =
+          preflightErrors ||
+          (typeof preflightBody.error === "string" ? preflightBody.error : "") ||
+          `Skill preflight failed (HTTP ${preflightRes.status})`;
+        throw new Error(message);
+      }
+
+      const installRes = await fetch("/api/skills/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reference,
+          global: true,
+          agents: ["codex"],
+        }),
+      });
+      const installBody = (await installRes
+        .json()
+        .catch(() => ({}))) as {
+        ok?: boolean;
+        installed?: boolean;
+        message?: string;
+        error?: string;
+        warnings?: string[];
+      };
+      if (!installRes.ok || installBody.ok === false || installBody.installed === false) {
+        const message =
+          (typeof installBody.message === "string" && installBody.message) ||
+          (typeof installBody.error === "string" && installBody.error) ||
+          `Skill install failed (HTTP ${installRes.status})`;
+        throw new Error(message);
+      }
+
+      const installMessage =
+        typeof installBody.message === "string" && installBody.message
+          ? installBody.message
+          : `Installed ${reference}.`;
+      const warningLines = Array.isArray(installBody.warnings)
+        ? installBody.warnings
+            .filter((value): value is string => typeof value === "string")
+            .slice(0, 3)
+        : [];
+
+      const summaryContent =
+        warningLines.length > 0
+          ? `${installMessage}\n\nSafety notes:\n- ${warningLines.join("\n- ")}`
+          : installMessage;
+
+      this.entries = [
+        ...this.entries,
+        { kind: "assistant", content: summaryContent },
+      ];
+    } catch (err) {
+      const message = normalizeErrorMessage(err);
+      this.error = message;
+      this.entries = [
+        ...this.entries,
+        {
+          kind: "warning",
+          content: `Could not install ${reference}: ${message}`,
+          code: "skills_install_failed",
+        },
+      ];
+    } finally {
+      this.installingSkillRef = "";
+    }
+  }
+
   private async handleAbort() {
     try {
       const body: Record<string, string> = {};
@@ -1908,6 +2110,7 @@ export class UndoableChat extends LitElement {
           sessionId: this.activeSessionId,
           agentId: this.currentAgentId || undefined,
           attachments,
+          swarmMode: this.swarmMode,
         }),
       });
       if (!res.ok) {
@@ -2043,6 +2246,13 @@ export class UndoableChat extends LitElement {
                   this.applySwarmFromToolName(this.undoGuardBlockHint.tool);
                 }
               }
+              const suggestedSkills = Array.isArray(evt.suggestedSkills)
+                ? evt.suggestedSkills
+                    .map((value) =>
+                      typeof value === "string" ? value.trim() : "",
+                    )
+                    .filter(Boolean)
+                : undefined;
               const warningEntry: ChatEntry = {
                 kind: "warning",
                 content: evt.content ?? "",
@@ -2050,6 +2260,10 @@ export class UndoableChat extends LitElement {
                 recovery: evt.recovery,
                 tool: evt.tool,
                 actionable: evt.code === "undo_guarantee_blocked",
+                suggestedSkills:
+                  suggestedSkills && suggestedSkills.length > 0
+                    ? suggestedSkills
+                    : undefined,
               };
               this.entries = [
                 ...this.entries,
@@ -2464,6 +2678,13 @@ export class UndoableChat extends LitElement {
         }}
       ></chat-sidebar>
 
+      <swarm-ants-overlay
+        ?active=${this.swarmMode &&
+        this.entries.length === 0 &&
+        !this.activeSessionId &&
+        !this.loading}
+      ></swarm-ants-overlay>
+
       <div class="chat-area">
         <div class="chat-header">
           <div class="header-left">
@@ -2567,6 +2788,23 @@ export class UndoableChat extends LitElement {
                 <span>Canvas</span>
               </button>
             </div>
+            <button
+              class="btn-swarm-mode ${this.swarmMode ? "active" : ""}"
+              @click=${this.toggleSwarmMode}
+              title=${this.swarmMode
+                ? "SWARM mode is on for every prompt"
+                : "Enable SWARM mode for every prompt"}
+            >
+              <svg viewBox="0 0 24 24">
+                <path d="M4 12h16" />
+                <path d="M12 4v16" />
+                <circle cx="7" cy="7" r="1.5" />
+                <circle cx="17" cy="7" r="1.5" />
+                <circle cx="7" cy="17" r="1.5" />
+                <circle cx="17" cy="17" r="1.5" />
+              </svg>
+              <span>SWARM MODE</span>
+            </button>
           </div>
           <div class="header-right">
             ${this.runMode
@@ -2779,56 +3017,64 @@ export class UndoableChat extends LitElement {
 
         <div class="chat-content">
           <div class="chat-main">
-            ${this.entries.length === 0
-              ? html`
-                  <div class="empty">
-                    <img class="ant-logo" src="/logo.svg" alt="Undoable" />
-                    <div class="empty-title">Undoable</div>
-                    <div class="empty-sub">
-                      Everything the AI does is recorded and can be undone.
-                      Start a conversation or pick one from the sidebar.
-                    </div>
-                  </div>
-                `
-              : html`
-                  <chat-messages
-                    .entries=${this.entries}
-                    ?loading=${this.loading}
-                    .currentIter=${this.currentIter}
-                    .maxIter=${this.maxIter}
-                    .allowIrreversibleActions=${this.allowIrreversibleActions}
-                    .allowIrreversibleOnceArmed=${this.allowIrreversibleOnceArmed}
-                    .undoGuardApplying=${this.undoGuardApplying}
-                    @handle-approval=${(e: CustomEvent) =>
-                      this.handleApproval(e.detail)}
-                    @undo-guard-allow-once=${this.allowIrreversibleAndContinue}
-                    @undo-guard-keep-strict=${this.keepUndoStrict}
-                    @chat-error=${(e: CustomEvent) => {
-                      this.error = normalizeErrorMessage(e.detail);
-                    }}
-                  ></chat-messages>
-                `}
-            ${this.error
-              ? html`<div class="error">${this.error}</div>`
-              : nothing}
+            <div class="chat-main-stage">
+              <div class="main-content-layer">
+                ${this.entries.length === 0
+                  ? html`
+                      <div class="empty">
+                        <img class="ant-logo" src="/logo.svg" alt="Undoable" />
+                        <div class="empty-title">Undoable</div>
+                        <div class="empty-sub">
+                          ${this.swarmMode
+                            ? "SWARM mode is active. Start a message to run with swarm-first orchestration."
+                            : "Everything the AI does is recorded and can be undone. Start a conversation or pick one from the sidebar."}
+                        </div>
+                      </div>
+                    `
+                  : html`
+                      <chat-messages
+                        .entries=${this.entries}
+                        ?loading=${this.loading}
+                        .currentIter=${this.currentIter}
+                        .maxIter=${this.maxIter}
+                        .allowIrreversibleActions=${this.allowIrreversibleActions}
+                        .allowIrreversibleOnceArmed=${this.allowIrreversibleOnceArmed}
+                        .undoGuardApplying=${this.undoGuardApplying}
+                        .installingSkillRef=${this.installingSkillRef}
+                        @handle-approval=${(e: CustomEvent) =>
+                          this.handleApproval(e.detail)}
+                        @install-skill-suggestion=${(e: CustomEvent) =>
+                          this.handleInstallSkillSuggestion(e.detail)}
+                        @undo-guard-allow-once=${this.allowIrreversibleAndContinue}
+                        @undo-guard-keep-strict=${this.keepUndoStrict}
+                        @chat-error=${(e: CustomEvent) => {
+                          this.error = normalizeErrorMessage(e.detail);
+                        }}
+                      ></chat-messages>
+                    `}
+                ${this.error
+                  ? html`<div class="error">${this.error}</div>`
+                  : nothing}
 
-            <chat-input
-              ?loading=${this.loading}
-              ?hasUndoable=${this.hasUndoable}
-              ?hasRedoable=${this.hasRedoable}
-              .thinkingLevel=${this.canThink ? this.thinkingLevel : ""}
-              .transcribeLimitBytes=${this.transcribeLimitBytes}
-              ?canThink=${this.canThink}
-              @send-message=${(e: CustomEvent) =>
-                this.handleSendMessage(e.detail)}
-              @abort-chat=${() => this.handleAbort()}
-              @undo=${(e: CustomEvent) => this.handleUndo(e.detail)}
-              @redo=${(e: CustomEvent) => this.handleRedo(e.detail)}
-              @cycle-thinking=${this.cycleThinkingLevel}
-              @chat-error=${(e: CustomEvent) => {
-                this.error = normalizeErrorMessage(e.detail);
-              }}
-            ></chat-input>
+                <chat-input
+                  ?loading=${this.loading}
+                  ?hasUndoable=${this.hasUndoable}
+                  ?hasRedoable=${this.hasRedoable}
+                  .thinkingLevel=${this.canThink ? this.thinkingLevel : ""}
+                  .transcribeLimitBytes=${this.transcribeLimitBytes}
+                  ?canThink=${this.canThink}
+                  @send-message=${(e: CustomEvent) =>
+                    this.handleSendMessage(e.detail)}
+                  @abort-chat=${() => this.handleAbort()}
+                  @undo=${(e: CustomEvent) => this.handleUndo(e.detail)}
+                  @redo=${(e: CustomEvent) => this.handleRedo(e.detail)}
+                  @cycle-thinking=${this.cycleThinkingLevel}
+                  @chat-error=${(e: CustomEvent) => {
+                    this.error = normalizeErrorMessage(e.detail);
+                  }}
+                ></chat-input>
+              </div>
+            </div>
           </div>
 
           <aside

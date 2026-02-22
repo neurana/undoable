@@ -113,6 +113,46 @@ export class ChatMessages extends LitElement {
       opacity: 0.62;
       cursor: not-allowed;
     }
+    .skill-suggestion-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 2px;
+    }
+    .skill-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--border-strong);
+      background: var(--surface-1);
+      color: var(--text-secondary);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-family: var(--mono);
+      line-height: 1.2;
+    }
+    .skill-chip button {
+      border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+      background: color-mix(in srgb, var(--accent-subtle) 72%, white);
+      color: var(--accent);
+      border-radius: 999px;
+      height: 22px;
+      padding: 0 8px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 130ms ease;
+    }
+    .skill-chip button:hover {
+      background: color-mix(in srgb, var(--accent-subtle) 58%, white);
+    }
+    .skill-chip button:disabled {
+      opacity: 0.62;
+      cursor: not-allowed;
+    }
     .warning-mode {
       display: inline-flex;
       align-items: center;
@@ -160,6 +200,7 @@ export class ChatMessages extends LitElement {
   @property({ type: Boolean }) allowIrreversibleActions = false;
   @property({ type: Boolean }) allowIrreversibleOnceArmed = false;
   @property({ type: Boolean }) undoGuardApplying = false;
+  @property({ type: String }) installingSkillRef = "";
   @state() private playingMsgIndex = -1;
   @state() private collapsedTools = new Set<number>();
   @state() private approvalCountdowns = new Map<string, number>();
@@ -384,6 +425,27 @@ export class ChatMessages extends LitElement {
     );
   }
 
+  private extractSkillReferences(value: string): string[] {
+    const refs = new Set<string>();
+    const pattern = /([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+)/g;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(value)) !== null) {
+      const ref = match[1]?.trim();
+      if (ref) refs.add(ref);
+    }
+    return [...refs];
+  }
+
+  private emitInstallSkillSuggestion(reference: string) {
+    this.dispatchEvent(
+      new CustomEvent("install-skill-suggestion", {
+        detail: { reference },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
   private undoModeLabel(): string {
     if (this.allowIrreversibleOnceArmed) return "open once";
     return this.allowIrreversibleActions ? "open" : "strict";
@@ -567,6 +629,46 @@ export class ChatMessages extends LitElement {
                     Keep Strict
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      if (e.code === "skills_suggested") {
+        const suggestions =
+          e.suggestedSkills && e.suggestedSkills.length > 0
+            ? e.suggestedSkills
+            : this.extractSkillReferences(e.content);
+        return html`
+          <div class="msg-rail">
+            <div class="indent">
+              <div class="warning-card">
+                <div class="warning-title">Skill suggestions found</div>
+                <div class="warning-text">${e.content}</div>
+                ${e.recovery ? html`<div class="warning-text">${e.recovery}</div>` : nothing}
+                ${suggestions.length > 0
+                  ? html`
+                      <div class="skill-suggestion-list">
+                        ${suggestions.map(
+                          (reference) => html`
+                            <span class="skill-chip">
+                              <span>${reference}</span>
+                              <button
+                                @click=${() =>
+                                  this.emitInstallSkillSuggestion(reference)}
+                                ?disabled=${Boolean(this.installingSkillRef)}
+                                title="Explicitly approve and install this skill"
+                              >
+                                ${this.installingSkillRef === reference
+                                  ? "Installing..."
+                                  : "Approve & Install"}
+                              </button>
+                            </span>
+                          `,
+                        )}
+                      </div>
+                    `
+                  : nothing}
               </div>
             </div>
           </div>

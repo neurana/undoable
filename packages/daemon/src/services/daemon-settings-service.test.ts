@@ -9,6 +9,7 @@ const ORIGINAL_ENV = {
   NRN_PORT: process.env.NRN_PORT,
   UNDOABLE_TOKEN: process.env.UNDOABLE_TOKEN,
   UNDOABLE_SECURITY_POLICY: process.env.UNDOABLE_SECURITY_POLICY,
+  UNDOABLE_ALLOW_INSECURE_BIND_OPEN: process.env.UNDOABLE_ALLOW_INSECURE_BIND_OPEN,
 };
 const tempDirs: string[] = [];
 
@@ -17,6 +18,8 @@ function restoreEnv() {
   process.env.NRN_PORT = ORIGINAL_ENV.NRN_PORT;
   process.env.UNDOABLE_TOKEN = ORIGINAL_ENV.UNDOABLE_TOKEN;
   process.env.UNDOABLE_SECURITY_POLICY = ORIGINAL_ENV.UNDOABLE_SECURITY_POLICY;
+  process.env.UNDOABLE_ALLOW_INSECURE_BIND_OPEN =
+    ORIGINAL_ENV.UNDOABLE_ALLOW_INSECURE_BIND_OPEN;
 }
 
 async function createTempSettingsFile(): Promise<string> {
@@ -95,5 +98,17 @@ describe("DaemonSettingsService", () => {
     expect(snapshot.desired.operationReason).toBe("Maintenance window");
     expect(snapshot.effective.operationMode).toBe("paused");
     expect(snapshot.effective.operationReason).toBe("Maintenance window");
+  });
+
+  it("rejects open auth on non-loopback bind by default", async () => {
+    const settingsFile = await createTempSettingsFile();
+    const service = new DaemonSettingsService(settingsFile);
+
+    await expect(
+      service.update({
+        bindMode: "all",
+        authMode: "open",
+      }),
+    ).rejects.toThrow(/Refusing insecure daemon config/);
   });
 });

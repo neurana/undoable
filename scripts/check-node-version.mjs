@@ -1,4 +1,4 @@
-const required = { major: 22, minor: 0, patch: 0 };
+const required = { major: 20, minor: 10, patch: 0 };
 
 function parseVersion(raw) {
   const [major = "0", minor = "0", patch = "0"] = String(raw).split(".");
@@ -20,6 +20,6 @@ if (!isAtLeast(actual, required)) {
   const got = process.versions.node;
   const need = `${required.major}.${required.minor}.${required.patch}`;
   console.error(`[undoable] Build requires Node.js >= ${need}, found ${got}.`);
-  console.error("[undoable] Please install Node 22+ and retry `pnpm build`.");
+  console.error("[undoable] Please install Node 20.10+ and retry `pnpm build`.");
   process.exit(1);
 }

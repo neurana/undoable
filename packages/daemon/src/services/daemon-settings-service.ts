@@ -59,12 +59,27 @@ const SETTINGS_FILE = path.join(os.homedir(), ".undoable", "daemon-settings.json
 const DEFAULT_PORT = 7433;
 const LOOPBACK_HOST = "127.0.0.1";
 const ALL_INTERFACES_HOST = "0.0.0.0";
+const ALLOW_INSECURE_BIND_OPEN_ENV = "UNDOABLE_ALLOW_INSECURE_BIND_OPEN";
 
 function inferBindMode(host: string): DaemonBindMode {
   const normalized = host.trim();
   if (normalized === LOOPBACK_HOST || normalized === "localhost") return "loopback";
   if (normalized === ALL_INTERFACES_HOST) return "all";
   return "custom";
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return (
+    normalized === LOOPBACK_HOST ||
+    normalized === "localhost" ||
+    normalized === "::1"
+  );
+}
+
+function isNetworkExposed(bindMode: DaemonBindMode, host: string): boolean {
+  if (bindMode === "loopback") return false;
+  return !isLoopbackHost(host);
 }
 
 function inferSecurityPolicy(input: {
@@ -355,6 +370,17 @@ export class DaemonSettingsService {
       ...next,
       updatedAt: new Date().toISOString(),
     });
+
+    if (
+      record.authMode === "open" &&
+      isNetworkExposed(record.bindMode, record.host) &&
+      process.env[ALLOW_INSECURE_BIND_OPEN_ENV] !== "1"
+    ) {
+      throw new Error(
+        `Refusing insecure daemon config: authMode=open with bindMode=${record.bindMode}. ` +
+        `Use authMode=token, bindMode=loopback, or set ${ALLOW_INSECURE_BIND_OPEN_ENV}=1 for temporary local testing.`,
+      );
+    }
 
     if (record.authMode === "token" && !record.token.trim()) {
       record.token = generateToken();
