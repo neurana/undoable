@@ -448,6 +448,46 @@ setup_database() {
     local db_pass="undoable_dev"
     local -a pg_env=(env -u PGHOST -u PGPORT -u PGUSER -u PGPASSWORD -u PGDATABASE)
 
+    validate_bootstrap_login() {
+        PGPASSWORD="$db_pass" "${pg_env[@]}" psql -w -h localhost -U "$db_user" -d "$db_name" -c "SELECT 1;" >/dev/null 2>&1
+    }
+
+    recover_with_admin_credentials() {
+        if [[ ! -t 0 ]]; then
+            return 1
+        fi
+
+        ui_warn "Local PostgreSQL auth blocked automatic setup."
+        ui_info "Trying interactive recovery with PostgreSQL admin credentials"
+
+        local admin_user=""
+        local admin_pass=""
+        printf "PostgreSQL admin user [postgres]: "
+        read -r admin_user
+        admin_user="${admin_user:-postgres}"
+
+        printf "Password for PostgreSQL user '%s': " "$admin_user"
+        read -r -s admin_pass
+        echo ""
+
+        if [[ -z "$admin_pass" ]]; then
+            ui_warn "No password entered for PostgreSQL user '$admin_user'"
+            return 1
+        fi
+
+        if ! PGPASSWORD="$admin_pass" "${pg_env[@]}" psql -w -h localhost -U "$admin_user" -d postgres -c "SELECT 1;" >/dev/null 2>&1; then
+            ui_warn "Could not authenticate to PostgreSQL with user '$admin_user'"
+            return 1
+        fi
+
+        PGPASSWORD="$admin_pass" "${pg_env[@]}" psql -w -h localhost -U "$admin_user" -d postgres -c "CREATE DATABASE $db_name;" >/dev/null 2>&1 || true
+        PGPASSWORD="$admin_pass" "${pg_env[@]}" psql -w -h localhost -U "$admin_user" -d postgres -c "DO \$\$ BEGIN CREATE ROLE $db_user LOGIN PASSWORD '$db_pass'; EXCEPTION WHEN duplicate_object THEN ALTER ROLE $db_user WITH LOGIN PASSWORD '$db_pass'; END \$\$;" >/dev/null 2>&1 || true
+        PGPASSWORD="$admin_pass" "${pg_env[@]}" psql -w -h localhost -U "$admin_user" -d postgres -c "GRANT ALL PRIVILEGES ON DATABASE $db_name TO $db_user;" >/dev/null 2>&1 || true
+        PGPASSWORD="$admin_pass" "${pg_env[@]}" psql -w -h localhost -U "$admin_user" -d "$db_name" -c "GRANT ALL ON SCHEMA public TO $db_user;" >/dev/null 2>&1 || true
+
+        return 0
+    }
+
     if [[ "$OS" == "macos" ]]; then
         run_macos_psql_sql() {
             local db="$1"
@@ -528,10 +568,12 @@ setup_database() {
         run_postgres_sql "$db_name" "GRANT ALL ON SCHEMA public TO $db_user;"
     fi
 
-    if ! PGPASSWORD="$db_pass" "${pg_env[@]}" psql -w -h localhost -U "$db_user" -d "$db_name" -c "SELECT 1;" >/dev/null 2>&1; then
+    if ! validate_bootstrap_login; then
         if [[ -n "${DATABASE_URL:-}" ]] && database_url_has_explicit_credentials "${DATABASE_URL}"; then
             ui_warn "Could not validate login for bootstrap user '$db_user', but custom DATABASE_URL is set."
             ui_warn "Installer will continue using your DATABASE_URL."
+        elif recover_with_admin_credentials && validate_bootstrap_login; then
+            ui_success "Recovered PostgreSQL setup with provided admin credentials"
         else
             ui_error "Could not validate local PostgreSQL login for bootstrap user '$db_user'."
             echo "  Set a working DATABASE_URL and rerun with --skip-db, for example:"
