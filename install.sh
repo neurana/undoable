@@ -133,6 +133,15 @@ ui_celebrate() {
     echo -e "${SUCCESS}${BOLD}${msg}${NC}"
 }
 
+default_database_url() {
+    if [[ "$OS" == "macos" ]]; then
+        # Use local socket + current OS user on macOS to avoid interactive auth prompts.
+        echo "postgresql://localhost:5432/undoable"
+    else
+        echo "postgresql://undoable:undoable_dev@localhost:5432/undoable"
+    fi
+}
+
 is_root() {
     [[ "$(id -u)" -eq 0 ]]
 }
@@ -421,20 +430,38 @@ setup_database() {
     local db_name="undoable"
     local db_user="undoable"
     local db_pass="undoable_dev"
+    local -a pg_env=(env -u PGHOST -u PGPORT -u PGUSER -u PGPASSWORD -u PGDATABASE)
 
     if [[ "$OS" == "macos" ]]; then
-        # On macOS, default user is current user
-        if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw "$db_name"; then
-            createdb "$db_name" 2>/dev/null || true
-            ui_success "Database '$db_name' created"
+        list_databases_macos() {
+            if "${pg_env[@]}" psql -w -lqt 2>/dev/null; then
+                return 0
+            fi
+            if command -v sudo >/dev/null 2>&1; then
+                sudo -u postgres psql -w -lqt 2>/dev/null || true
+            fi
+            return 0
+        }
+
+        create_database_macos() {
+            if "${pg_env[@]}" createdb -w "$db_name" >/dev/null 2>&1; then
+                return 0
+            fi
+            if command -v sudo >/dev/null 2>&1; then
+                sudo -u postgres createdb -w "$db_name" >/dev/null 2>&1 && return 0
+            fi
+            return 1
+        }
+
+        if ! list_databases_macos | cut -d \| -f 1 | grep -qw "$db_name"; then
+            if create_database_macos; then
+                ui_success "Database '$db_name' created"
+            else
+                ui_warn "Could not auto-create database '$db_name' (check local PostgreSQL auth)"
+            fi
         else
             ui_info "Database '$db_name' already exists"
         fi
-
-        # Create user if not exists
-        psql -d "$db_name" -c "DO \$\$ BEGIN CREATE USER $db_user WITH PASSWORD '$db_pass'; EXCEPTION WHEN duplicate_object THEN NULL; END \$\$;" 2>/dev/null || true
-        psql -d "$db_name" -c "GRANT ALL PRIVILEGES ON DATABASE $db_name TO $db_user;" 2>/dev/null || true
-        psql -d "$db_name" -c "GRANT ALL ON SCHEMA public TO $db_user;" 2>/dev/null || true
 
     elif [[ "$OS" == "linux" ]]; then
         run_postgres_sql() {
@@ -562,6 +589,8 @@ EOF
 install_undoable_from_git() {
     local repo_dir="$1"
     local repo_url="https://github.com/neurana/undoable.git"
+    local db_url_default
+    db_url_default="$(default_database_url)"
 
     if [[ -d "$repo_dir/.git" ]]; then
         ui_info "Installing Undoable from git checkout: ${repo_dir}"
@@ -610,7 +639,7 @@ install_undoable_from_git() {
     # Create .env file if it doesn't exist
     if [[ ! -f "$repo_dir/.env" ]]; then
         cat > "$repo_dir/.env" <<ENVEOF
-DATABASE_URL=postgresql://undoable:undoable_dev@localhost:5432/undoable
+DATABASE_URL=${db_url_default}
 OPENAI_API_KEY=\${OPENAI_API_KEY:-}
 ENVEOF
         ui_success "Created .env file"
@@ -618,8 +647,8 @@ ENVEOF
 
     if [[ "$SKIP_DB" != "1" ]]; then
         ui_info "Applying database schema"
-        DATABASE_URL="${DATABASE_URL:-postgresql://undoable:undoable_dev@localhost:5432/undoable}" \
-          pnpm -C "$repo_dir" db:push
+        DATABASE_URL="${DATABASE_URL:-${db_url_default}}" \
+          pnpm -C "$repo_dir" exec drizzle-kit push --config=drizzle.config.mjs
         ui_success "Database schema applied"
     fi
 
@@ -630,7 +659,7 @@ ENVEOF
     cat > "$HOME/.local/bin/undoable" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-export DATABASE_URL="\${DATABASE_URL:-postgresql://undoable:undoable_dev@localhost:5432/undoable}"
+export DATABASE_URL="\${DATABASE_URL:-${db_url_default}}"
 cd "${repo_dir}"
 exec node dist/cli/index.mjs "\$@"
 EOF
@@ -640,7 +669,7 @@ EOF
     cat > "$HOME/.local/bin/nrn" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-export DATABASE_URL="\${DATABASE_URL:-postgresql://undoable:undoable_dev@localhost:5432/undoable}"
+export DATABASE_URL="\${DATABASE_URL:-${db_url_default}}"
 cd "${repo_dir}"
 exec node dist/cli/index.mjs "\$@"
 EOF
@@ -650,7 +679,7 @@ EOF
     cat > "$HOME/.local/bin/undoable-daemon" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-export DATABASE_URL="\${DATABASE_URL:-postgresql://undoable:undoable_dev@localhost:5432/undoable}"
+export DATABASE_URL="\${DATABASE_URL:-${db_url_default}}"
 cd "${repo_dir}"
 exec node dist/daemon/index.mjs "\$@"
 EOF
@@ -660,7 +689,7 @@ EOF
     cat > "$HOME/.local/bin/undoable-dev" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-export DATABASE_URL="\${DATABASE_URL:-postgresql://undoable:undoable_dev@localhost:5432/undoable}"
+export DATABASE_URL="\${DATABASE_URL:-${db_url_default}}"
 cd "${repo_dir}"
 exec ./dev.sh "\$@"
 EOF
@@ -850,12 +879,12 @@ ENVEOF
 
     ui_info "Applying database schema in daemon container"
     local attempt=0
-    until docker compose -f "$repo_dir/docker/docker-compose.yml" exec -T daemon pnpm db:push >/dev/null 2>&1; do
+    until docker compose -f "$repo_dir/docker/docker-compose.yml" exec -T daemon pnpm exec drizzle-kit push --config=drizzle.config.mjs >/dev/null 2>&1; do
         attempt=$((attempt + 1))
         if [[ "$attempt" -ge 10 ]]; then
             ui_error "Failed to apply database schema in daemon container"
             echo "  Try running manually:"
-            echo "  docker compose -f \"$repo_dir/docker/docker-compose.yml\" exec -T daemon pnpm db:push"
+            echo "  docker compose -f \"$repo_dir/docker/docker-compose.yml\" exec -T daemon pnpm exec drizzle-kit push --config=drizzle.config.mjs"
             exit 1
         fi
         sleep 2

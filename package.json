@@ -16,10 +16,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:generate": "drizzle-kit generate --config=drizzle.config.mjs",
+    "db:migrate": "drizzle-kit migrate --config=drizzle.config.mjs",
+    "db:push": "drizzle-kit push --config=drizzle.config.mjs",
+    "db:studio": "drizzle-kit studio --config=drizzle.config.mjs"
   },
   "devDependencies": {
     "@types/node": "^25.2.3",
@@ -34,6 +34,16 @@
     "node": ">=20.10.0"
   },
   "packageManager": "pnpm@10.23.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@whiskeysockets/baileys",
+      "cpu-features",
+      "esbuild",
+      "protobufjs",
+      "sharp",
+      "ssh2"
+    ]
+  },
   "dependencies": {
     "playwright": "^1.58.2"
   }
