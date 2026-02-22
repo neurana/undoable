@@ -40,6 +40,13 @@ type DaemonLaunchSettings = {
   securityPolicy: "strict" | "balanced" | "permissive";
 };
 
+type LaunchSpec = {
+  command: string;
+  args: string[];
+  requiresTsx: boolean;
+  source: "dist" | "tsx";
+};
+
 function parsePort(raw: string | undefined): number {
   const parsed = Number.parseInt(String(raw ?? DEFAULT_PORT), 10);
   if (!Number.isFinite(parsed) || parsed < 1 || parsed > 65535) {
@@ -147,6 +154,24 @@ function parseOptionalInt(raw: string | undefined, fallback: number): number {
 
 function resolveRootDir(): string {
   return path.resolve(MODULE_DIR, "../../../..");
+}
+
+function hasTsxLoader(rootDir: string): boolean {
+  return fs.existsSync(path.join(rootDir, "node_modules", "tsx", "dist", "loader.mjs"));
+}
+
+function resolveDaemonLaunch(rootDir: string): LaunchSpec {
+  const daemonDist = path.join(rootDir, "dist", "daemon", "index.mjs");
+  if (fs.existsSync(daemonDist)) {
+    return { command: "node", args: [daemonDist], requiresTsx: false, source: "dist" };
+  }
+  const daemonEntry = path.join(rootDir, "packages", "daemon", "src", "index.ts");
+  return {
+    command: "node",
+    args: ["--import", "tsx", daemonEntry],
+    requiresTsx: true,
+    source: "tsx",
+  };
 }
 
 function printServiceStatus(status: DaemonServiceStatus): void {
@@ -257,16 +282,24 @@ export function daemonCommand(): Command {
         }
 
         const rootDir = resolveRootDir();
-        const daemonEntry = path.join(rootDir, "packages/daemon/src/index.ts");
+        const daemonLaunch = resolveDaemonLaunch(rootDir);
+        const tsxAvailable = hasTsxLoader(rootDir);
+        if (daemonLaunch.requiresTsx && !tsxAvailable) {
+          throw new Error("Could not start daemon: tsx loader is missing. Run `pnpm install`.");
+        }
         const logFile = path.join(os.homedir(), ".undoable", "logs", "daemon.log");
         fs.mkdirSync(path.dirname(logFile), { recursive: true });
         const supervise = opts.supervise !== false;
+        const canSupervise = supervise && tsxAvailable;
         const maxRestarts = Math.max(0, parseOptionalInt(opts.maxRestarts, DEFAULT_MAX_RESTARTS));
         const restartDelayMs = Math.max(
           250,
           parseOptionalInt(opts.restartDelayMs, DEFAULT_RESTART_DELAY_MS),
         );
-        const child = supervise
+        if (supervise && !canSupervise && !opts.json) {
+          console.log("Supervisor requested, but tsx loader is unavailable; starting daemon without supervision.");
+        }
+        const child = canSupervise
           ? spawn(
               "node",
               ["--import", "tsx", path.join(rootDir, "packages/cli/src/commands/daemon-supervisor.ts")],
@@ -280,7 +313,8 @@ export function daemonCommand(): Command {
                   NRN_HOST: host,
                   UNDOABLE_TOKEN: token,
                   UNDOABLE_SECURITY_POLICY: securityPolicy,
-                  NRN_DAEMON_ENTRY: daemonEntry,
+                  NRN_DAEMON_COMMAND: daemonLaunch.command,
+                  NRN_DAEMON_ARGS: JSON.stringify(daemonLaunch.args),
                   NRN_DAEMON_CWD: rootDir,
                   NRN_DAEMON_LOG_FILE: logFile,
                   NRN_SUPERVISOR_MAX_RESTARTS: String(maxRestarts),
@@ -288,7 +322,7 @@ export function daemonCommand(): Command {
                 },
               },
             )
-          : spawn("node", ["--import", "tsx", daemonEntry], {
+          : spawn(daemonLaunch.command, daemonLaunch.args, {
               cwd: rootDir,
               detached: true,
               stdio: "ignore",
@@ -306,7 +340,7 @@ export function daemonCommand(): Command {
           pid: child.pid ?? -1,
           port,
           startedAt: new Date().toISOString(),
-          supervised: supervise,
+          supervised: canSupervise,
           logFile,
         };
 
@@ -330,6 +364,7 @@ export function daemonCommand(): Command {
           logFile: state.logFile,
           authMode,
           securityPolicy,
+          launchSource: daemonLaunch.source,
         };
 
         if (opts.json) {
@@ -338,7 +373,7 @@ export function daemonCommand(): Command {
         }
 
         if (healthy) {
-          const mode = supervise ? "supervised" : "direct";
+          const mode = canSupervise ? "supervised" : "direct";
           console.log(`Daemon started (pid ${state.pid}, ${mode}) at ${out.url} [host=${host}]`);
           console.log(`Auth: ${authMode}${authMode === "token" ? " (token required)" : " (open)"}`);
           console.log(`Security policy: ${securityPolicy}`);

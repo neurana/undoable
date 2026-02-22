@@ -134,12 +134,28 @@ ui_celebrate() {
 }
 
 default_database_url() {
-    if [[ "$OS" == "macos" ]]; then
-        # Use local socket + current OS user on macOS to avoid interactive auth prompts.
-        echo "postgresql://localhost:5432/undoable"
-    else
-        echo "postgresql://undoable:undoable_dev@localhost:5432/undoable"
+    echo "postgresql://undoable:undoable_dev@localhost:5432/undoable"
+}
+
+database_url_has_explicit_credentials() {
+    local url="$1"
+    [[ "$url" =~ ^postgres(ql)?://[^/@]+(:[^@]*)?@ ]]
+}
+
+resolve_effective_database_url() {
+    local fallback="$1"
+    local provided="${DATABASE_URL:-}"
+    if [[ -z "$provided" ]]; then
+        echo "$fallback"
+        return 0
     fi
+    if database_url_has_explicit_credentials "$provided"; then
+        echo "$provided"
+        return 0
+    fi
+    ui_warn "Ignoring DATABASE_URL without explicit username/password: $provided"
+    ui_warn "Using installer default DATABASE_URL (undoable@localhost) instead."
+    echo "$fallback"
 }
 
 is_root() {
@@ -433,11 +449,23 @@ setup_database() {
     local -a pg_env=(env -u PGHOST -u PGPORT -u PGUSER -u PGPASSWORD -u PGDATABASE)
 
     if [[ "$OS" == "macos" ]]; then
+        run_macos_psql_sql() {
+            local db="$1"
+            local sql="$2"
+            if "${pg_env[@]}" psql -w -d "$db" -c "$sql" >/dev/null 2>&1; then
+                return 0
+            fi
+            if command -v sudo >/dev/null 2>&1 && id postgres >/dev/null 2>&1; then
+                sudo -u postgres psql -w -d "$db" -c "$sql" >/dev/null 2>&1 && return 0
+            fi
+            return 1
+        }
+
         list_databases_macos() {
             if "${pg_env[@]}" psql -w -lqt 2>/dev/null; then
                 return 0
             fi
-            if command -v sudo >/dev/null 2>&1; then
+            if command -v sudo >/dev/null 2>&1 && id postgres >/dev/null 2>&1; then
                 sudo -u postgres psql -w -lqt 2>/dev/null || true
             fi
             return 0
@@ -447,7 +475,7 @@ setup_database() {
             if "${pg_env[@]}" createdb -w "$db_name" >/dev/null 2>&1; then
                 return 0
             fi
-            if command -v sudo >/dev/null 2>&1; then
+            if command -v sudo >/dev/null 2>&1 && id postgres >/dev/null 2>&1; then
                 sudo -u postgres createdb -w "$db_name" >/dev/null 2>&1 && return 0
             fi
             return 1
@@ -462,6 +490,10 @@ setup_database() {
         else
             ui_info "Database '$db_name' already exists"
         fi
+
+        run_macos_psql_sql "postgres" "DO \$\$ BEGIN CREATE ROLE $db_user LOGIN PASSWORD '$db_pass'; EXCEPTION WHEN duplicate_object THEN ALTER ROLE $db_user WITH LOGIN PASSWORD '$db_pass'; END \$\$;" || true
+        run_macos_psql_sql "postgres" "GRANT ALL PRIVILEGES ON DATABASE $db_name TO $db_user;" || true
+        run_macos_psql_sql "$db_name" "GRANT ALL ON SCHEMA public TO $db_user;" || true
 
     elif [[ "$OS" == "linux" ]]; then
         run_postgres_sql() {
@@ -494,6 +526,18 @@ setup_database() {
         run_postgres_sql "postgres" "DO \$\$ BEGIN CREATE USER $db_user WITH PASSWORD '$db_pass'; EXCEPTION WHEN duplicate_object THEN NULL; END \$\$;"
         run_postgres_sql "postgres" "GRANT ALL PRIVILEGES ON DATABASE $db_name TO $db_user;"
         run_postgres_sql "$db_name" "GRANT ALL ON SCHEMA public TO $db_user;"
+    fi
+
+    if ! PGPASSWORD="$db_pass" "${pg_env[@]}" psql -w -h localhost -U "$db_user" -d "$db_name" -c "SELECT 1;" >/dev/null 2>&1; then
+        if [[ -n "${DATABASE_URL:-}" ]] && database_url_has_explicit_credentials "${DATABASE_URL}"; then
+            ui_warn "Could not validate login for bootstrap user '$db_user', but custom DATABASE_URL is set."
+            ui_warn "Installer will continue using your DATABASE_URL."
+        else
+            ui_error "Could not validate local PostgreSQL login for bootstrap user '$db_user'."
+            echo "  Set a working DATABASE_URL and rerun with --skip-db, for example:"
+            echo "  DATABASE_URL='postgresql://<user>:<pass>@localhost:5432/${db_name}' curl -fsSL https://raw.githubusercontent.com/neurana/undoable/main/install.sh | bash -s -- --skip-db"
+            exit 1
+        fi
     fi
 
     ui_success "Database setup complete"
@@ -590,7 +634,9 @@ install_undoable_from_git() {
     local repo_dir="$1"
     local repo_url="https://github.com/neurana/undoable.git"
     local db_url_default
+    local db_url_effective
     db_url_default="$(default_database_url)"
+    db_url_effective="$(resolve_effective_database_url "$db_url_default")"
 
     if [[ -d "$repo_dir/.git" ]]; then
         ui_info "Installing Undoable from git checkout: ${repo_dir}"
@@ -647,7 +693,7 @@ ENVEOF
 
     if [[ "$SKIP_DB" != "1" ]]; then
         ui_info "Applying database schema"
-        DATABASE_URL="${DATABASE_URL:-${db_url_default}}" \
+        DATABASE_URL="${db_url_effective}" \
           pnpm -C "$repo_dir" exec drizzle-kit push --config=drizzle.config.mjs
         ui_success "Database schema applied"
     fi
@@ -766,6 +812,7 @@ show_install_plan() {
             ui_kv "Database setup" "skipped"
         else
             ui_kv "Database" "PostgreSQL (local)"
+            ui_kv "DB bootstrap user" "undoable"
         fi
     fi
     if [[ "$DRY_RUN" == "1" ]]; then
@@ -916,7 +963,7 @@ Environment variables:
   UNDOABLE_SKIP_DB=0|1        Skip database setup (default: 0)
   UNDOABLE_DRY_RUN=1          Dry run mode
   UNDOABLE_VERBOSE=1          Verbose output
-  DATABASE_URL=...            PostgreSQL connection string
+  DATABASE_URL=...            PostgreSQL connection string (must include username; password recommended)
 
 Examples:
   curl -fsSL https://undoable.xyz/install.sh | bash

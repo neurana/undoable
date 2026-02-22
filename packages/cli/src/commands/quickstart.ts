@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createClackPrompter } from "../wizard/clack-prompter.js";
 import { runNonInteractiveOnboard } from "./onboard.js";
@@ -55,10 +56,14 @@ async function resolveRiskAck(opts: QuickstartOptions): Promise<boolean> {
 
 function startDaemon(port: number) {
   const rootDir = path.resolve(MODULE_DIR, "../../../..");
-  const cliEntry = path.join(rootDir, "packages/cli/src/index.ts");
+  const cliDist = path.join(rootDir, "dist", "cli", "index.mjs");
+  const cliEntry = path.join(rootDir, "packages", "cli", "src", "index.ts");
+  const spawnArgs = fs.existsSync(cliDist)
+    ? [cliDist, "daemon", "start", "--port", String(port)]
+    : ["--import", "tsx", cliEntry, "daemon", "start", "--port", String(port)];
   const result = spawnSync(
     "node",
-    ["--import", "tsx", cliEntry, "daemon", "start", "--port", String(port)],
+    spawnArgs,
     {
       cwd: rootDir,
       env: process.env,

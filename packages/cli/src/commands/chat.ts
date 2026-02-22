@@ -118,6 +118,25 @@ function isLocalDaemonUrl(baseUrl: string): boolean {
   }
 }
 
+type LaunchSpec = {
+  command: string;
+  args: string[];
+  requiresTsx: boolean;
+};
+
+function hasTsxLoader(rootDir: string): boolean {
+  return fs.existsSync(path.join(rootDir, "node_modules", "tsx", "dist", "loader.mjs"));
+}
+
+function resolveDaemonLaunch(rootDir: string): LaunchSpec {
+  const daemonDist = path.join(rootDir, "dist", "daemon", "index.mjs");
+  if (fs.existsSync(daemonDist)) {
+    return { command: "node", args: [daemonDist], requiresTsx: false };
+  }
+  const daemonEntry = path.join(rootDir, "packages", "daemon", "src", "index.ts");
+  return { command: "node", args: ["--import", "tsx", daemonEntry], requiresTsx: true };
+}
+
 async function checkDaemonHealth(baseUrl: string): Promise<boolean> {
   try {
     const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(1200) });
@@ -148,8 +167,12 @@ async function ensureLocalDaemon(baseUrl: string): Promise<void> {
   }
 
   const rootDir = path.resolve(MODULE_DIR, "../../../..");
-  const daemonEntry = path.join(rootDir, "packages/daemon/src/index.ts");
-  const child = spawn("node", ["--import", "tsx", daemonEntry], {
+  const launch = resolveDaemonLaunch(rootDir);
+  if (launch.requiresTsx && !hasTsxLoader(rootDir)) {
+    throw new Error("Could not auto-start daemon: tsx loader is missing. Run `pnpm install` first.");
+  }
+
+  const child = spawn(launch.command, launch.args, {
     cwd: rootDir,
     detached: true,
     stdio: "ignore",
