@@ -1,24 +1,52 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+NODE_BIN="$ROOT/node_modules/.bin"
+TSX_BIN="$NODE_BIN/tsx"
+VITE_BIN="$NODE_BIN/vite"
+DAEMON_DIST="$ROOT/dist/daemon/index.mjs"
 
 cleanup() {
   echo ""
   echo "Shutting down..."
-  kill $DAEMON_PID $VITE_PID 2>/dev/null || true
-  wait $DAEMON_PID $VITE_PID 2>/dev/null || true
+  local pids=()
+  if [[ -n "${DAEMON_PID:-}" ]]; then
+    kill "$DAEMON_PID" 2>/dev/null || true
+    pids+=("$DAEMON_PID")
+  fi
+  if [[ -n "${VITE_PID:-}" ]]; then
+    kill "$VITE_PID" 2>/dev/null || true
+    pids+=("$VITE_PID")
+  fi
+  if [[ "${#pids[@]}" -gt 0 ]]; then
+    wait "${pids[@]}" 2>/dev/null || true
+  fi
   echo "Done."
 }
 trap cleanup EXIT INT TERM
 
 echo "Starting Undoable daemon on :7433..."
-npx tsx "$ROOT/packages/daemon/src/index.ts" &
+if [[ -x "$TSX_BIN" ]]; then
+  "$TSX_BIN" "$ROOT/packages/daemon/src/index.ts" &
+elif [[ -f "$DAEMON_DIST" ]]; then
+  node "$DAEMON_DIST" &
+else
+  echo "Could not start daemon: missing tsx and missing built dist daemon."
+  echo "Run: pnpm -C \"$ROOT\" install && pnpm -C \"$ROOT\" build"
+  exit 1
+fi
 DAEMON_PID=$!
 sleep 1
 
 echo "Starting Vite UI on :5173..."
-npx vite --port 5173 --config "$ROOT/ui/vite.config.ts" "$ROOT/ui" &
+if [[ -x "$VITE_BIN" ]]; then
+  "$VITE_BIN" --port 5173 --config "$ROOT/ui/vite.config.ts" "$ROOT/ui" &
+else
+  echo "Could not start UI: vite binary not found at $VITE_BIN."
+  echo "Run: pnpm -C \"$ROOT\" install"
+  exit 1
+fi
 VITE_PID=$!
 sleep 1
 

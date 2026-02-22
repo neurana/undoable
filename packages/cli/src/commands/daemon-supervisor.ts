@@ -20,7 +20,26 @@ function resolveRequiredEnv(name: string): string {
   return value;
 }
 
-const daemonEntry = resolveRequiredEnv("NRN_DAEMON_ENTRY");
+function resolveDaemonCommand(): { command: string; args: string[] } {
+  const command = process.env.NRN_DAEMON_COMMAND?.trim() || "node";
+  const rawArgs = process.env.NRN_DAEMON_ARGS?.trim();
+  if (rawArgs) {
+    try {
+      const parsed = JSON.parse(rawArgs) as unknown;
+      if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+        return { command, args: parsed };
+      }
+      throw new Error("NRN_DAEMON_ARGS must be a JSON string[]");
+    } catch (err) {
+      throw new Error(`Invalid NRN_DAEMON_ARGS: ${String(err)}`);
+    }
+  }
+
+  const daemonEntry = resolveRequiredEnv("NRN_DAEMON_ENTRY");
+  return { command, args: ["--import", "tsx", daemonEntry] };
+}
+
+const daemonLaunch = resolveDaemonCommand();
 const daemonCwd = process.env.NRN_DAEMON_CWD?.trim() || process.cwd();
 const daemonPort = process.env.NRN_PORT?.trim() || "7433";
 const restartDelayMs = Math.max(
@@ -110,7 +129,7 @@ function onChildExit(
 function startChild(): void {
   if (shuttingDown) return;
 
-  const child = spawn("node", ["--import", "tsx", daemonEntry], {
+  const child = spawn(daemonLaunch.command, daemonLaunch.args, {
     cwd: daemonCwd,
     env: {
       ...process.env,
@@ -165,6 +184,6 @@ process.on("unhandledRejection", (reason) => {
 });
 
 writeLog(
-  `boot daemonEntry=${daemonEntry} port=${daemonPort} restartDelayMs=${restartDelayMs} maxRestarts=${maxRestarts}`,
+  `boot daemon=${daemonLaunch.command} args=${JSON.stringify(daemonLaunch.args)} port=${daemonPort} restartDelayMs=${restartDelayMs} maxRestarts=${maxRestarts}`,
 );
 startChild();

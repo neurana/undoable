@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,6 +8,31 @@ const GREEN = "\x1b[32m";
 const BOLD = "\x1b[1m";
 const NC = "\x1b[0m";
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+type LaunchSpec = {
+  command: string;
+  args: string[];
+  requiresTsx: boolean;
+};
+
+function hasTsxLoader(rootDir: string): boolean {
+  return fs.existsSync(path.join(rootDir, "node_modules", "tsx", "dist", "loader.mjs"));
+}
+
+function resolveDaemonLaunch(rootDir: string): LaunchSpec {
+  const daemonDist = path.join(rootDir, "dist", "daemon", "index.mjs");
+  if (fs.existsSync(daemonDist)) {
+    return { command: "node", args: [daemonDist], requiresTsx: false };
+  }
+  const daemonEntry = path.join(rootDir, "packages", "daemon", "src", "index.ts");
+  return { command: "node", args: ["--import", "tsx", daemonEntry], requiresTsx: true };
+}
+
+function resolveViteBin(rootDir: string): string | null {
+  const binName = process.platform === "win32" ? "vite.cmd" : "vite";
+  const viteBin = path.join(rootDir, "node_modules", ".bin", binName);
+  return fs.existsSync(viteBin) ? viteBin : null;
+}
 
 export function startCommand(): Command {
   return new Command("start")
@@ -20,8 +46,14 @@ export function startCommand(): Command {
     .option("--dangerously-skip-permissions", "Skip all permission checks (autonomous mode)")
     .action((opts) => {
       const rootDir = path.resolve(MODULE_DIR, "../../../..");
-      const daemonEntry = path.join(rootDir, "packages/daemon/src/index.ts");
       const uiDir = path.join(rootDir, "ui");
+      const daemonLaunch = resolveDaemonLaunch(rootDir);
+      const tsxAvailable = hasTsxLoader(rootDir);
+      if (daemonLaunch.requiresTsx && !tsxAvailable) {
+        console.error("Could not start daemon: tsx loader is missing.");
+        console.error(`Run: pnpm -C "${rootDir}" install`);
+        process.exit(1);
+      }
 
       const children: ReturnType<typeof spawn>[] = [];
       let shuttingDown = false;
@@ -57,7 +89,7 @@ export function startCommand(): Command {
       if (opts.economy) daemonEnv.UNDOABLE_ECONOMY_MODE = "1";
       if (opts.dangerouslySkipPermissions) daemonEnv.UNDOABLE_DANGEROUSLY_SKIP_PERMISSIONS = "1";
 
-      const daemonProc = spawn("node", ["--import", "tsx", daemonEntry], {
+      const daemonProc = spawn(daemonLaunch.command, daemonLaunch.args, {
         cwd: rootDir,
         stdio: "inherit",
         env: daemonEnv,
@@ -65,12 +97,29 @@ export function startCommand(): Command {
       children.push(daemonProc);
 
       if (opts.ui !== false) {
-        const viteProc = spawn("npx", ["vite", "--port", opts.uiPort], {
-          cwd: uiDir,
-          stdio: "inherit",
-          env: process.env,
-        });
+        const viteBin = resolveViteBin(rootDir);
+        if (!viteBin) {
+          console.error("Could not start UI: local Vite binary is missing.");
+          console.error(`Run: pnpm -C "${rootDir}" install`);
+          shutdown(1);
+          return;
+        }
+        const viteProc = spawn(
+          viteBin,
+          ["--port", opts.uiPort, "--config", path.join(uiDir, "vite.config.ts"), uiDir],
+          {
+            cwd: rootDir,
+            stdio: "inherit",
+            env: process.env,
+          },
+        );
         children.push(viteProc);
+
+        viteProc.on("error", (err) => {
+          if (shuttingDown) return;
+          console.error(`Failed to start UI process: ${String(err)}`);
+          shutdown(1);
+        });
 
         viteProc.on("exit", (code) => {
           if (shuttingDown) return;
@@ -80,6 +129,12 @@ export function startCommand(): Command {
           shutdown(code ?? 0);
         });
       }
+
+      daemonProc.on("error", (err) => {
+        if (shuttingDown) return;
+        console.error(`Failed to start daemon process: ${String(err)}`);
+        shutdown(1);
+      });
 
       console.log("");
       console.log(`${BOLD}====================================${NC}`);
