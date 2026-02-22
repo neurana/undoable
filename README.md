@@ -417,7 +417,10 @@ cp .env.example .env
 Minimal required:
 
 ```bash
-DATABASE_URL=postgresql://undoable:undoable_dev@localhost:5432/undoable
+# macOS local default
+DATABASE_URL=postgresql://localhost:5432/undoable
+# Linux bootstrap default
+# DATABASE_URL=postgresql://undoable:undoable_dev@localhost:5432/undoable
 OPENAI_API_KEY=sk-...
 ```
 
