@@ -1,3 +1,4 @@
+import { bootstrapApiAccessTokenBridge } from "./api/access-token-bridge.js";
 import "./components/app.js";
 import "./components/chat.js";
 import "./components/run-detail.js";
@@ -11,3 +12,5 @@ import "./components/channels.js";
 import "./components/swarm-page.js";
 import "./components/sessions.js";
 import "./components/settings-page.js";
+
+bootstrapApiAccessTokenBridge();
