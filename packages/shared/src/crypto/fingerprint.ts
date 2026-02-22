@@ -9,7 +9,7 @@ export function computeFingerprint(params: {
 }): string {
   const canonical = JSON.stringify({
     plan: params.plan,
-    capabilities: params.capabilities.toSorted(),
+    capabilities: [...params.capabilities].sort(),
     engineVersion: params.engineVersion,
     diffHash: params.diffHash ?? "",
   });
