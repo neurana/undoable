@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 NODE_BIN="$ROOT/node_modules/.bin"
 TSX_BIN="$NODE_BIN/tsx"
 VITE_BIN="$NODE_BIN/vite"
+UI_VITE_BIN="$ROOT/ui/node_modules/.bin/vite"
 DAEMON_DIST="$ROOT/dist/daemon/index.mjs"
 
 cleanup() {
@@ -42,8 +43,12 @@ sleep 1
 echo "Starting Vite UI on :5173..."
 if [[ -x "$VITE_BIN" ]]; then
   "$VITE_BIN" --port 5173 --config "$ROOT/ui/vite.config.ts" "$ROOT/ui" &
+elif [[ -x "$UI_VITE_BIN" ]]; then
+  "$UI_VITE_BIN" --port 5173 --config "$ROOT/ui/vite.config.ts" "$ROOT/ui" &
+elif command -v pnpm >/dev/null 2>&1; then
+  pnpm -C "$ROOT/ui" exec vite --port 5173 --config "$ROOT/ui/vite.config.ts" "$ROOT/ui" &
 else
-  echo "Could not start UI: vite binary not found at $VITE_BIN."
+  echo "Could not start UI: Vite binary not found in root or ui workspace."
   echo "Run: pnpm -C \"$ROOT\" install"
   exit 1
 fi
