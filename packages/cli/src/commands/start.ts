@@ -15,6 +15,12 @@ type LaunchSpec = {
   requiresTsx: boolean;
 };
 
+type UiLaunchSpec = {
+  command: string;
+  args: string[];
+  source: "root-bin" | "ui-bin" | "pnpm-exec";
+};
+
 function hasTsxLoader(rootDir: string): boolean {
   return fs.existsSync(path.join(rootDir, "node_modules", "tsx", "dist", "loader.mjs"));
 }
@@ -28,10 +34,31 @@ function resolveDaemonLaunch(rootDir: string): LaunchSpec {
   return { command: "node", args: ["--import", "tsx", daemonEntry], requiresTsx: true };
 }
 
-function resolveViteBin(rootDir: string): string | null {
+function resolveViteLaunch(rootDir: string, uiDir: string, uiPort: string): UiLaunchSpec {
   const binName = process.platform === "win32" ? "vite.cmd" : "vite";
-  const viteBin = path.join(rootDir, "node_modules", ".bin", binName);
-  return fs.existsSync(viteBin) ? viteBin : null;
+  const rootBin = path.join(rootDir, "node_modules", ".bin", binName);
+  if (fs.existsSync(rootBin)) {
+    return {
+      command: rootBin,
+      args: ["--port", uiPort, "--config", path.join(uiDir, "vite.config.ts"), uiDir],
+      source: "root-bin",
+    };
+  }
+
+  const uiBin = path.join(uiDir, "node_modules", ".bin", binName);
+  if (fs.existsSync(uiBin)) {
+    return {
+      command: uiBin,
+      args: ["--port", uiPort, "--config", path.join(uiDir, "vite.config.ts"), uiDir],
+      source: "ui-bin",
+    };
+  }
+
+  return {
+    command: "pnpm",
+    args: ["-C", uiDir, "exec", "vite", "--port", uiPort, "--config", path.join(uiDir, "vite.config.ts"), uiDir],
+    source: "pnpm-exec",
+  };
 }
 
 export function startCommand(): Command {
@@ -97,27 +124,22 @@ export function startCommand(): Command {
       children.push(daemonProc);
 
       if (opts.ui !== false) {
-        const viteBin = resolveViteBin(rootDir);
-        if (!viteBin) {
-          console.error("Could not start UI: local Vite binary is missing.");
-          console.error(`Run: pnpm -C "${rootDir}" install`);
-          shutdown(1);
-          return;
-        }
-        const viteProc = spawn(
-          viteBin,
-          ["--port", opts.uiPort, "--config", path.join(uiDir, "vite.config.ts"), uiDir],
-          {
-            cwd: rootDir,
-            stdio: "inherit",
-            env: process.env,
-          },
-        );
+        const viteLaunch = resolveViteLaunch(rootDir, uiDir, String(opts.uiPort));
+        const viteProc = spawn(viteLaunch.command, viteLaunch.args, {
+          cwd: rootDir,
+          stdio: "inherit",
+          env: process.env,
+        });
         children.push(viteProc);
 
         viteProc.on("error", (err) => {
           if (shuttingDown) return;
-          console.error(`Failed to start UI process: ${String(err)}`);
+          if ((err as NodeJS.ErrnoException).code === "ENOENT" && viteLaunch.source === "pnpm-exec") {
+            console.error("Could not start UI: `pnpm` was not found on PATH.");
+            console.error("Install pnpm, or run `pnpm -C \"<undoable-root>\" install` first.");
+          } else {
+            console.error(`Failed to start UI process: ${String(err)}`);
+          }
           shutdown(1);
         });
 
