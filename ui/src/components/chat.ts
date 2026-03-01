@@ -14,6 +14,7 @@ import "./chat-messages.js";
 import "./chat-settings.js";
 import "./canvas-panel.js";
 import "./swarm-panel.js";
+import "./browser-live-panel.js";
 import "./swarm-ants-overlay.js";
 import { api, type UndoActionSummary } from "../api/client.js";
 
@@ -565,6 +566,40 @@ export class UndoableChat extends LitElement {
         stroke-width: 1.7;
         fill: none;
       }
+      .btn-browser {
+        height: 30px;
+        padding: 0 10px;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--border-strong);
+        background: var(--surface-1);
+        color: var(--text-secondary);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        flex-shrink: 0;
+      }
+      .btn-browser:hover {
+        background: var(--wash);
+        color: var(--text-primary);
+        border-color: var(--mint-strong);
+      }
+      .btn-browser.active {
+        background: var(--accent-subtle);
+        color: var(--dark);
+        border-color: var(--mint-strong);
+        box-shadow: inset 0 0 0 1px rgba(46, 69, 57, 0.14);
+      }
+      .btn-browser svg {
+        width: 14px;
+        height: 14px;
+        stroke: currentColor;
+        stroke-width: 1.7;
+        fill: none;
+      }
       .btn-swarm-mode {
         position: relative;
         isolation: isolate;
@@ -718,6 +753,45 @@ export class UndoableChat extends LitElement {
         padding: 10px 12px 10px 12px;
         pointer-events: auto;
       }
+      .browser-shell {
+        position: relative;
+        flex-shrink: 0;
+        width: 0;
+        min-width: 0;
+        opacity: 0;
+        transform: translateX(20px) scale(0.96);
+        transform-origin: right center;
+        margin: 0;
+        padding: 10px 0 10px 0;
+        box-sizing: border-box;
+        border-left: 1px solid transparent;
+        background: var(--bg-base);
+        overflow: hidden;
+        pointer-events: none;
+        transition:
+          width 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
+          opacity 220ms ease,
+          transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
+          border-color 180ms ease,
+          margin 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
+          padding 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      .browser-shell.open {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+        border-left-color: var(--border-divider);
+        margin-left: 8px;
+        padding: 10px 12px 10px 12px;
+        pointer-events: auto;
+      }
+      .browser-shell-frame {
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 10px 28px rgba(17, 26, 23, 0.08);
+      }
       .resize-handle {
         position: absolute;
         left: -8px;
@@ -755,7 +829,8 @@ export class UndoableChat extends LitElement {
         box-shadow: 0 0 8px rgba(46, 69, 57, 0.25);
       }
       .canvas-shell.resizing,
-      .swarm-shell.resizing {
+      .swarm-shell.resizing,
+      .browser-shell.resizing {
         transition: none;
       }
       .swarm-shell-frame {
@@ -791,6 +866,16 @@ export class UndoableChat extends LitElement {
           display: none;
         }
         .btn-canvas {
+          width: 32px;
+          height: 32px;
+          justify-content: center;
+          padding: 0;
+          border-radius: 8px;
+        }
+        .btn-browser span {
+          display: none;
+        }
+        .btn-browser {
           width: 32px;
           height: 32px;
           justify-content: center;
@@ -872,6 +957,29 @@ export class UndoableChat extends LitElement {
           padding: 4px;
         }
         .swarm-shell-frame {
+          box-shadow: 0 14px 30px rgba(17, 26, 23, 0.18);
+        }
+        .browser-shell {
+          position: absolute;
+          right: 8px;
+          top: 8px;
+          bottom: 8px;
+          width: min(90vw, 460px);
+          border-left: none;
+          border: 1px solid transparent;
+          border-radius: 14px;
+          background: color-mix(in srgb, var(--bg-base) 92%, transparent);
+          backdrop-filter: blur(3px);
+          margin-left: 0;
+          padding: 0;
+        }
+        .browser-shell.open {
+          width: min(90vw, 460px);
+          border-color: var(--border-divider);
+          margin-left: 0;
+          padding: 6px;
+        }
+        .browser-shell-frame {
           box-shadow: 0 14px 30px rgba(17, 26, 23, 0.18);
         }
       }
@@ -1032,6 +1140,7 @@ export class UndoableChat extends LitElement {
   @state() private canvasUrl = "";
   @state() private canvasFrames: string[] = [];
   @state() private swarmOpen = false;
+  @state() private browserOpen = false;
   @state() private swarmMode = false;
   @state() private panelWidth = 0;
   @state() private showMaxIterDialog = false;
@@ -1447,8 +1556,19 @@ export class UndoableChat extends LitElement {
     }
   }
 
+  private ensureBrowserPanelWidth() {
+    const minBrowserWidth = 360;
+    const defaultBrowserWidth = Math.round(
+      Math.min(window.innerWidth * 0.52, 760),
+    );
+    if (!this.panelWidth || this.panelWidth < minBrowserWidth) {
+      this.panelWidth = Math.max(minBrowserWidth, defaultBrowserWidth);
+    }
+  }
+
   private openCanvasPanelFromAgent() {
     this.swarmOpen = false;
+    this.browserOpen = false;
     this.ensureCanvasHostSurface();
     this.canvasOpen = true;
     this.ensureCanvasPanelWidth();
@@ -1517,6 +1637,7 @@ export class UndoableChat extends LitElement {
   private applySwarmFromToolName(name: string, phase: "call" | "result" = "call") {
     if (!this.isSwarmToolName(name)) return;
     this.canvasOpen = false;
+    this.browserOpen = false;
     this.swarmOpen = true;
     this.ensureSwarmPanelWidth();
     if (phase === "result" && this.isSwarmMutationToolName(name)) {
@@ -1602,8 +1723,30 @@ export class UndoableChat extends LitElement {
     }
   }
 
+  private applyBrowserFromToolCall(name: string, args: Record<string, unknown>) {
+    if (name !== "browser") return;
+    const action = typeof args.action === "string" ? args.action : "";
+    const opensSurface = new Set([
+      "navigate",
+      "openTab",
+      "focusTab",
+      "click",
+      "type",
+      "scroll",
+      "waitForSelector",
+    ]);
+    if (!opensSurface.has(action)) return;
+    this.canvasOpen = false;
+    this.swarmOpen = false;
+    this.browserOpen = true;
+    this.ensureBrowserPanelWidth();
+  }
+
   private toggleCanvas = () => {
-    if (!this.canvasOpen) this.swarmOpen = false;
+    if (!this.canvasOpen) {
+      this.swarmOpen = false;
+      this.browserOpen = false;
+    }
     this.canvasOpen = !this.canvasOpen;
     if (this.canvasOpen) {
       this.ensureCanvasHostSurface();
@@ -1612,9 +1755,21 @@ export class UndoableChat extends LitElement {
   };
 
   private toggleSwarm = () => {
-    if (!this.swarmOpen) this.canvasOpen = false;
+    if (!this.swarmOpen) {
+      this.canvasOpen = false;
+      this.browserOpen = false;
+    }
     this.swarmOpen = !this.swarmOpen;
     if (this.swarmOpen) this.ensureSwarmPanelWidth();
+  };
+
+  private toggleBrowser = () => {
+    if (!this.browserOpen) {
+      this.canvasOpen = false;
+      this.swarmOpen = false;
+    }
+    this.browserOpen = !this.browserOpen;
+    if (this.browserOpen) this.ensureBrowserPanelWidth();
   };
 
   private toggleSwarmMode = () => {
@@ -1639,7 +1794,9 @@ export class UndoableChat extends LitElement {
     const rect = chatContent.getBoundingClientRect();
     const minWidth = this.swarmOpen
       ? Math.min(520, Math.max(360, rect.width - 220))
-      : 320;
+      : this.browserOpen
+        ? 360
+        : 320;
     const maxWidth = Math.max(
       minWidth,
       rect.width - (this.swarmOpen ? 140 : 200),
@@ -1799,6 +1956,7 @@ export class UndoableChat extends LitElement {
           } catch {}
           this.applySwarmFromToolName(tc.function.name);
           this.applyCanvasFromToolCall(tc.function.name, args);
+          this.applyBrowserFromToolCall(tc.function.name, args);
           entries.push({ kind: "tool_call", name: tc.function.name, args });
         }
       } else if (msg.role === "tool" && msg.content) {
@@ -2200,6 +2358,7 @@ export class UndoableChat extends LitElement {
               }
               this.applySwarmFromToolName(evt.name ?? "");
               this.applyCanvasFromToolCall(evt.name ?? "", evt.args ?? {});
+              this.applyBrowserFromToolCall(evt.name ?? "", evt.args ?? {});
               this.entries = [
                 ...this.entries,
                 {
@@ -2796,6 +2955,23 @@ export class UndoableChat extends LitElement {
                 </svg>
                 <span>Canvas</span>
               </button>
+              <button
+                class="btn-browser ${this.browserOpen ? "active" : ""}"
+                @click=${this.toggleBrowser}
+                title=${this.browserOpen
+                  ? "Hide live browser monitor"
+                  : "Show live browser monitor"}
+              >
+                <svg viewBox="0 0 24 24">
+                  <rect x="2.5" y="3.5" width="19" height="14" rx="2" />
+                  <path d="M2.5 8.5h19" />
+                  <circle cx="6" cy="6" r="0.8" fill="currentColor" stroke="none" />
+                  <circle cx="9" cy="6" r="0.8" fill="currentColor" stroke="none" />
+                  <circle cx="12" cy="6" r="0.8" fill="currentColor" stroke="none" />
+                  <path d="M8 20.5h8" />
+                </svg>
+                <span>Browser</span>
+              </button>
             </div>
             <button
               class="btn-swarm-mode ${this.swarmMode ? "active" : ""}"
@@ -3132,6 +3308,28 @@ export class UndoableChat extends LitElement {
                   this.emitNavigate(e.detail);
                 }}
               ></swarm-panel>
+            </div>
+          </aside>
+
+          <aside
+            class="browser-shell ${this.browserOpen ? "open" : ""} ${this.resizing
+              ? "resizing"
+              : ""}"
+            style=${this.browserOpen ? `width:${this.panelWidth}px` : ""}
+          >
+            <div
+              class="resize-handle ${this.resizing ? "active" : ""}"
+              @pointerdown=${this.onResizePointerDown}
+              @pointermove=${this.onResizePointerMove}
+              @pointerup=${this.onResizePointerUp}
+            ></div>
+            <div class="browser-shell-frame">
+              <browser-live-panel
+                .visible=${this.browserOpen}
+                @browser-close=${() => {
+                  this.browserOpen = false;
+                }}
+              ></browser-live-panel>
             </div>
           </aside>
         </div>

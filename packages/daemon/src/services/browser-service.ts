@@ -220,6 +220,7 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
   let activePage: Page | null = null;
   let pendingDialogHandler: ((dialog: Dialog) => void) | null = null;
   let launchNotice: string | null = null;
+  let ensureContextInFlight: Promise<BrowserContext> | null = null;
 
   async function saveStorageState(): Promise<void> {
     if (!persistSession || !context) return;
@@ -238,10 +239,15 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
       context = null;
       activePage = null;
       pendingDialogHandler = null;
+      ensureContextInFlight = null;
     }
   }
 
   async function ensureContext(): Promise<BrowserContext> {
+    if (context) return context;
+    if (ensureContextInFlight) return ensureContextInFlight;
+
+    ensureContextInFlight = (async () => {
     if (!browser) {
       const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined;
       const chromiumArgs = buildChromiumArgs(launchArgs);
@@ -261,7 +267,7 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
         if (!headless && isHeadfulUnavailableError(error)) {
           headless = true;
           launchNotice =
-            "Headful browser is unavailable in this VM/environment; switched to headless automatically.";
+            "Headful browser is unavailable in this VM/environment; switched to headless automatically. Continue with browser actions in headless mode (navigate/click/type/scroll/wait/tabs/screenshot).";
           browser = await chromium.launch({
             headless: true,
             executablePath,
@@ -277,7 +283,14 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
       const storageState = persistSession && fs.existsSync(STORAGE_STATE_PATH) ? STORAGE_STATE_PATH : undefined;
       context = await browser.newContext({ userAgent, viewport, storageState });
     }
-    return context;
+      return context;
+    })();
+
+    try {
+      return await ensureContextInFlight;
+    } finally {
+      ensureContextInFlight = null;
+    }
   }
 
   function consumeLaunchNotice(): string | null {
@@ -373,7 +386,7 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
         result.push({
           index: i,
           url: pg.url(),
-          title: await pg.title(),
+          title: await safePageTitle(pg),
           active: i === currentIdx,
         });
       }
@@ -520,9 +533,17 @@ export async function createBrowserService(opts?: BrowserLaunchOptions): Promise
 
     async setHeadless(value: boolean) {
       if (value === headless) return;
+      const previousMode = headless;
       headless = value;
       launchNotice = null;
       await closeBrowser();
+      try {
+        await ensureContext();
+      } catch (error) {
+        headless = previousMode;
+        await closeBrowser();
+        throw error;
+      }
     },
 
     isHeadless() {

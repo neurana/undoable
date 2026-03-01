@@ -1,7 +1,8 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
+import "./browser-live-panel.js";
 
-type View = "chat" | "agents" | "jobs" | "skills" | "nodes" | "channels" | "swarm" | "sessions" | "settings";
+type View = "chat" | "agents" | "jobs" | "skills" | "nodes" | "channels" | "swarm" | "sessions" | "settings" | "browser";
 
 @customElement("undoable-app")
 export class UndoableApp extends LitElement {
@@ -47,7 +48,7 @@ export class UndoableApp extends LitElement {
     }
   `;
 
-  private static VIEWS = new Set<View>(["chat", "agents", "jobs", "skills", "nodes", "channels", "swarm", "sessions", "settings"]);
+  private static VIEWS = new Set<View>(["chat", "agents", "jobs", "skills", "nodes", "channels", "swarm", "sessions", "settings", "browser"]);
 
   @state() private view: View = "chat";
 
@@ -104,6 +105,7 @@ export class UndoableApp extends LitElement {
       swarm: "SWARM",
       sessions: "Sessions",
       settings: "Settings",
+      browser: "Live Browser",
     };
 
     return html`
@@ -124,6 +126,7 @@ export class UndoableApp extends LitElement {
           ${this.view === "swarm" ? html`<swarm-page></swarm-page>` : ""}
           ${this.view === "sessions" ? html`<session-list></session-list>` : ""}
           ${this.view === "settings" ? html`<settings-page></settings-page>` : ""}
+          ${this.view === "browser" ? html`<browser-live-panel .visible=${true}></browser-live-panel>` : ""}
         </div>
       </main>
     `;
