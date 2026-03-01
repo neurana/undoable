@@ -258,6 +258,8 @@ export const api = {
       setHeadless: (value: boolean) => gatewayRequest<{ headless: boolean }>("browser.request", { action: "setHeadless", value }),
       tabs: () => gatewayRequest<GatewayBrowserTabsResult>("browser.request", { action: "tabs" }),
       navigate: (url: string) => gatewayRequest<GatewayBrowserMessageResult>("browser.request", { action: "navigate", url }),
+      screenshot: (fullPage = false) =>
+        gatewayRequest<GatewayBrowserScreenshotResult>("browser.request", { action: "screenshot", fullPage }),
       openTab: (url?: string) =>
         gatewayRequest<GatewayBrowserTabResult>("browser.request", {
           action: "openTab",
@@ -791,6 +793,10 @@ export type GatewayBrowserMessageResult = {
 
 export type GatewayBrowserTabResult = {
   tab: GatewayBrowserTab;
+};
+
+export type GatewayBrowserScreenshotResult = {
+  imageBase64: string;
 };
 
 export type GatewayBrowserTabsResult = {
